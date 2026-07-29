@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs" / "retrieval-guide.md"
+PROVENANCE_GUIDE = ROOT / "docs" / "provenance-and-promotion.md"
 LINK_RE = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
 
 
@@ -64,3 +65,15 @@ class RetrievalDocumentationTests(unittest.TestCase):
                 self.assertIn("apply-structured", body)
                 self.assertNotIn("apply-daily + promote", body)
                 self.assertNotIn("`apply-daily` or `promote`", body)
+
+    def test_provenance_guide_matches_the_v03_writer_contract(self) -> None:
+        body = PROVENANCE_GUIDE.read_text(encoding="utf-8")
+        self.assertIn(
+            "`schema_version`, `forest_id`, `transaction_id`, `date`, `entries`, and",
+            body,
+        )
+        self.assertIn("`memory-forest apply-structured ROOT PLAN`", body)
+        self.assertIn(
+            "All three writer operations, `apply-daily`, `apply-structured`, and `promote`",
+            body,
+        )

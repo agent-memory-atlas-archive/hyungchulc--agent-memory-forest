@@ -41,6 +41,9 @@ DAILY_PLAN_SCHEMA: Final[str] = "memory-forest-daily-plan-v1"
 PROMOTION_PLAN_SCHEMA: Final[str] = "memory-forest-promotion-plan-v1"
 STRUCTURED_SWEEP_PLAN_SCHEMA: Final[str] = "memory-forest-structured-sweep-plan-v1"
 WRITE_RECEIPT_SCHEMA: Final[str] = "memory-forest-write-receipt-v1"
+WRITE_RECEIPT_OPERATIONS: Final[frozenset[str]] = frozenset(
+    {"apply-daily", "apply-structured", "promote"}
+)
 MAX_PLAN_BYTES: Final[int] = 256 * 1024
 MAX_DAILY_ENTRIES: Final[int] = 128
 MAX_PROMOTIONS: Final[int] = 128
@@ -1771,6 +1774,11 @@ def _execute_write(
     already_applied: bool,
     limits: ForestLimits,
 ) -> dict[str, object]:
+    if operation not in WRITE_RECEIPT_OPERATIONS:
+        raise MemoryForestError(
+            "invalid_write_operation",
+            "The writer operation is unsupported.",
+        )
     touched = tuple(sorted({relative for relative, _ in changes}))
     session = _MutationSession(root, limits=limits)
     index_path = root / STATE_DIRECTORY / INDEX_FILENAME
@@ -2297,7 +2305,7 @@ def _read_receipt_path(path: Path) -> tuple[str, bytes, dict[str, object]]:
             "The receipt Memory Forest identity is invalid.",
         )
     operation = parsed.get("operation")
-    if operation not in {"apply-daily", "promote", "apply-structured"}:
+    if operation not in WRITE_RECEIPT_OPERATIONS:
         raise MemoryForestError(
             "invalid_receipt",
             "The receipt operation is unsupported.",

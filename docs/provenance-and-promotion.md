@@ -77,11 +77,16 @@ raw filesystem destinations.
 
 `memory-forest apply-daily ROOT PLAN` accepts [Daily Plan
 v1](daily-plan.schema.json). Its exact top-level fields are
-`schema_version`, `transaction_id`, `date`, `entries`, and `provenance`.
-Every admitted entry has a stable `entry_id`, bounded `source_record_ids`, and
-an inert summary. Its machine marker binds that entry to the plan's exact
-`provenance.result_sha256`. `transaction_id` must equal
+`schema_version`, `forest_id`, `transaction_id`, `date`, `entries`, and
+`provenance`. Every admitted entry has a stable `entry_id`, bounded
+`source_record_ids`, and an inert summary. Its machine marker binds that entry
+to the plan's exact `provenance.result_sha256`. `transaction_id` must equal
 `provenance.batch_id`.
+
+`memory-forest apply-structured ROOT PLAN` accepts [Structured Sweep Plan
+v1](structured-sweep-plan.schema.json). It binds one reviewed whole-Forest
+snapshot and the exact admitted Daily commits, then applies bounded creates or
+full-body replacements across XLTM, LTM, MTM, and STM in one transaction.
 
 `memory-forest promote ROOT PLAN` accepts [Promotion Plan
 v1](promotion-plan.schema.json). Each promotion names existing Daily entry IDs
@@ -103,19 +108,20 @@ updates the XLTM/LTM/MTM parent-child chain, and appends a transaction block to
 the leaf. `daily_commit_sha256s` must be the sorted unique Daily result hashes
 bound to the selected source entries.
 
-Arrays are bounded, identifiers and hashes are strict, and empty Daily or
-promotion arrays are explicit no-ops rather than failures. Model-generated
-summary, title, and content fields remain data: they are serialized as
+Arrays are bounded, identifiers and hashes are strict, and empty reviewed
+change sets are explicit no-ops rather than failures. Model-generated summary,
+title, and content fields remain data: they are serialized as
 single-line canonical JSON inside code fences so headings, HTML, wikilinks, and
 transaction-like text cannot become forest structure.
 
 ## Receipts and retry
 
-Both writers hold the sibling `<forest>.maintenance.lock` from preflight
-through receipt publication. They reject symlinks, path escapes, case-fold
-collisions, unsafe modes, and conflicting transaction IDs. A handled
-post-write validation, audit, or index failure restores the previous canonical
-files and derived index.
+All three writer operations, `apply-daily`, `apply-structured`, and `promote`,
+hold the sibling `<forest>.maintenance.lock` from preflight through receipt
+publication. They reject symlinks, path escapes, case-fold collisions, unsafe
+modes, and conflicting transaction IDs. A handled post-write validation,
+audit, or index failure restores the previous canonical files and derived
+index.
 
 A successful [Write Receipt v1](write-receipt.schema.json) is stored at
 `.memory-forest/receipts/<transaction_id>.json` only after validation, audit,

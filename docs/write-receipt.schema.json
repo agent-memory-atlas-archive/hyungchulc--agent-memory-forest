@@ -31,6 +31,7 @@
     "operation": {
       "enum": [
         "apply-daily",
+        "apply-structured",
         "promote"
       ]
     },

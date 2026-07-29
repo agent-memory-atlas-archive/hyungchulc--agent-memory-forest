@@ -2,6 +2,15 @@
 
 All notable changes to Memory Forest are documented in this file. The project follows [Semantic Versioning](https://semver.org/) once a version is released.
 
+## Unreleased
+
+### Fixed
+
+- aligned the published Write Receipt v1 operation enum and writer
+  documentation with the implemented `apply-structured` transaction path
+- added a regression that keeps the runtime receipt-operation vocabulary,
+  machine-readable schema, and persisted Structured receipts in sync
+
 ## 0.3.0 - 2026-07-24
 
 ### Added

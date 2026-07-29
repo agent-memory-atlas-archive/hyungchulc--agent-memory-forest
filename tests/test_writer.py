@@ -25,6 +25,7 @@ from memory_forest.writer import (
     DAILY_PLAN_SCHEMA,
     PROMOTION_PLAN_SCHEMA,
     STRUCTURED_SWEEP_PLAN_SCHEMA,
+    WRITE_RECEIPT_OPERATIONS,
     WRITE_RECEIPT_SCHEMA,
     apply_daily,
     apply_structured_sweep,
@@ -839,6 +840,25 @@ class WriterTests(unittest.TestCase):
         self.assertTrue(receipt["validation"]["ok"])
         self.assertTrue(receipt["audit"]["ok"])
         self.assertEqual(receipt["index"]["index"], ".memory-forest/index.sqlite3")
+
+    def test_published_receipt_schema_covers_every_runtime_operation(self) -> None:
+        schema = json.loads(
+            (REPOSITORY_ROOT / "docs" / "write-receipt.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        schema_operations = schema["properties"]["operation"]["enum"]
+        self.assertEqual(set(schema_operations), set(WRITE_RECEIPT_OPERATIONS))
+        self.assertEqual(len(schema_operations), len(set(schema_operations)))
+
+        self.admit_source()
+        result = apply_structured_sweep(
+            self.root,
+            self.structured_plan(self.root, []),
+        )
+        receipt = json.loads((self.root / str(result["receipt"])).read_bytes())
+        self.assertEqual(receipt["operation"], "apply-structured")
+        self.assertIn(receipt["operation"], schema_operations)
 
     def test_raw_model_text_remains_inert_and_postwrite_audit_passes(self) -> None:
         summary = (
