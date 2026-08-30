@@ -41,7 +41,7 @@ Memory Forest는 기억을 번호가 붙은 파일 트리에 나눠 저장하고
 
 ## 빠른 시작
 
-Memory Forest v0.3는 macOS와 Linux의 POSIX filesystem을 대상으로 합니다. Python 3.11 이상이 필요하고 runtime dependency는 없습니다.
+Memory Forest v0.3는 macOS와 Linux의 POSIX filesystem을 대상으로 합니다. Python 3.11 이상이 필요하고 runtime dependency는 없습니다. Windows에서는 WSL2를 사용하고 repository, forest, 파생 상태, 임시 작업을 WSL Linux filesystem에 두세요. 실제 forest를 연결하기 전에 [WSL2 guide](docs/wsl2.md)를 확인하세요.
 
 ```sh
 git clone https://github.com/hyungchulc/memory-forest.git
@@ -170,7 +170,7 @@ gateway는 query만 외부 planner에 보내고, 돌아온 결과를 strict Quer
 | `search` | full-text candidate | 기본은 없음, `--include-body`로 명시 가능 |
 | `retrieve` | 검증된 root-first structured trail | 항상 없음 |
 
-v0.2 index schema는 `2`입니다. v0.1에서 만든 index는 canonical memory를 건드리지 않고 아래 명령으로 다시 만들면 됩니다.
+현재 v0.3는 v0.2에서 도입한 index schema `2`를 그대로 사용합니다. v0.1에서 만든 index는 canonical memory를 건드리지 않고 아래 명령으로 다시 만들면 됩니다.
 
 ```sh
 memory-forest index ROOT
@@ -217,9 +217,9 @@ retrieval 평가는 목적별 저장소로 분리합니다.
   가상 fixture, 반복 가능한 지표, 다국어 사례, ranker adapter로 검색
   품질을 측정합니다.
 
-이 프로젝트들의 기준 환경은 2026년 7월 24일 기준 GPT-5.6 Sol,
-reasoning effort xhigh입니다. 수집과 deterministic baseline 자체는 model에
-의존하지 않습니다. 저장소 경계와 Daily 크기 제한 계약은
+수집과 deterministic baseline 자체는 model에 의존하지 않습니다. Model이
+작성하는 summary를 추가하는 integration은 provider, retention, review,
+data-processing boundary를 별도로 문서화해야 합니다. 저장소 경계와 Daily 크기 제한 계약은
 [Daily and ISTM companion projects](docs/daily-and-istm-companions.md)에
 정리되어 있습니다.
 

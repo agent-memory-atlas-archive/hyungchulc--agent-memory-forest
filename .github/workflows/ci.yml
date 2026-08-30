@@ -28,3 +28,15 @@ jobs:
       - name: Build package
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         run: pip wheel --no-deps --wheel-dir dist .
+      - name: Clean-install wheel smoke
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        shell: bash
+        run: |
+          smoke_root="${RUNNER_TEMP}/memory-forest-wheel-smoke"
+          python -m venv "$smoke_root/venv"
+          "$smoke_root/venv/bin/python" -m pip install --no-index --no-deps dist/*.whl
+          "$smoke_root/venv/bin/python" -c 'import memory_forest; assert memory_forest.__version__ == "0.3.0"'
+          "$smoke_root/venv/bin/memory-forest" --version
+          "$smoke_root/venv/bin/memory-forest" --help >/dev/null
+          "$smoke_root/venv/bin/memory-forest" init "$smoke_root/forest" --example
+          "$smoke_root/venv/bin/memory-forest" validate "$smoke_root/forest"

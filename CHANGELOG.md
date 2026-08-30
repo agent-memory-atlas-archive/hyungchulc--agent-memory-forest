@@ -2,16 +2,7 @@
 
 All notable changes to Memory Forest are documented in this file. The project follows [Semantic Versioning](https://semver.org/) once a version is released.
 
-## Unreleased
-
-### Fixed
-
-- aligned the published Write Receipt v1 operation enum and writer
-  documentation with the implemented `apply-structured` transaction path
-- added a regression that keeps the runtime receipt-operation vocabulary,
-  machine-readable schema, and persisted Structured receipts in sync
-
-## 0.3.0 - 2026-07-24
+## 0.3.0 - 2026-08-31
 
 ### Added
 
@@ -51,10 +42,18 @@ All notable changes to Memory Forest are documented in this file. The project fo
 - retrieval diagram now uses ASCII-only visible labels and an explicit cross-platform font stack to avoid missing-glyph rendering
 - retrieval evaluation roadmap now points to a dedicated companion Lab while keeping the core route and retrieve contracts authoritative
 - package and CLI version advanced to `0.3.0`
+- project license changed from MIT to GPL-3.0-only
 - English and Korean documentation now describe the integrated Structured
   sweep as the reference write path and `promote` as a compatibility command
 - automation documentation now distinguishes semantic plan generation from the
   implemented deterministic canonical writer
+
+### Fixed
+
+- aligned the published Write Receipt v1 operation enum and writer
+  documentation with the implemented `apply-structured` transaction path
+- added a regression that keeps the runtime receipt-operation vocabulary,
+  machine-readable schema, and persisted Structured receipts in sync
 
 ## 0.2.0 - 2026-07-22
 

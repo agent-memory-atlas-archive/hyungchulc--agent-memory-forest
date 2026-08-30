@@ -55,7 +55,9 @@ memory-forest index ROOT
 
 Atomically builds the local SQLite search index under the forest's private state directory. The database is a point-in-time derived snapshot. It can be protected, deleted, and rebuilt independently of the source forest.
 
-v0.2 uses index schema 2. A v0.1 index fails with `index_schema_mismatch` and the action `memory-forest index ROOT`. Rebuilding replaces only derived state and does not modify canonical memory files.
+v0.3 retains index schema 2, introduced in v0.2. A v0.1 index fails with
+`index_schema_mismatch` and the action `memory-forest index ROOT`. Rebuilding
+replaces only derived state and does not modify canonical memory files.
 
 Do not commit an index created from a real forest. It may contain content-derived tokens or text.
 
@@ -257,6 +259,9 @@ Direct Unicode matching and caller-supplied expansion can improve retrieval acro
 - Open a routed file only after resolving it within the selected root.
 - Revalidate the source after concurrent maintenance.
 
-The v0.3 CLI supports macOS and Linux on POSIX filesystems with Unix `0700` and `0600` permission modes. Windows ACL semantics are not implemented.
+The v0.3 CLI supports macOS and Linux on POSIX filesystems with Unix `0700` and
+`0600` permission modes. Windows users should run it in WSL2 with the forest on
+the WSL Linux filesystem. Native Windows ACL semantics are not implemented or
+equivalent to the POSIX safety contract. See the [WSL2 guide](wsl2.md).
 
 For Codex Debug Bridge, retain its helper request and result schema around the CLI rather than treating terminal output as an authenticated protocol. See [Codex Debug Bridge integration](codex-debug-bridge.md).

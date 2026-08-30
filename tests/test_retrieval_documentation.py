@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs" / "retrieval-guide.md"
 PROVENANCE_GUIDE = ROOT / "docs" / "provenance-and-promotion.md"
+WSL2_GUIDE = ROOT / "docs" / "wsl2.md"
 LINK_RE = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
 
 
@@ -44,6 +45,47 @@ class RetrievalDocumentationTests(unittest.TestCase):
                     "docs/retrieval-guide.md",
                     (ROOT / name).read_text(encoding="utf-8"),
                 )
+
+    def test_wsl2_guide_is_linked_and_states_the_portability_boundary(self) -> None:
+        body = WSL2_GUIDE.read_text(encoding="utf-8")
+        for phrase in (
+            "WSL Linux filesystem",
+            "`/mnt/c`",
+            "`0700`",
+            "`0600`",
+            "backup",
+            "Windows ACL",
+        ):
+            self.assertIn(phrase, body)
+        for name in ("README.md", "README.ko.md"):
+            with self.subTest(name=name):
+                self.assertIn(
+                    "docs/wsl2.md",
+                    (ROOT / name).read_text(encoding="utf-8"),
+                )
+
+    def test_release_metadata_matches_v03_publication(self) -> None:
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        citation = (ROOT / "CITATION.cff").read_text(encoding="utf-8")
+        self.assertNotIn("## Unreleased", changelog)
+        self.assertIn("## 0.3.0 - 2026-08-31", changelog)
+        self.assertIn("license changed from MIT to GPL-3.0-only", changelog)
+        self.assertIn("version: 0.3.0", citation)
+        self.assertIn("date-released: 2026-08-31", citation)
+
+    def test_public_guidance_is_provider_neutral(self) -> None:
+        for path in (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            ROOT / "docs" / "daily-and-istm-companions.md",
+        ):
+            with self.subTest(path=path.name):
+                body = path.read_text(encoding="utf-8")
+                self.assertNotIn("GPT-5.6", body)
+                self.assertNotIn("reasoning effort xhigh", body)
+        guide = GUIDE.read_text(encoding="utf-8")
+        self.assertNotIn("Aria's private production alias maps", guide)
+        self.assertIn("an integrating application's private production alias", guide)
 
     def test_english_and_korean_readmes_share_the_reference_write_path(self) -> None:
         for name in ("README.md", "README.ko.md"):

@@ -37,14 +37,13 @@ boundary. The public companion implementation follows these invariants.
 These rules preserve recoverability without making an unbounded Markdown file
 the second raw archive.
 
-## Reference model profile
+## Model-processing boundary
 
-The reference system that motivated these projects used **GPT-5.6 Sol** with
-reasoning effort **xhigh** on 2026-07-24. That profile is provenance, not a
-runtime dependency. Collection, hashing, cursor commits, validation, and the
-deterministic retrieval baselines work without a model. An integrator that adds
-model-written summaries must document its own provider, model, retention, and
-review boundary.
+Collection, hashing, cursor commits, validation, and deterministic retrieval
+baselines work without a model. An integrator that adds model-written summaries
+must document its own provider, model, retention, review, and data-processing
+boundaries. No named model or reasoning profile is part of the portable
+contract.
 
 ## macOS scope
 

@@ -51,7 +51,15 @@ flowchart TB
     open --> verify["Freshness and conflict check"]
 ```
 
-Capture moves upward from recent evidence toward durable structure. The v0.2 `retrieve` command globally ranks bounded lexical evidence, then materializes each candidate in root-first canonical ownership order. It reopens the selected files, verifies their indexed hashes, and returns metadata-only trails. This is not a staged top-down semantic traversal. An XLTM-only lexical match remains a depth-one partial trail instead of fanning out across the whole forest. The existing `route` and `search` commands retain their v0.1 flat-query behavior and JSON boundary. `00 life_archive` is a side archive for reusable history, not a higher truth rank.
+Capture moves upward from recent evidence toward durable structure. The current
+v0.3 `retrieve` command, introduced in v0.2, globally ranks bounded lexical
+evidence, then materializes each candidate in root-first canonical ownership
+order. It reopens the selected files, verifies their indexed hashes, and
+returns metadata-only trails. This is not a staged top-down semantic traversal.
+An XLTM-only lexical match remains a depth-one partial trail instead of fanning
+out across the whole forest. The existing `route` and `search` commands retain
+their v0.1 flat-query behavior and JSON boundary. `00 life_archive` is a side
+archive for reusable history, not a higher truth rank.
 
 ![Memory Forest graph](docs/assets/memory-forest-graph.png)
 
@@ -78,6 +86,10 @@ Layer placement is a responsibility decision, not a confidence score. A claim in
 ## Quick start
 
 Memory Forest is currently an alpha reference implementation for macOS and Linux. It requires Python 3.11 or newer, a POSIX filesystem with Unix permission modes, and no required runtime dependencies outside the standard library.
+
+On Windows, use WSL2 and keep the repository, forest, derived state, and
+temporary work on the WSL Linux filesystem. Read the [WSL2 guide](docs/wsl2.md)
+before connecting a real forest.
 
 ```sh
 git clone https://github.com/hyungchulc/memory-forest.git
@@ -218,10 +230,11 @@ projects.
   measures retrieval quality with synthetic fixtures, reproducible metrics,
   multilingual cases, and ranker adapters.
 
-The reference environment used GPT-5.6 Sol with reasoning effort xhigh on
-2026-07-24. The collectors and deterministic baselines are model-independent.
-Read [Daily and ISTM companion projects](docs/daily-and-istm-companions.md) for
-the exact repository boundaries and bounded Daily contract.
+The collectors and deterministic baselines are model-independent. An
+integration that adds model-written summaries must document its own provider,
+retention, review, and data-processing boundaries. Read [Daily and ISTM
+companion projects](docs/daily-and-istm-companions.md) for the exact repository
+boundaries and bounded Daily contract.
 
 ## Provenance and promotion
 
@@ -294,6 +307,7 @@ Candidate directions include measured multilingual routing evaluation, optional 
 | `src/memory_forest/` | local CLI and reference implementation |
 | `docs/` | architecture, contracts, privacy boundary, and integration guidance |
 | `docs/retrieval-guide.md` | query intake, deterministic retrieval, explicit body boundary, and integration limits |
+| `docs/wsl2.md` | Windows-facing WSL2 filesystem, permission, and backup guidance |
 | `docs/daily-and-istm-companions.md` | bounded Daily contract and companion repository boundaries |
 | `examples/synthetic-forest/` | fictional 00-06 forest with no private identifiers |
 | `examples/automation/` | cron, launchd, and Codex Scheduled Task maintenance examples |

@@ -44,7 +44,18 @@ authorization, freshness, and privacy policy. See the [end-to-end retrieval
 guide](retrieval-guide.md) for the query, body, conflict, and external-ranker
 boundaries.
 
-The v0.2 `retrieve` operation implements the structured part of this method. Literal matches from the original query and optional validated probes are aggregated into forest, tree, branch, and leaf evidence. A trail containing direct original-query evidence always ranks ahead of a plan-only trail. Probes can expand recall and influence ordering within that trust boundary, but cannot override an explicit direct match. Candidate selection is then materialized in canonical order from XLTM through LTM and MTM to STM. An XLTM-only match stays forest-only rather than expanding across every tree. A tree or branch with no deeper owner can also produce a partial trail; a complete trail ends at STM. Selected files are reopened and hash-checked before metadata is emitted. Bodies are discarded and never included in `retrieve` output.
+The current v0.3 `retrieve` operation, introduced in v0.2, implements the
+structured part of this method. Literal matches from the original query and
+optional validated probes are aggregated into forest, tree, branch, and leaf
+evidence. A trail containing direct original-query evidence always ranks ahead
+of a plan-only trail. Probes can expand recall and influence ordering within
+that trust boundary, but cannot override an explicit direct match. Candidate
+selection is then materialized in canonical order from XLTM through LTM and MTM
+to STM. An XLTM-only match stays forest-only rather than expanding across every
+tree. A tree or branch with no deeper owner can also produce a partial trail; a
+complete trail ends at STM. Selected files are reopened and hash-checked before
+metadata is emitted. Bodies are discarded and never included in `retrieve`
+output.
 
 `route` remains the v0.1-compatible bounded flat FTS query over relative paths and titles. `search` retains its separate explicit body boundary.
 
@@ -100,7 +111,14 @@ The canonical trail is deliberately small, but it can preserve connections that 
 - projects can retain their tree, branch, and leaf context instead of becoming isolated summaries
 - time remains recoverable through Daily and ISTM provenance when the structured trail is not enough
 
-Index schema 2 stores each structured document's canonical parent path. The v0.2 result validates those edges and makes the canonical parent-child relationships explicit by index within each returned trail. It does not extract people, infer responsibility, build a hidden organizational profile, or decide access. Richer similarity or relationship graphs remain optional derived state. Permission filtering and identity policy belong to the integrating application and must run before a private body is opened.
+Index schema 2 stores each structured document's canonical parent path. The
+current v0.3 result retains the edge validation introduced in v0.2 and makes
+the canonical parent-child relationships explicit by index within each returned
+trail. It does not extract people, infer responsibility, build a hidden
+organizational profile, or decide access. Richer similarity or relationship
+graphs remain optional derived state. Permission filtering and identity policy
+belong to the integrating application and must run before a private body is
+opened.
 
 ## Link contract
 
@@ -161,7 +179,11 @@ The portable core is designed to fail closed around structure and paths.
 - Apply reviewed write plans under one sibling lock, and restore the previous
   canonical files and index when a handled post-write check fails.
 
-The v0.3 filesystem implementation targets macOS and Linux. Its private-mode checks rely on POSIX `0700` directories and `0600` files; Windows ACL behavior is outside this release.
+The v0.3 filesystem implementation targets macOS and Linux. Its private-mode
+checks rely on POSIX `0700` directories and `0600` files. On Windows, the
+documented posture is WSL2 with the forest on its Linux filesystem; native
+Windows ACL behavior is not equivalent to this contract. See the [WSL2
+guide](wsl2.md).
 
 ## Scope boundary
 

@@ -22,6 +22,50 @@ Memory Forest is an alpha reference implementation. The roadmap describes direct
 - local network-free `apply-daily` and `apply-structured` transaction writers
 - integrated XLTM/LTM/MTM/STM materialization with adjacent parent-child links
 - private write receipts, exact retry idempotency, and handled-failure rollback
+- Windows-facing WSL2 filesystem, permission, and backup guidance
+
+## Issue #3 proposal tracks
+
+The following tracks record how the early-adopter proposals in [issue
+#3](https://github.com/hyungchulc/memory-forest/issues/3) fit the public
+architecture. They are candidate directions, not implemented behavior or
+delivery commitments.
+
+### Accept as roadmap direction
+
+- design bounded migration and attachment helpers around explicit source and
+  target identities, dry-run inspection, backup manifests, rehearsed restore,
+  and fail-closed cutover; never dual-write one live forest
+- define bounded read-only health diagnostics that can report structural,
+  provenance, index, permission, and freshness signals without repairing
+  canonical content or widening filesystem discovery
+- specify a distinct Life Archive plan, provenance, and receipt contract before
+  automating archive selection; current archive prose is not an enforceable
+  writer contract
+
+### Modify at the integration boundary
+
+- express human review as a caller-owned strict review envelope around closed,
+  hash-bound plans and deterministic receipts; the core may validate and apply
+  a reviewed plan, but it does not become an approval, identity, or
+  authorization service
+- explore deterministic, opt-in per-probe retrieval diagnostics that expose
+  which accepted QueryPlan probe contributed lexical evidence and ranking
+  weight; the core does not generate translations, infer semantic intent, or
+  claim universal multilingual coverage
+- evaluate a future strict review-envelope commitment that binds the caller's
+  reviewed source set and one explicit disposition per source into durable
+  receipt evidence; v0.3 receipts prove deterministic writes and retries, not
+  semantic review completeness or intentional `source-only` coverage
+
+### Defer until the safety contracts exist
+
+- canonical writes to attached legacy forests and in-place migration before
+  identity assignment, rehearsal, restore verification, and a single-writer
+  cutover contract are specified and tested
+- approval workflow orchestration inside the core, unbounded diagnostic scans,
+  model-generated QueryPlans inside the local CLI, and native Windows ACL
+  equivalence
 
 ## Candidate next steps
 

@@ -3,7 +3,7 @@ message: "If you use Memory Forest in research or software, please cite it using
 title: "Memory Forest"
 type: software
 version: 0.3.0
-date-released: 2026-07-22
+date-released: 2026-08-31
 authors:
   - family-names: Choi
     given-names: Hyungchul

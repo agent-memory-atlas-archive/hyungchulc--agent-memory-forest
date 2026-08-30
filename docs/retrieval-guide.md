@@ -85,7 +85,14 @@ Memory Forest core is deliberately provider-neutral and network-free. It does no
 - retain deterministic core routes and canonical trails as inspectable provenance rather than letting a score redefine ownership;
 - label external output as optional ranking evidence, then open bodies only through the explicit boundary above.
 
-This separation also keeps environment-specific alias rules, classification, and hybrid scoring out of the portable public core. In particular, the public project includes none of Aria's private production alias maps, query classifiers, embeddings or vector stores, fusion weights, or fallback rules. An integration may document its own behavior, but it must not represent it as a Memory Forest guarantee. Use [OAuth and API integration](oauth-api-integration.md) for the gateway boundary and [Privacy and trust](privacy-and-trust.md) before connecting real data.
+This separation also keeps environment-specific alias rules, classification,
+and hybrid scoring out of the portable public core. In particular, the public
+project includes none of an integrating application's private production alias
+maps, query classifiers, embeddings or vector stores, fusion weights, or
+fallback rules. An integration may document its own behavior, but it must not
+represent it as a Memory Forest guarantee. Use [OAuth and API
+integration](oauth-api-integration.md) for the gateway boundary and [Privacy
+and trust](privacy-and-trust.md) before connecting real data.
 
 ## 9. Evaluate the two questions separately
 
