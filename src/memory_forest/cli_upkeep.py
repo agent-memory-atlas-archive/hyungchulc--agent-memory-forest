@@ -123,6 +123,15 @@ def cmd_record_trim(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_record_history(arguments: argparse.Namespace) -> int:
+    lines = [line.render() for line in forest_record.archived_record_lines(forest_root(arguments), arguments.path)]
+    if arguments.json:
+        _print_json({"lines": lines, "ok": True, "path": arguments.path})
+    else:
+        _print_lines(lines or ["no archived record lines"])
+    return 0
+
+
 # ─────────────────────────────── forest numbers ───────────────────────────────
 
 
@@ -164,6 +173,8 @@ COMMANDS: list[ForestCommand] = [
                   (arg("--examples", type=int, default=0, metavar="N", help="show N lines of each kind"),)),
     ForestCommand(("record", "trim"), cmd_record_trim, "Trim update records over their budget, moving lines to "
                   "the page's record history file.", (_PATHS, _ALL, _DRY, _LOCK)),
+    ForestCommand(("record", "history"), cmd_record_history, "Print a page's record lines that its record history "
+                  "file and archive copies keep, oldest first.", (arg("path", metavar="PATH"),)),
     ForestCommand(("numbers", "check"), cmd_numbers_check, "List the pages that write a number in full (lines and "
                   "kinds, never digits); exit 1 when there is one.", (_PATHS, _ALL)),
     ForestCommand(("numbers", "star"), cmd_numbers_star, "Star the numbers written in full, archiving each page "

@@ -747,7 +747,8 @@ owner someone who likes that sport.
   (section 4, Record trim), each block of it listed in the manifest. `forest archive check` verifies every
   copy and every block against the manifest. Nothing is deleted: a copy that a rolled-back commit stored
   stays, so the archive only grows. `forest archive show <old path>` prints
-  the latest copy of a page, and `forest archive list <old path>` every copy.
+  the latest copy of a page, `forest archive list --path <old path>` every copy and history block, and
+  `forest record history <path>` the record lines the history blocks keep.
 - What a machine repeats becomes facts in the subject's leaf:
   - a stay or a visit is one Timeline line per stay, with the place, the arrival, the departure or the last
     time seen, and the longest dwell;
@@ -874,8 +875,9 @@ below may still change while the code is ported; the design's milestones say whe
   subject into its category's collection, `admit` moves an entry out into a leaf of its own, `recut` cuts
   a page past the cap by its entries' first days, and `list` names every page with its entries and their
   days. Each logs its moves, so `resolve` follows an entry to its page and back out.
-- **`forest record size | kinds | trim`** and **`forest archive put | show | list | check`** keep the update records and the
-  archive (section 4).
+- **`forest record size | kinds | trim | history`** and **`forest archive put | show | list | check`** keep
+  the update records and the archive (section 4); `record history` prints a page's moved record lines,
+  oldest first, and `archive list` names each row's kind, a whole-page copy or a record history block.
 - **`forest registry build | find`** compiles the registry and finds a subject or a collection entry by any
   name or spelling.
 - **`forest check [NAME …]`** runs every registered check, or the ones it names: the structure of the

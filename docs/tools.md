@@ -251,9 +251,9 @@ forest lint --against .forest/baselines/before.json
 ## `forest record`
 
 `record size PATH …` prints a page's content and record bytes, its record lines by kind and what is due;
-`record kinds [--examples N]` counts the forest's record lines by kind and page; `record trim PATH … | --all
-[--dry-run]` moves what a record holds over `limits.record_keep_bytes` out of the page (contract, section
-4, Record trim).
+`record kinds [--examples N]` counts the forest's record lines by kind and page; `record trim PATH … |
+--all [--dry-run]` moves what a record holds over `limits.record_keep_bytes` out of the page (contract,
+section 4, Record trim); `record history PATH` prints the lines trims moved out.
 
 ```sh
 forest record size "04 stm/bakery/ovens/deck-oven.md"
@@ -270,7 +270,17 @@ forest archive check                # every archive copy and record history bloc
 ```
 
 The moved lines go, as one block, to the page's record history file, and the page keeps one pointer line to
-it for life; a later trim appends another block and adds nothing to the page.
+it for life; a later trim appends another block and adds nothing to the page. `record history PATH` prints
+the lines a page's history file and archive copies keep, oldest first, and `forest archive list` shows each
+block beside the whole-page copies, with its kind:
+
+```sh
+forest record history "04 stm/bakery/ovens/deck-oven.md"
+# - 2051-01-01 — Baking temperature: was "201 C", now "202 C". Why: …
+# …
+forest archive list --path "04 stm/bakery/ovens/deck-oven.md"
+# 2051-03-02T07:40:12Z  record-history  04 stm/bakery/ovens/deck-oven.md  5 lines 2051-01-01 to 2051-01-05  .forest/archive/record-history/04 stm/bakery/ovens/deck-oven.md
+```
 
 ## `forest numbers`
 

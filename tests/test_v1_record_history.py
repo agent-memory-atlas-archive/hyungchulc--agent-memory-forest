@@ -177,3 +177,30 @@ class RecordHistoryTests(CheckForestTestCase):
         self.assertEqual((root / other).stat().st_size, sizes[other])
         self.assertGreater((root / target).stat().st_size, sizes[target])
         self.assertEqual(archive.verify(root), [])
+
+    def test_the_history_and_the_listing_from_the_command_line(self) -> None:
+        import json
+        import subprocess
+
+        from v1_support import REPOSITORY_ROOT
+
+        root = self.page_with([change(f"2051-01-{day:02d}") for day in range(1, 29)])
+        trimmed = record.trim_page(root, STAND)
+        archive.put(root, STAND, reason="a copy before a test edit", keep=True)
+
+        def forest(*arguments: str) -> str:
+            result = subprocess.run(
+                [sys.executable, "-c", "from memory_forest.cli import forest_main; raise SystemExit(forest_main())",
+                 *arguments, "--root", str(root)], capture_output=True, text=True,
+                env={"PYTHONPATH": str(REPOSITORY_ROOT / "src"), "PATH": "/usr/bin:/bin"})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+
+        self.assertEqual(forest("record", "history", STAND).splitlines(), list(trimmed.plan.moved))
+        self.assertEqual(json.loads(forest("record", "history", STAND, "--json"))["lines"], list(trimmed.plan.moved))
+        rows = json.loads(forest("archive", "list", "--json"))["entries"]
+        self.assertEqual([row["kind"] for row in rows], ["record-history", "copy"])
+        listed = forest("archive", "list").splitlines()
+        self.assertIn(f"  record-history  {STAND}  {len(trimmed.plan.moved)} lines 2051-01-01 to ", listed[0])
+        self.assertTrue(listed[0].endswith(trimmed.archive_path), listed[0])
+        self.assertIn(f"  copy            {STAND}  ", listed[1])

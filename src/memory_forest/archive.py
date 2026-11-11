@@ -499,6 +499,32 @@ def blocks(root: str | os.PathLike[str], path: str | None = None) -> list[Histor
     return found
 
 
+COPY_KIND: Final[str] = "copy"
+
+
+def listing(root: str | os.PathLike[str], path: str | None = None) -> list[ArchiveEntry | HistoryBlock]:
+    """Every manifest row in the manifest's order, whole-page copies and record history blocks alike; only one
+    page's when ``path`` is given (``forest archive list``)."""
+    safe_root = require_real_root(root)
+    try:
+        with open(layout.resolve(safe_root, f"{layout.ARCHIVE_DIR}/{MANIFEST}"), "r", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except (FileNotFoundError, MemoryForestError):
+        return []
+    wanted = layout.normalize(path) if path is not None else None
+    found: list[ArchiveEntry | HistoryBlock] = []
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        row = (HistoryBlock.from_dict(value) if isinstance(value, dict) and value.get("kind") == HISTORY_KIND
+               else ArchiveEntry.from_dict(value))
+        if row is not None and (wanted is None or row.path == wanted):
+            found.append(row)
+    return found
+
+
 def append_block(
     root: str | os.PathLike[str],
     history_file: str,

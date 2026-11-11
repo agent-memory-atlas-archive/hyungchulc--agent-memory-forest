@@ -452,15 +452,21 @@ def cmd_archive_show(arguments: argparse.Namespace) -> int:
 
 
 def cmd_archive_list(arguments: argparse.Namespace) -> int:
-    found = forest_archive.entries(forest_root(arguments), arguments.path)
+    found = forest_archive.listing(forest_root(arguments), arguments.path)
     if arguments.json:
-        _print_json({"entries": [entry.as_dict() for entry in found], "ok": True})
-    else:
-        _print_lines(
-            f"{entry.time}  {entry.path}  {entry.bytes} B  {entry.reason}"
-            + (f" (successor {entry.successor})" if entry.successor else "")
-            for entry in found
-        )
+        _print_json({"entries": [{"kind": forest_archive.COPY_KIND, **row.as_dict()}
+                                 if isinstance(row, forest_archive.ArchiveEntry) else row.as_dict()
+                                 for row in found], "ok": True})
+        return 0
+    lines = []
+    for row in found:
+        if isinstance(row, forest_archive.ArchiveEntry):
+            lines.append(f"{row.time}  {forest_archive.COPY_KIND:<14}  {row.path}  {row.bytes} B  {row.reason}"
+                         + (f" (successor {row.successor})" if row.successor else ""))
+        else:
+            lines.append(f"{row.time}  {forest_archive.HISTORY_KIND:<14}  {row.path}  {row.lines} lines "
+                         f"{row.first} to {row.last}  {row.archive_path}")
+    _print_lines(lines)
     return 0
 
 
@@ -513,7 +519,8 @@ FOREST_COMMANDS: list[ForestCommand] = [
                   (arg("path"),)),
     ForestCommand(("archive", "check"), cmd_archive_check, "Verify every archive copy and record history block "
                   "against the manifest; exit 1 when one differs."),
-    ForestCommand(("archive", "list"), cmd_archive_list, "List the archive manifest.",
+    ForestCommand(("archive", "list"), cmd_archive_list, "List the archive manifest: whole-page copies and record "
+                  "history blocks, with their kind.",
                   (arg("--path", default=None, help="only this page's entries"),)),
 ]
 
