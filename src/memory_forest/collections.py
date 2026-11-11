@@ -28,6 +28,7 @@ each opening with its name. Every move is logged with the entry's address
 from __future__ import annotations
 
 import os
+import re
 from calendar import monthrange
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -38,6 +39,7 @@ from . import layout, registry
 from .locking import LockToken
 from .model import (
     RECORD_SECTION,
+    CurrentStateLine,
     EntryLine,
     ReferenceLine,
     RegistryLine,
@@ -160,6 +162,20 @@ def entries_of(text: str) -> list[Entry]:
 def first_day(entry: Entry, fallback: str) -> str:
     days = [parsed.day for line in entry.items if (parsed := TimelineLine.match(line)) is not None and parsed.day]
     return min(days) if days else fallback
+
+
+def entry_dates(text: str) -> dict[str, str | None]:
+    """Each entry's latest evidence on a collection page, by id: the latest day of the Timeline lines that open
+    with its name (None for an entry with no dated line, which a reader dates by the page).
+
+    Only the entry's own Timeline lines count. The lines under its ``### Update record`` say when a tool folded,
+    cut or moved it, which is no evidence of the subject, and the page's ``updated_at`` follows every entry.
+    """
+    found: dict[str, str | None] = {}
+    for entry in entries_of(text):
+        days = [parsed.day for line in entry.items if (parsed := TimelineLine.match(line)) is not None and parsed.day]
+        found[entry.id] = max(days) if days else None
+    return found
 
 
 def _material(entry: Entry) -> list[str]:
@@ -497,6 +513,7 @@ def cut(plan: Plan, path: str, *, why: str) -> list[str]:
         for entry in entries:
             if name != path:
                 plan.log("recut", f"{path}#{entry.id}", f"{name}#{entry.id}", subject=entry.id, why=why)
+                plan.map(f"{path}#{entry.id}", f"{name}#{entry.id}")
         if name != path:
             plan.record_provenance(name, f"Entries came from `{path}`, cut by their first days", why)
     others = [name for name in made if name != path]
@@ -609,7 +626,8 @@ def demote(plan: Plan, subject_id: str) -> str:
         plan.write(target, parts.render(plan))
     plan.keep_copy(source, reason=why, successor=target)
     plan.delete(source)
-    plan.map(source, target)
+    # A line that cited the leaf states this subject: it now cites the entry, not the whole page.
+    plan.map(source, f"{target}#{subject_id}")
     plan.log("demote", source, f"{target}#{subject_id}", subject=subject_id, why=why)
     plan.replace_subject(ref, None)
     expected = [line for line in body_lines(text) if not line.lstrip().startswith("# ")]
@@ -728,6 +746,7 @@ def admit(plan: Plan, entry_id: str) -> str:
     plan.update(page_path, parts.render(plan))
     plan.record_provenance(page_path, f"Entry `{entry_id}` moved out to its own leaf `{leaf}`", why)
     plan.log("admit", f"{page_path}#{entry_id}", leaf, subject=entry_id, why=why)
+    plan.map(f"{page_path}#{entry_id}", leaf)
     plan.hints[leaf] = entry.name
     expected = [line for line in material if EntryLine.match(line.strip()) is None
                 and not line.strip().startswith(("- standing:", "- kind:"))]
@@ -849,3 +868,137 @@ def _register_lint() -> None:
 
 
 _register_lint()
+
+
+# ═══════════════════════════════ entry sources ═══════════════════════════════
+# A current-state line that states one entry of a collection page cites `<page>#<id>` and is dated by that
+# entry's own lines; a bare collection page stands for the page as a whole, whose date follows every entry.
+# `cite_entries` is the one-time upkeep that gives each line citing a bare collection page the entries its
+# statement names.
+
+CITE_REASON: Final[str] = "entry-sources"
+_LETTER_RE: Final = re.compile(r"[^\W\d_]")
+
+
+def entry_names(entry: registry.CollectionEntry) -> list[str]:
+    """An entry's names in the registry's compared form: its name, the name in another script its heading
+    gives, its aliases and its id's words; a starred alias (a person's number), a name with no letter and a
+    name shorter than the registry's shortest contained name are left out."""
+    found = []
+    for name in (entry.name, entry.other_name or "", *entry.aliases, entry.id.replace("-", " ")):
+        key = registry.normalize_name(name)
+        if len(key) >= registry.MIN_CONTAINED_NAME and "*" not in key and _LETTER_RE.search(key):
+            found.append(key)
+    return list(dict.fromkeys(found))
+
+
+def named_entries(statement: str, entries: Iterable[registry.CollectionEntry]) -> list[str]:
+    """The ids of the entries a statement names by any of their names, in page order: a name counts where it
+    stands as a whole word of the statement (no letter, digit or underscore right before or after it)."""
+    text = registry.normalize_name(statement)
+    found = []
+    for entry in entries:
+        if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text) for name in entry_names(entry)):
+            found.append(entry.id)
+    return found
+
+
+def cite_line(line: str, view: Any) -> tuple[str, dict[str, Any]]:
+    """One current-state line with each bare collection-page source its statement names entries of replaced by
+    those entries' addresses, and its `as of` brought back to the latest evidence of what it now cites when it
+    is later. Only the tag changes. ``outcome`` is ``one``, ``several``, ``none`` or None (no bare
+    collection-page source); ``stale_left`` says the line stays dated before what it cites."""
+    info: dict[str, Any] = {"outcome": None, "rewritten": 0, "date_corrected": False, "stale_left": False}
+    state = CurrentStateLine.match(line.strip())
+    if state is None:
+        return line, info
+    cited: list[str] = []
+    outcomes: list[str] = []
+    for source in state.sources:
+        page = source.strip()
+        if "#" in page or layout.page_role(page) is not layout.PageRole.COLLECTION_PAGE or not view.exists(page):
+            cited.append(source)
+            continue
+        entries, _problems = registry.parse_collection_page(view.text(page))
+        ids = named_entries(state.statement, entries)
+        outcomes.append("several" if len(ids) > 1 else "one" if ids else "none")
+        if not ids:
+            cited.append(source)
+            continue
+        cited.extend(f"{page}#{entry_id}" for entry_id in ids)
+        info["rewritten"] += 1
+    if outcomes:
+        info["outcome"] = "several" if "several" in outcomes else "one" if "one" in outcomes else "none"
+    if not info["rewritten"]:
+        return line, info
+    cited = list(dict.fromkeys(cited))
+    as_of = state.date
+    dated = [view.source_state(source) for source in cited]
+    if all(status == "page" and day is not None for status, day in dated):
+        latest = max(day for _status, day in dated).isoformat()
+        if as_of > latest:
+            as_of, info["date_corrected"] = latest, True
+        elif as_of < latest:
+            info["stale_left"] = True
+    new = replace(state, date=as_of, source=cited[0], more=tuple(cited[1:]))
+    start = line.rindex(state.tag())
+    return line[:start] + new.tag() + line[start + len(state.tag()):], info
+
+
+def cite_entries(
+    root: str | os.PathLike[str],
+    *,
+    dry_run: bool = False,
+    lock: LockToken | str | None = None,
+) -> dict[str, Any]:
+    """Run ``cite_line`` over every current-state line of the tree pages and boards.
+
+    Without ``dry_run`` each changed page is archived first as it is (reason ``entry-sources``), the copy is
+    read back and must hold the page's bytes, and the page is then written whole. No record line is written:
+    a corrected tag changes no statement. A second run changes nothing.
+    """
+    from . import archive as forest_archive
+    from . import lint
+    from .locking import atomic_write, writer_lock
+    from .view import ForestView
+
+    view = ForestView.open(root)
+    report: dict[str, Any] = {"lines": 0, "lines_with_collection_source": 0, "outcomes": {"one": 0, "several": 0,
+                              "none": 0}, "references_rewritten": 0, "dates_corrected": 0, "lines_left_stale": 0,
+                              "pages": [], "written": False, "archived": []}
+    edits: dict[str, dict[int, str]] = {}
+    for path, number, line in lint.current_state_lines(view):
+        report["lines"] += 1
+        new, info = cite_line(line, view)
+        if info["outcome"] is None:
+            continue
+        report["lines_with_collection_source"] += 1
+        report["outcomes"][info["outcome"]] += 1
+        report["references_rewritten"] += info["rewritten"]
+        report["dates_corrected"] += info["date_corrected"]
+        report["lines_left_stale"] += info["stale_left"]
+        if new != line:
+            edits.setdefault(path, {})[number] = new
+    report["pages"] = sorted(edits)
+    if dry_run or not edits:
+        return report
+    with writer_lock(view.root, token=lock, label="collections cite-entries") as held:
+        for path in sorted(edits):
+            target = layout.resolve(view.root, path, must_exist=True)
+            data = target.read_bytes()
+            if data.decode("utf-8", "surrogateescape") != view.text(path):
+                refuse("page_changed_meanwhile", "A page changed while the pass read it; nothing of it written.",
+                       path=path)
+            lines = data.decode("utf-8", "surrogateescape").splitlines(keepends=True)
+            for number, new in edits[path].items():
+                bare, ending = split_line_ending(lines[number - 1])
+                if CurrentStateLine.match(bare.strip()) is None:
+                    refuse("cite_line_moved", "A current-state line is not where the pass read it.", path=path)
+                lines[number - 1] = new + ending
+            entry = forest_archive.put(view.root, path, reason=CITE_REASON, keep=True, lock=held)
+            if forest_archive.read_copy(view.root, entry) != data or target.read_bytes() != data:
+                refuse("archive_copy_mismatch", "The archive copy does not hold the page; not written.", path=path)
+            atomic_write(target, "".join(lines).encode("utf-8", "surrogateescape"))
+            report["archived"].append(entry.archive_path)
+    report["written"] = True
+    return report

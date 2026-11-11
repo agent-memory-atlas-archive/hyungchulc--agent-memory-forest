@@ -316,12 +316,28 @@ def script_of(text: str) -> str | None:
 
 
 def _mapped(path: str, mapping: Mapping[str, str]) -> str | None:
-    value = path.strip()
+    """Where a reference to ``path`` points after the moves of ``mapping``, or None when nothing moved it.
+
+    An address ``<page>#<id>`` follows its own mapping (an entry cut, moved, admitted), else its page's; an
+    address reached that the same plan moves again (an entry demoted onto a page that is then cut) follows on.
+    """
+    found = _mapped_once(path.strip(), mapping)
+    seen: set[str] = set()
+    while found is not None and "#" in found and found in mapping and found not in seen:
+        seen.add(found)
+        found = mapping[found]
+    return found
+
+
+def _mapped_once(value: str, mapping: Mapping[str, str]) -> str | None:
     if value in mapping:
         return mapping[value]
+    page, mark, anchor = value.partition("#")
+    if mark and page in mapping:
+        return f"{mapping[page].partition('#')[0]}#{anchor}"
     best: tuple[int, str] | None = None
     for old, new in mapping.items():
-        if old.endswith(".md"):
+        if old.endswith(".md") or "#" in old:
             continue
         folder = old.rstrip("/")
         if value.startswith(folder + "/") and (best is None or len(folder) > best[0]):

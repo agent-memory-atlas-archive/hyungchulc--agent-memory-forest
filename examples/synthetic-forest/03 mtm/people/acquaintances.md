@@ -9,6 +9,7 @@ from the second day a person has a leaf here.
 
 - Odile Brask: met at the Thursday market (2042-04-17); plans a shared stall with Juno for the summer fair (as of 2042-05-14; source `04 stm/people/acquaintances/odile-brask.md`)
 - Seen once: Pell Arrowsmith at the Thursday market (2042-04-17), Idris Mallow delivering clay (2042-05-13), Wren Castellane asking about a commission (2042-05-14) (as of 2042-05-14; source `04 stm/people/acquaintances/seen-once-2042-q2.md`)
+- Wren Castellane: waits to see deep blue glaze samples before ordering six dinner plates (as of 2042-05-14; source `04 stm/people/acquaintances/seen-once-2042-q2.md#wren-castellane`)
 
 ## Leaves
 

@@ -348,13 +348,6 @@ def current_state_lines(forest: ForestView) -> list[tuple[str, int, str]]:
     return found
 
 
-def _source_date(forest: ForestView, source: str) -> tuple[bool, date | None]:
-    target = source.partition("#")[0].strip()
-    if not layout.is_forest_path(target) or not forest.exists(target) or not target.endswith(".md"):
-        return False, None
-    return True, updated_date(forest.page(target))
-
-
 def current_state_untagged(forest: ForestView) -> list[Hit]:
     return [
         _hit("current_state_untagged", path, number, "no `(as of YYYY-MM-DD; source `path`)`")
@@ -364,17 +357,26 @@ def current_state_untagged(forest: ForestView) -> list[Hit]:
 
 
 def current_state_stale(forest: ForestView) -> list[Hit]:
+    """A current-state line whose source changed after its `as of`, or is gone, or is an entry moved elsewhere.
+
+    An entry source (`<collection page>#<id>`) is dated by that entry's own lines, so another entry's later
+    line leaves the line fresh; an entry the move log sends elsewhere is reported with its place now, so the
+    line is restated or its source corrected."""
     found = []
     for path, number, line in current_state_lines(forest):
         state = CurrentStateLine.match(line.strip())
         if state is None:
             continue
-        there, updated = _source_date(forest, state.source)
-        if not there:
-            found.append(_hit("current_state_stale", path, number, f"the source `{state.source}` is not there"))
-        elif updated is not None and updated.isoformat() > state.date:
-            found.append(_hit("current_state_stale", path, number,
-                              f"the source changed {updated.isoformat()}, after {state.date}"))
+        for source in state.sources:
+            status, updated = forest.source_state(source)
+            if status == "gone":
+                found.append(_hit("current_state_stale", path, number, f"the source `{source}` is not there"))
+            elif status == "moved":
+                found.append(_hit("current_state_stale", path, number,
+                                  f"the source `{source}` moved to `{forest.moved_to(source)}`"))
+            elif updated is not None and updated.isoformat() > state.date:
+                found.append(_hit("current_state_stale", path, number,
+                                  f"the source `{source}` changed {updated.isoformat()}, after {state.date}"))
     return found
 
 
@@ -527,10 +529,13 @@ def current_state_date_ahead(forest: ForestView) -> list[Hit]:
         state = CurrentStateLine.match(line.strip())
         if state is None:
             continue
-        there, updated = _source_date(forest, state.source)
-        if there and updated is not None and state.date > updated.isoformat():
+        dated = [forest.source_state(source) for source in state.sources]
+        if not dated or any(status != "page" or updated is None for status, updated in dated):
+            continue
+        latest = max(updated for _status, updated in dated if updated is not None).isoformat()
+        if state.date > latest:
             found.append(_hit("current_state_date_ahead", path, number,
-                              f"as of {state.date}, after the source's `updated_at` {updated.isoformat()}"))
+                              f"as of {state.date}, after the latest evidence of its source {latest}"))
     return found
 
 

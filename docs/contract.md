@@ -734,6 +734,16 @@ When the owner says that something is not to be remembered:
      changes it.
   3. A line is **stale** when its source leaf has changed since that date (its `updated_at` is later) or
      is gone. The upkeep run re-checks stale lines.
+  4. **A line about one entry of a collection page cites the entry**: `<collection page>#<entry id>`. A
+     collection page's `updated_at` follows the latest evidence of any of its entries, so a line that states
+     one entry but cites the whole page would read as stale whenever another entry gains a line or is moved
+     onto the page. An entry source is dated by that entry's own Timeline lines (by its page when it has
+     none; the lines under its own `### Update record` only say when a tool folded, cut or moved it and do
+     not count). A bare collection page means the page as a whole. A line that states several entries cites
+     each, `` (as of YYYY-MM-DD; sources `<a>`, `<b>`) ``, and is dated by the latest of them.
+  5. An entry source whose entry has left its page is stale either way: when the move log sends it to a
+     place where it stands now, the lint names that place, and the line is restated or its source corrected;
+     when it stands nowhere, it is gone.
 - Pages above the leaves carry no dated headings, run ids or validation counts.
 
 ### What goes up
@@ -821,7 +831,7 @@ owner someone who likes that sport.
 | `registry_line_invalid`, `registry_duplicate_id`, `registry_duplicate_alias`, `registry_home_missing` | a registry line out of shape, an id or alias used twice, a home that is not there |
 | `registry_entry_is_subject` | a collection entry's name that a subject also holds |
 | `board_leaves_stale`, `branch_list_stale` | a `## Leaves` or `## Branches` list that misses or names a page |
-| `current_state_untagged`, `current_state_stale` | a current-state line without its date and source, or with a source changed since |
+| `current_state_untagged`, `current_state_stale` | a current-state line without its date and source, or with a source changed since, gone, or (an entry source) moved to another place (section 5) |
 | `reference_stale` | a code-span path to a forest page or folder that is not there and is not marked `` (archived)`` |
 | `account_number_in_full` | an account, IBAN, card, identity or person's phone number written in full (section 4) |
 
@@ -903,15 +913,27 @@ below may still change while the code is ported; the design's milestones say whe
      version does not know, stops the next writer before it writes anything.
   `forest move resolve <old path>` follows the log through every operation to the present place, or to
   the archive entry and the leaf it was folded into, so evaluations and archives that hold old paths still
-  find the page.
+  find the page. An entry address `<page>#<id>` is followed the same way through every operation that can
+  carry an entry: a cut of its page, a move of its category to another place, an admission into a leaf of
+  its own and that leaf's later moves and merges, and a demotion back into a collection; it is current only
+  while the page reached holds the entry. Each operation that moves an entry rewrites, in the same
+  all-or-nothing write, every source and path that cited its old address, and a demotion makes a line that
+  cited the leaf cite the entry.
 - **`forest levels check | apply [--subjects ID …]`** computes every subject's level from the pages
   (section 3). `check` lists each `level_due`; `apply` carries each one out (an admission through the
   collections tool, a promotion through the move tool) and logs it. It lowers no level by count; a forest
   migration may need one explicit pass that does, and that pass says so in its log.
-- **`forest collections demote | admit | recut | list`** keeps the collection pages: `demote` folds a leaf
-  subject into its category's collection, `admit` moves an entry out into a leaf of its own, `recut` cuts
-  a page past the cap by its entries' first days, and `list` names every page with its entries and their
-  days. Each logs its moves, so `resolve` follows an entry to its page and back out.
+- **`forest collections demote | admit | recut | list | cite-entries`** keeps the collection pages: `demote`
+  folds a leaf subject into its category's collection, `admit` moves an entry out into a leaf of its own,
+  `recut` cuts a page past the cap by its entries' first days, and `list` names every page with its entries
+  and their days. Each logs its moves, so `resolve` follows an entry to its page and back out.
+  `cite-entries [--dry-run]` is a one-time upkeep for forests written before entry sources (section 5):
+  each current-state line that cites a bare collection page cites instead the entries its statement names,
+  by the registry's name comparison (section 2); a line that names none keeps the page. When the line's
+  `as of` is later than the latest evidence of what it now cites, the date comes back to that evidence; an
+  earlier date stays, and the lint reports the line as stale. Each changed page is archived first and its
+  copy proven to hold the page's bytes; only the bytes inside the tag change, no record line is written (a
+  corrected source changes no statement), and a second run changes nothing.
 - **`forest record size | kinds | trim | history`** and **`forest archive put | show | list | check`** keep
   the update records and the archive (section 4); `record history` prints a page's moved record lines,
   oldest first, and `archive list` names each row's kind, a whole-page copy or a record history block.

@@ -15,8 +15,8 @@ the tree until the version 1 commands replace it.
 - the `forest` command (milestone 1): `init`; `registry build | check | show`; `move` with `leaf`,
   `rename`, `promote`, `merge`, `archive`, `move-branch`, `new-tree`, `new-agent`, `retire-tree`,
   `fold-tree`, `set-type`, `set`, `recut-stream`, `plan` and `resolve`; `levels check | apply`;
-  `collections demote | admit | recut | list`; `record size | kinds | trim | history`; `archive put | show |
-  list | check`; `numbers check | star`; `check`; `lint`; `recover`
+  `collections demote | admit | recut | list | cite-entries`; `record size | kinds | trim | history`;
+  `archive put | show | list | check`; `numbers check | star`; `check`; `lint`; `recover`
 - `forest check [NAME …] [--sync]` is the one check command: the journal, the structure, the derived
   lists, the pointers, the agents, the levels and the categories, one line per problem
 - the lint registers `board_leaves_stale`, `branch_list_stale`, `board_pointers_stale`,
@@ -36,6 +36,13 @@ the tree until the version 1 commands replace it.
 - trimmed record lines go to one append-only record history file per page, with one pointer line for
   life; `forest record history` prints them, `forest archive list` shows each block with its kind, and
   `forest archive check` verifies copies and blocks against the manifest
+- a current-state line about one collection entry cites `<page>#<entry id>` and is dated by that
+  entry's own Timeline lines; a line about several cites each (``sources `<a>`, `<b>` ``). The lint reports an
+  entry source that moved with its place now, and one found nowhere as gone. `move resolve` follows an
+  entry address through cuts, category moves, admissions, the admitted leaf's later moves and merges and a
+  demotion; every operation that moves an entry rewrites the sources that cited it, in the same write.
+  `forest collections cite-entries [--dry-run]` gives the lines of an older forest their entry sources
+  once, archiving each page first and changing only the tags
 - `forest move set-type` and `forest move set` write change lines; `retire-tree`, `fold-tree` and
   `recut-stream` write provenance lines
 - a record trim killed inside its append leaves a torn tail that the next trim cuts off before appending

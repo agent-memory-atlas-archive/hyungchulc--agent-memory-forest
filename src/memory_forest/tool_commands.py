@@ -128,6 +128,22 @@ def _collections(action: str):
     return command
 
 
+def cmd_collections_cite_entries(arguments: argparse.Namespace) -> int:
+    result = forest_collections.cite_entries(forest_root(arguments), dry_run=arguments.dry_run,
+                                             lock=arguments.lock_token)
+    if arguments.json or arguments.dry_run:
+        _print_json({"ok": True, **result})
+        return 0
+    outcomes = result["outcomes"]
+    lines = [f"{result['lines_with_collection_source']} of {result['lines']} current-state lines cite a collection "
+             f"page: {outcomes['one']} name one entry, {outcomes['several']} several, {outcomes['none']} none",
+             f"{result['references_rewritten']} sources now cite entries; {result['dates_corrected']} dates brought "
+             f"back; {result['lines_left_stale']} lines left stale"]
+    lines += [f"  changed: {path}" for path in result["pages"]]
+    _print_lines(lines)
+    return 0
+
+
 def cmd_collections_list(arguments: argparse.Namespace) -> int:
     found = forest_collections.pages(forest_root(arguments))
     if arguments.json:
@@ -203,6 +219,9 @@ TOOL_COMMANDS: list[ForestCommand] = [
                   (arg("target", metavar="entry"), *_WRITING)),
     ForestCommand(("collections", "recut"), _collections("recut"), "Cut a collection page past the cap.",
                   (arg("target", metavar="page"), *_WRITING)),
+    ForestCommand(("collections", "cite-entries"), cmd_collections_cite_entries, "Make each current-state line that "
+                  "cites a bare collection page cite the entries it names, archiving each page first.",
+                  (_DRY, _LOCK)),
     ForestCommand(("collections", "list"), cmd_collections_list, "List every collection page with its entries."),
     ForestCommand(("repeats", "plan"), cmd_repeats_plan, "Print what `repeats apply` would take out, move, fold and "
                   "judge, with the lines still waiting for a reading; write nothing.", (_DECISIONS, _WHY)),

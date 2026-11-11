@@ -201,13 +201,45 @@ def _next_step(records: list[MoveRecord], start: int, current: str) -> tuple[int
     return None
 
 
-def _exists(root: Any, path: str) -> bool:
-    page = path.partition("#")[0]
+def _page_file(root: Any, page: str) -> Any:
     try:
-        target = layout.resolve(root, page)
+        return layout.resolve(root, page)
     except MemoryForestError:
+        return None
+
+
+def _exists(root: Any, path: str) -> bool:
+    """Whether a page, a folder or an address is there: for ``<page>#<id>`` the page must hold the id in a
+    code span (a collection entry's line, a registry line)."""
+    page, mark, anchor = path.partition("#")
+    target = _page_file(root, page)
+    if target is None or not target.exists():
         return False
-    return target.exists()
+    if not mark or not anchor:
+        return True
+    if not target.is_file():
+        return False
+    with open(target, "r", encoding="utf-8", errors="surrogateescape") as handle:
+        return f"`{anchor}`" in handle.read()
+
+
+def _entry_in_folder(root: Any, address: str) -> str | None:
+    """An entry no record sends on and not on the page reached: the address on another collection page of the
+    same folder that holds it, if exactly one does."""
+    page, _mark, anchor = address.partition("#")
+    if layout.page_role(page) is not layout.PageRole.COLLECTION_PAGE:
+        return None
+    folder = page.rsplit("/", 1)[0]
+    target = _page_file(root, folder)
+    if target is None or not target.is_dir():
+        return None
+    found = []
+    for item in sorted(target.iterdir()):
+        sibling = f"{folder}/{item.name}"
+        if item.is_file() and sibling != page and layout.page_role(sibling) is layout.PageRole.COLLECTION_PAGE:
+            if _exists(root, f"{sibling}#{anchor}"):
+                found.append(f"{sibling}#{anchor}")
+    return found[0] if len(found) == 1 else None
 
 
 def resolve(root: str | os.PathLike[str], old_path: str) -> Resolution:
@@ -255,6 +287,12 @@ def _resolve(safe_root: Any, query: str, *, depth: int) -> Resolution:
         if result.chain and _exists(safe_root, query):
             result.note = f"a page exists at {query} again"
         return result
+    if not archived and "#" in current:
+        sibling = _entry_in_folder(safe_root, current)
+        if sibling is not None:
+            result.status, result.path = "current", sibling
+            result.note = "the entry stands on another collection page of its folder"
+            return result
     archived_page = current.partition("#")[0]
     entry = archive.latest(safe_root, archived_page)
     if entry is not None or archived:

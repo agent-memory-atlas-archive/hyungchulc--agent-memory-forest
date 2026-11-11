@@ -1221,25 +1221,36 @@ class ReferenceLine:
 
 
 _STATE_RE: Final[re.Pattern[str]] = re.compile(
-    r"- (?P<statement>.+) \(as of (?P<date>" + _DATE + r"); source `(?P<source>[^`]+)`\)(?P<stop>\.?)"
+    r"- (?P<statement>.+) \(as of (?P<date>" + _DATE + r"); (?P<word>sources?) "
+    r"(?P<sources>`[^`]+`(?:, `[^`]+`)*)\)(?P<stop>\.?)"
 )
+_STATE_SOURCE_RE: Final[re.Pattern[str]] = re.compile(r"`([^`]+)`")
 
 
 @dataclass(slots=True)
 class CurrentStateLine:
-    """``- <statement> (as of YYYY-MM-DD; source `<path>`)`` (contract, section 5)."""
+    """``- <statement> (as of YYYY-MM-DD; source `<path>`)`` (contract, section 5).
+
+    A source is a page, or ``<collection page>#<entry id>`` for a line that states one entry of a
+    collection page. A line that states several entries names each, ``sources `<a>`, `<b>```:
+    ``source`` is the first and ``more`` holds the rest.
+    """
 
     statement: str
     date: str
     source: str
     full_stop: bool = False
+    more: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, line: str) -> CurrentStateLine:
         match = _STATE_RE.fullmatch(_bare(line))
         if match is None:
             raise LineShapeError("not a current-state line (- <statement> (as of YYYY-MM-DD; source `<path>`))")
-        return cls(match["statement"], match["date"], match["source"], bool(match["stop"]))
+        sources = _STATE_SOURCE_RE.findall(match["sources"])
+        if (match["word"] == "source") != (len(sources) == 1):
+            raise LineShapeError("one source is written `source`, several are written `sources`")
+        return cls(match["statement"], match["date"], sources[0], bool(match["stop"]), tuple(sources[1:]))
 
     @classmethod
     def match(cls, line: str) -> CurrentStateLine | None:
@@ -1248,6 +1259,14 @@ class CurrentStateLine:
         except LineShapeError:
             return None
 
+    @property
+    def sources(self) -> tuple[str, ...]:
+        return (self.source, *self.more)
+
+    def tag(self) -> str:
+        """The closing ``(as of …; source …)`` of the line, its full stop aside."""
+        word = "sources" if self.more else "source"
+        return f"(as of {self.date}; {word} " + ", ".join(f"`{item}`" for item in self.sources) + ")"
+
     def render(self) -> str:
-        stop = "." if self.full_stop else ""
-        return f"- {self.statement} (as of {self.date}; source `{self.source}`){stop}"
+        return f"- {self.statement} {self.tag()}" + ("." if self.full_stop else "")

@@ -91,6 +91,9 @@ class ForestView:
     config: Config
     _texts: dict[str, str] = field(default_factory=dict)
     _pages: dict[str, Page] = field(default_factory=dict)
+    _entry_dates: dict[str, dict[str, str | None]] = field(default_factory=dict)
+    _sources: dict[str, tuple[str, date | None]] = field(default_factory=dict)
+    _moved: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def open(cls, root: str | os.PathLike[str], *, config: Config | None = None) -> ForestView:
@@ -122,6 +125,53 @@ class ForestView:
         if path not in self._pages:
             self._pages[path] = parse_page(self.text(path))
         return self._pages[path]
+
+    def entry_dates(self, path: str) -> dict[str, str | None]:
+        """Each entry's latest evidence day on a collection page (``collections.entry_dates``), parsed once."""
+        if path not in self._entry_dates:
+            from .collections import entry_dates
+
+            self._entry_dates[path] = entry_dates(self.text(path))
+        return self._entry_dates[path]
+
+    def source_state(self, source: str) -> tuple[str, date | None]:
+        """What a current-state source names, read once per view: ``("page", its date)`` for a page or an entry
+        of a collection page that is there, ``("gone", None)``, or ``("moved", None)`` with the place now in
+        ``moved_to``.
+
+        A page is dated by its ``updated_at``. An entry, ``<collection page>#<id>``, is dated by its own
+        Timeline lines, or by its page when it has none. An entry that is not on its page is followed through
+        the move log: one that stands somewhere now is moved, one that stands nowhere is gone. A ``#`` after a
+        page that is no collection page names the page.
+        """
+        if source not in self._sources:
+            self._sources[source] = self._source_state(source.strip())
+        return self._sources[source]
+
+    def moved_to(self, source: str) -> str | None:
+        """Where a moved entry source stands now (after ``source_state`` called it moved)."""
+        return self._moved.get(source.strip())
+
+    def _source_state(self, source: str) -> tuple[str, date | None]:
+        page_path, mark, entry_id = source.partition("#")
+        page_path, entry_id = page_path.strip(), entry_id.strip()
+        if not layout.is_forest_path(page_path) or not page_path.endswith(".md") or not self.exists(page_path):
+            there = False
+        else:
+            there = layout.resolve(self.root, page_path).is_file()
+        page_date = updated_date(self.page(page_path)) if there else None
+        if not mark or not entry_id or layout.page_role(page_path) is not layout.PageRole.COLLECTION_PAGE:
+            return ("page", page_date) if there else ("gone", None)
+        if there and entry_id in self.entry_dates(page_path):
+            day = self.entry_dates(page_path)[entry_id]
+            return "page", date.fromisoformat(day) if day else page_date
+        from . import movelog
+
+        found = movelog.resolve(self.root, f"{page_path}#{entry_id}")
+        if found.status == "current" and found.path and found.path != f"{page_path}#{entry_id}":
+            self._moved[source] = found.path
+            return "moved", None
+        return "gone", None
 
     def role(self, path: str) -> layout.PageRole:
         return layout.classify(path).role

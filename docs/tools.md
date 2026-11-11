@@ -191,16 +191,31 @@ forest levels apply --subjects tamsin-orrow
 | `collections admit <entry>` | moves a collection entry out into a leaf of its own and registers it |
 | `collections recut <page>` | cuts a collection page past the cap by its entries' first days |
 | `collections list` | names every collection page with its entries and their counted days |
+| `collections cite-entries [--dry-run]` | once, for a forest written before entry sources: makes each current-state line that cites a bare collection page cite the entries it names |
 
 A collection page holds one category's entries for one period (`seen-once-2051-q1.md`). An entry's address
 is `<page>#<entry id>`; each command logs it, so `move resolve` follows an entry onto a page, across a
-recut and out into its leaf.
+recut and out into its leaf, and rewrites every current-state source and path that cited the old address.
+
+A current-state line about one entry cites that entry, so that another entry's news does not make it read
+as stale (contract, section 5):
+
+```text
+- Tamsin Orrow wants rye on Fridays (as of 2051-03-02; source `04 stm/people/regulars/seen-once-2051-q1.md#tamsin-orrow`)
+```
+
+`cite-entries` finds the entries a line names by their names, the name in another script and their
+aliases, compared as the registry compares names; a line that names none keeps the bare page. It brings
+an `as of` that is later than the cited entries' evidence back to that evidence and leaves an earlier one
+for the lint to report. Each changed page is archived first; only the tag changes and no record line is
+written. With `--dry-run` it prints the counts and writes nothing; a second run changes nothing.
 
 ```sh
 forest collections demote bram-eskell
 forest collections admit tamsin-orrow
 forest collections recut "04 stm/people/regulars/seen-once-2051-q1.md"
 forest collections list
+forest collections cite-entries --dry-run
 # 04 stm/people/regulars/seen-once-2051-q1.md (647 B, regulars-seen-once)
 #   tamsin-orrow — Tamsin Orrow: 2051-03-02, 2051-03-04
 #   bram-eskell — Bram Eskell: no counted day
