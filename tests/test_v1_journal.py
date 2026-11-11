@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -152,3 +153,30 @@ class JournalTests(MoveTestCase):
             with writer_lock(root):
                 pass
         self.assertTrue(journal.journal_path(root).is_file())
+
+    def test_a_journal_of_an_unknown_schema_stops_the_next_writer_before_any_write(self) -> None:
+        root = self.forest_with_history()
+        path = journal.journal_path(root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"schema": "memory-forest-journal/99", "pages": {}}', encoding="ascii")
+        before = files(root)
+        with self.assertRaises(MemoryForestError) as caught:
+            move.execute(root, "promote", subject="millstone-flour", today=TODAY)
+        self.assertEqual(caught.exception.code, "journal_invalid")
+        self.assertEqual(files(root), before)
+        self.assertTrue(path.is_file())
+
+    def test_a_copied_forest_with_a_standing_journal_rolls_back_only_itself(self) -> None:
+        root = self.forest_with_history()
+        before = files(root)
+        self.kill_at(root, "move-log")
+        half = files(root)
+        copy = root.with_name("copy")
+        shutil.copytree(root, copy)
+        with contextlib.redirect_stderr(io.StringIO()), writer_lock(copy, label="the copy's writer"):
+            pass
+        self.assertFalse(journal.journal_path(copy).exists())
+        self.assertEqual(files(copy), before)
+        self.assertTrue(journal.journal_path(root).is_file())  # the original keeps its journal and its pages
+        self.assertEqual(files(root), half)
+

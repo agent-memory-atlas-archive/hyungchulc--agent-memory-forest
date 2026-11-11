@@ -896,7 +896,9 @@ below may still change while the code is ported; the design's milestones say whe
      of every page's text before and the move log's length, and removes it only once the pages and the
      move-log lines are written. A journal still standing is rolled back by the next writer to take the
      writer lock, or by `forest recover`, and until then `forest check` reports it
-     (`commit_journal_standing`).
+     (`commit_journal_standing`). The journal names pages by their forest paths, so a forest copied with
+     a standing journal rolls back only the copy; a journal that cannot be read, or of a schema the
+     version does not know, stops the next writer before it writes anything.
   `forest move resolve <old path>` follows the log through every operation to the present place, or to
   the archive entry and the leaf it was folded into, so evaluations and archives that hold old paths still
   find the page.
