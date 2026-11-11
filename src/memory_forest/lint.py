@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 from . import audit as forest_audit
+from . import credentials as forest_credentials
 from . import layout
 from . import movelog
 from . import numbers as forest_numbers
@@ -416,6 +417,15 @@ def account_number_in_full(forest: ForestView) -> list[Hit]:
     return found
 
 
+def credential_in_full(forest: ForestView) -> list[Hit]:
+    """A line that holds a value sent to sign in or to pay (contract, section 4): the line, never the value."""
+    found = []
+    for path in forest.paths:
+        for number in forest_credentials.changed_lines(forest.text(path), config=forest.config):
+            found.append(_hit("credential_in_full", path, number, "a sign-in value stands in full"))
+    return found
+
+
 # ─────────────────────────────── upkeep ───────────────────────────────
 
 
@@ -644,6 +654,8 @@ _TABLE: Final[tuple[LintCode, ...]] = (
              "` (archived)`", reference_stale, False),
     LintCode("account_number_in_full", VIOLATION, "an account, IBAN, card, identity or person's phone number is "
              "written starred (`forest numbers star`)", account_number_in_full, False),
+    LintCode("credential_in_full", VIOLATION, "a value sent to sign in or to pay stands as `[REDACTED]` "
+             "(`forest credentials fix`)", credential_in_full, False),
     # Upkeep.
     LintCode("leaf_over_cap", UPKEEP, "a leaf's content stays within `limits.leaf_cap_bytes`; split it by sub-topic",
              leaf_over_cap, False, sized=True),

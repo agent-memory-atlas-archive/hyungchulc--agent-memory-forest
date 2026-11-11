@@ -1,8 +1,8 @@
 # Structure tools
 
 The commands that keep a forest in order: `forest move …`, `forest levels …` and `forest collections …`
-change where things live; `forest check`, `forest lint`, `forest record …` and `forest numbers …` check
-the pages and keep their records and numbers. Each example below runs on an invented forest of a bakery
+change where things live; `forest check`, `forest lint`, `forest record …`, `forest numbers …` and
+`forest credentials …` check the pages and keep their records, numbers and sign-in values. Each example below runs on an invented forest of a bakery
 owner, Ilse Varrow, with a `bakery` tree, a `people` tree and an agent tree `front-desk`. The rules the
 tools keep are in the [contract](contract.md); the settings they read are in the
 [design](v1-design.md#12-settings).
@@ -353,4 +353,31 @@ forest numbers check --all
 # 1 pages
 forest numbers star "04 stm/bakery/ovens/deck-oven.md"
 # the line now reads: Bram Eskell, who fixes it: +1 5** *** 0199.
+```
+
+## `forest credentials`
+
+A value sent to sign in or to pay is removed rather than starred: the line keeps who sent it, to whom and
+for which account, and `[REDACTED]` in the value's place (contract, section 4, Sign-in values). It is found
+by the word before it, from `credentials.label_words`; a forest that records other languages adds their
+words in `forest.toml`:
+
+```toml
+[credentials]
+label_words = ["password", "passcode", "pin", "one-time code", "door code", "mot de passe", "code porte"]
+joining_words = ["is", "was", "est"]
+```
+
+Every record line a tool writes is masked as it is written, and the tools that show text (`archive show`,
+`record history`, `record kinds --examples`, `registry show`, `search --include-body`) mask what they show.
+`credentials check PATH … | --all` names the pages that hold such a value, by line and never by value, and
+exits 1 when there is one; `credentials fix PATH … | --all [--dry-run]` masks them, keeping a whole-page copy
+in the archive first and writing the page only after that copy reads back as the page's bytes.
+
+```sh
+forest credentials check --all
+# 04 stm/bakery/suppliers/millstone-flour.md: a sign-in value in full (lines 14)
+# 1 pages
+forest credentials fix --all
+# the line now reads: Ilse sent the supplier portal password: [REDACTED].
 ```

@@ -9,7 +9,9 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
+from .config import load_config
 from .core import _read_utf8_file, inspect_forest
+from .credentials import mask
 from .errors import MemoryForestError
 from .locking import maintenance_lock
 from .model import SCHEMA_VERSION, immediate_parent_path
@@ -333,11 +335,15 @@ def _query_index(
             "title": row["title"],
         }
         if include_body:
-            result["body"] = _read_current_indexed_body(
-                root_path,
-                row["path"],
-                row["sha256"],
-                limits=limits,
+            # What is shown masks the sign-in values a page still holds (contract, section 4).
+            result["body"] = mask(
+                _read_current_indexed_body(
+                    root_path,
+                    row["path"],
+                    row["sha256"],
+                    limits=limits,
+                ),
+                config=load_config(root_path),
             )
         results.append(result)
     return {

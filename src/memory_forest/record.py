@@ -27,7 +27,7 @@ from typing import Any, Final
 
 from . import archive as forest_archive
 from . import layout
-from . import numbers as forest_numbers
+from . import credentials as forest_credentials
 from .config import Config, load_config
 from .errors import MemoryForestError
 from .locking import LockToken, atomic_write, writer_lock
@@ -586,7 +586,7 @@ def archived_record_lines(root: str | os.PathLike[str], path: str) -> list[Recor
     history_prefix = f"{layout.ARCHIVE_DIR}/{forest_archive.HISTORY_DIR}/"
 
     def take(line: str) -> None:
-        line = forest_numbers.star_numbers(line, config=settings)[0]  # what is shown is starred
+        line = forest_credentials.shown(line, config=settings)  # what is shown is masked and starred
         record = RecordLine.match(line.strip())
         if record is None or line in on_page or line in seen:
             return

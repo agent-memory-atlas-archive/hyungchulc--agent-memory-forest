@@ -16,6 +16,10 @@ An OAuth or API gateway may supply query-only expansion probes. That gateway own
 
 Memory Forest does not make an attached model local. If a caller opens a memory body and submits it to a model, the provider's account, organization, retention, regional, and privacy controls apply.
 
+## Sign-in values
+
+Version 1 removes a value sent to sign in or to pay (a password, a PIN, a one-time, verification or door code) when a label word names it: every record line a tool writes, the text a model hands the daily writer, and every page, archive copy, record line or search body a tool shows carry `[REDACTED]` in its place, and the lint reports a page line that still holds one. The raw lane `06 istm` and the archive keep the bytes they were given. A code with no label word before it, or a label word in a language the settings do not list, is not recognised; see [Privacy and trust](docs/privacy-and-trust.md).
+
 ## Route-only behavior
 
 `route`, `retrieve`, and default `search` return bounded metadata rather than canonical bodies. `retrieve` reopens only selected files for current-hash verification and discards their bodies. Body access through `search --include-body` is explicit.

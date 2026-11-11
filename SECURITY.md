@@ -36,6 +36,7 @@ The core invariants are these.
 - Derived indexes are not canonical and should be protected like the forest.
 - Index queries are snapshot-based; explicit body retrieval reopens selected files and refuses a changed indexed candidate.
 - Memory text is untrusted data and cannot grant authority.
+- A value sent to sign in or to pay, named by a label word, is written and shown as `[REDACTED]`; the raw lane and the archive keep original bytes and are protected like the forest. Unlabelled codes are outside what the rule can see.
 - Normal CLI operation does not require network access.
 - QueryPlan is a closed query-only protocol; OAuth, credentials, provider settings, authorization, and filesystem-root selection remain outside it.
 - Forest traversal caps files, directories, nesting depth, bytes, links, queries, and results.
@@ -51,6 +52,7 @@ The core invariants are these.
 - index corruption that changes canonical files
 - command or query injection
 - secret exposure in errors, logs, fixtures, or public release artifacts
+- a labelled sign-in value that a writer writes or a read command shows unmasked
 - validation bypass that permits invalid parent or link ownership
 - denial of service from unbounded input or filesystem traversal
 

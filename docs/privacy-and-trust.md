@@ -30,6 +30,17 @@ arrive with milestone 2.
 
 - **Account and identity numbers** are written with their middle starred on every page a stage writes, and
   the tools star them in what they show. The lint reports any written in full (contract, section 4).
+- **Sign-in values** (passwords, PINs, one-time and verification codes, door codes) are never starred but
+  removed: a page keeps that a value was sent, by whom, to whom and for which account, and `[REDACTED]` in
+  its place. The value is recognised by a label word before it (`credentials.label_words`, English by
+  default; add the words of the other languages your forest records). Every record line a tool writes is
+  masked, the daily writer masks the text a model hands it, and the tools mask what they show; the lint
+  reports a page line that still holds one (`credential_in_full`) and `forest credentials fix` masks it
+  after archiving the page. **What is kept:** the raw lane `06 istm` and the archive keep the bytes they
+  were given, so protect them like the forest. **What the rule cannot see:** a code with no label word
+  before it (a bare number in a quoted turn that only a reader can tell is a code), a label word your
+  settings do not list, a value written without a digit and without a colon ("the password is tulip"), a
+  value split across lines, and a value inside an image or an attachment.
 - **"Do not record."** When the owner says something is not to be remembered, the instruction is kept and the
   content is not; lines already filed are taken out, with the earlier version archived (contract,
   section 4).

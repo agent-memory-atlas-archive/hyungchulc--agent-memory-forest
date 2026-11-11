@@ -143,6 +143,27 @@ class NumberSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class CredentialSettings:
+    # Words that name a value sent to sign in or to pay; the value after one is removed from what
+    # the forest writes and shows (contract, section 4, Sign-in values). English by default: a
+    # forest adds the words of its other languages (a word that a particle or an ending joins
+    # without a space is listed in that joined form too).
+    label_words: tuple[str, ...] = (
+        "password", "passcode", "passphrase", "passwd", "pin", "pin code", "pin number", "one-time code",
+        "one-time password", "otp", "verification code", "security code", "confirmation code", "login code",
+        "sign-in code", "access code", "authentication code", "2fa code", "door code", "gate code",
+        "entry code", "alarm code", "cvc", "cvv",
+    )
+    # Words between a label and its value without a colon: "the PIN is 4821".
+    joining_words: tuple[str, ...] = ("is", "was")
+    # Words after a number that make it a count, not a value: "a password of 12 characters".
+    count_words: tuple[str, ...] = (
+        "characters", "chars", "digits", "letters", "symbols", "times", "tries", "attempts", "minutes", "hours",
+        "days", "weeks", "months", "years",
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class LevelSettings:
     leaf_days: int = 2
     branch_days: int = 5
@@ -319,6 +340,7 @@ class Config:
     owner: OwnerSettings = field(default_factory=OwnerSettings)
     limits: LimitSettings = field(default_factory=LimitSettings)
     numbers: NumberSettings = field(default_factory=NumberSettings)
+    credentials: CredentialSettings = field(default_factory=CredentialSettings)
     levels: LevelSettings = field(default_factory=LevelSettings)
     agents: AgentSettings = field(default_factory=AgentSettings)
     embeddings: EmbeddingSettings = field(default_factory=EmbeddingSettings)
@@ -360,6 +382,7 @@ _SECTIONS: Final[dict[str, type]] = {
     "owner": OwnerSettings,
     "limits": LimitSettings,
     "numbers": NumberSettings,
+    "credentials": CredentialSettings,
     "levels": LevelSettings,
     "agents": AgentSettings,
     "embeddings": EmbeddingSettings,
@@ -521,6 +544,12 @@ def _validate(config: Config) -> Config:
                 re.compile(value)
             except re.error as exc:
                 raise _error(f"numbers.{key}", f"{value!r} is not a regular expression: {exc}", source) from exc
+    for key in ("label_words", "joining_words", "count_words"):
+        for value in getattr(config.credentials, key):
+            if not value.strip():
+                raise _error(f"credentials.{key}", "must not hold an empty word", source)
+            if key == "label_words" and value.strip().casefold() == "redacted":
+                raise _error(f"credentials.{key}", f"{value!r} would find the mark that replaces a value", source)
     for value in config.record.quote_marks:
         if len(value) != 2:
             raise _error("record.quote_marks", f"{value!r} is not two characters (an opening and a closing mark)", source)

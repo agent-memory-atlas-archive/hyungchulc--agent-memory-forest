@@ -1,4 +1,4 @@
-"""The ``forest record``, ``forest numbers``, ``forest check`` and ``forest lint`` commands.
+"""The ``forest record``, ``forest numbers``, ``forest credentials``, ``forest check`` and ``forest lint`` commands.
 
 ``cli`` imports this module after its own helpers are defined and adds
 ``COMMANDS`` to its command table. ``forest check`` runs every check of
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 
+from . import credentials as forest_credentials
 from . import lint as forest_lint
 from . import maps as forest_maps
 from . import numbers as forest_numbers
@@ -92,7 +93,7 @@ def cmd_record_kinds(arguments: argparse.Namespace) -> int:
     root = forest_root(arguments)
     report = forest_record.kinds(root, examples=arguments.examples)
     config = load_config(root)
-    report.examples = {label: [(path, number, forest_numbers.star_shown(text, config=config))
+    report.examples = {label: [(path, number, forest_credentials.shown(text, config=config))
                                for path, number, text in items] for label, items in report.examples.items()}
     if arguments.json:
         _print_json({"ok": True, **report.as_dict()})
@@ -165,6 +166,34 @@ def cmd_numbers_star(arguments: argparse.Namespace) -> int:
     return 0
 
 
+# ─────────────────────────────── forest credentials ───────────────────────────────
+
+
+def _print_credentials(found: list[forest_credentials.PageCredentials], *, json_out: bool, extra: dict) -> None:
+    if json_out:
+        _print_json({**extra, "pages": [item.as_dict() for item in found]})
+        return
+    lines = []
+    for item in found:
+        state = f" -> masked, copy {item.archive_path}" if item.written else ""
+        lines.append(f"{item.path}: a sign-in value in full (lines {', '.join(map(str, item.lines))}){state}")
+    lines.append(f"{len(found)} pages")
+    _print_lines(lines)
+
+
+def cmd_credentials_check(arguments: argparse.Namespace) -> int:
+    found = forest_credentials.check(forest_root(arguments), arguments.paths, all_pages=arguments.all)
+    _print_credentials(found, json_out=arguments.json, extra={"ok": not found})
+    return 1 if found else 0
+
+
+def cmd_credentials_fix(arguments: argparse.Namespace) -> int:
+    found = forest_credentials.fix(forest_root(arguments), _pages(arguments), all_pages=arguments.all,
+                                   dry_run=arguments.dry_run, lock=arguments.lock_token)
+    _print_credentials(found, json_out=arguments.json, extra={"dry_run": arguments.dry_run, "ok": True})
+    return 0
+
+
 _LOCK = arg("--lock-token", default=None, help="The writer lock token of a caller that already holds the lock.")
 _PATHS = arg("paths", nargs="*", metavar="PATH", help="forest pages, as pages write them")
 _ALL = arg("--all", action="store_true", help="every page of the four forest layers")
@@ -183,6 +212,10 @@ COMMANDS: list[ForestCommand] = [
                   "kinds, never digits); exit 1 when there is one.", (_PATHS, _ALL)),
     ForestCommand(("numbers", "star"), cmd_numbers_star, "Star the numbers written in full, archiving each page "
                   "first.", (_PATHS, _ALL, _DRY, _LOCK)),
+    ForestCommand(("credentials", "check"), cmd_credentials_check, "List the pages that hold a value sent to sign in "
+                  "or to pay (line numbers, never the value); exit 1 when there is one.", (_PATHS, _ALL)),
+    ForestCommand(("credentials", "fix"), cmd_credentials_fix, "Replace each sign-in value with [REDACTED], archiving "
+                  "each page first.", (_PATHS, _ALL, _DRY, _LOCK)),
     ForestCommand(("check",), cmd_check, "Run every check (or those named): journal, structure, derived lists, pointers, "
                   "agents, levels, categories; one line per problem; exit 1 when there is one. --sync first brings "
                   "the derived lists up to the pages.", _check_arguments()),

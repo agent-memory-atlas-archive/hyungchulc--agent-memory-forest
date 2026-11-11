@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Final, NoReturn, cast
+from typing import BinaryIO, Final, NoReturn, TypeVar, cast
 
 from .core import (
     _load_strict_json,
@@ -196,6 +196,9 @@ class StructuredSweepPlan:
     changes: tuple[StructuredChange, ...]
     dispositions: tuple[StructuredDisposition, ...]
     provenance: StructuredSweepProvenance
+
+
+_PlanT = TypeVar("_PlanT", "DailyPlan", "PromotionPlan", "StructuredSweepPlan")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1445,7 +1448,7 @@ def apply_daily(
     *,
     limits: ForestLimits = DEFAULT_LIMITS,
 ) -> dict[str, object]:
-    plan = validate_daily_plan(plan_value)
+    plan = _masked_plan(validate_daily_plan(plan_value), root)
     canonical_plan = _canonical_json_bytes(plan_value)
     plan_sha256 = hashlib.sha256(canonical_plan).hexdigest()
     block = _render_daily_block(plan)
@@ -1525,7 +1528,7 @@ def promote(
     *,
     limits: ForestLimits = DEFAULT_LIMITS,
 ) -> dict[str, object]:
-    plan = validate_promotion_plan(plan_value)
+    plan = _masked_plan(validate_promotion_plan(plan_value), root)
     canonical_plan = _canonical_json_bytes(plan_value)
     plan_sha256 = hashlib.sha256(canonical_plan).hexdigest()
     with maintenance_lock(root) as root_path:
@@ -1666,7 +1669,7 @@ def apply_structured_sweep(
     *,
     limits: ForestLimits = DEFAULT_LIMITS,
 ) -> dict[str, object]:
-    plan = validate_structured_sweep_plan(plan_value)
+    plan = _masked_plan(validate_structured_sweep_plan(plan_value), root)
     canonical_plan = _canonical_json_bytes(plan_value)
     plan_sha256 = hashlib.sha256(canonical_plan).hexdigest()
     with maintenance_lock(root) as root_path:
@@ -1760,6 +1763,30 @@ def _reserve_receipt_capacity(receipts: Path) -> None:
             "The private receipt store is full; archive receipts before writing.",
             details={"limit": MAX_RECEIPTS},
         )
+
+
+def _masked_plan(plan: _PlanT, root: str | os.PathLike[str]) -> _PlanT:
+    """A validated plan whose text a model supplied (a Daily summary, a promotion's title and content, a
+    Structured body) with every sign-in value replaced by ``[REDACTED]`` (contract, section 4): the writer
+    renders, compares and writes the masked text only, so a replay of the same plan matches what it wrote.
+    The plan's hash binds the plan as it was given."""
+    from dataclasses import replace
+
+    from .config import load_config
+    from .credentials import mask
+
+    config = load_config(root)
+    if isinstance(plan, DailyPlan):
+        entries = tuple(replace(entry, summary=mask(entry.summary, config=config)) for entry in plan.entries)
+        return cast(_PlanT, replace(plan, entries=entries))
+    if isinstance(plan, PromotionPlan):
+        promotions = tuple(replace(item, title=mask(item.title, config=config),
+                                   content=mask(item.content, config=config)) for item in plan.promotions)
+        return cast(_PlanT, replace(plan, promotions=promotions))
+    if isinstance(plan, StructuredSweepPlan):
+        changes = tuple(replace(change, body=mask(change.body, config=config)) for change in plan.changes)
+        return cast(_PlanT, replace(plan, changes=changes))
+    return plan
 
 
 def _execute_write(

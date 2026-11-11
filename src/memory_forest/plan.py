@@ -657,10 +657,11 @@ class Plan:
         self.moves.append(movelog.record(operation, source, target, subject=subject, reason=why))
 
     def record(self, path: str, line: str) -> None:
-        """A record line for ``path``'s ``## Update record``, added when the plan finishes; a number written in
-        full in it (contract, section 4, Account and identity numbers) is starred."""
-        from . import numbers
+        """A record line for ``path``'s ``## Update record``, added when the plan finishes; a sign-in value in it
+        is replaced by ``[REDACTED]`` and a number written in full is starred (contract, section 4)."""
+        from . import credentials, numbers
 
+        line = credentials.mask(line, config=self.config)
         self.records.setdefault(path, []).append(numbers.star_numbers(line, config=self.config)[0])
 
     def star_in_records(self, values: Iterable[str]) -> None:

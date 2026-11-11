@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Final, NoReturn
 
+from .config import load_config
 from .core import (
     MAX_QUERY_PLAN_PROBES,
     _structured_snapshot_sha256,
@@ -19,6 +20,7 @@ from .core import (
     load_retrieval_config,
     structured_forest_snapshot_sha256,
 )
+from .credentials import mask
 from .errors import MemoryForestError
 from .index import (
     INDEX_SCHEMA_VERSION,
@@ -500,6 +502,7 @@ def structured_context_index(
         )
 
     documents: list[dict[str, object]] = []
+    shown_config = load_config(root_path)
     for path in sorted(
         paths,
         key=lambda value: (
@@ -530,7 +533,8 @@ def structured_context_index(
             "route_key": route["route_key"],
             "tree": route["domain"] if layer_name != "xltm" else None,
         }
-        documents.append({**metadata, "route": semantic_route, "body": body})
+        # What is shown masks the sign-in values a page still holds (contract, section 4).
+        documents.append({**metadata, "route": semantic_route, "body": mask(body, config=shown_config)})
 
     canonical_documents = json.dumps(
         documents,

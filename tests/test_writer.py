@@ -607,6 +607,16 @@ class WriterTests(unittest.TestCase):
             1,
         )
 
+    def test_a_sign_in_value_in_model_text_is_masked_and_a_retry_still_matches(self) -> None:
+        daily_plan = self.daily_plan(summary="The courier gave the gate code 4821 for the yard.")
+        first = apply_daily(self.root, daily_plan)
+        second = apply_daily(self.root, daily_plan)
+        self.assertFalse(first["already_applied"])
+        self.assertTrue(second["already_applied"])
+        text = (self.root / "05 daily/2042-04-13.md").read_text(encoding="utf-8")
+        self.assertIn("the gate code [REDACTED] for the yard", text)
+        self.assertNotIn("4821", text)
+
     def test_empty_plans_close_as_noop_receipts(self) -> None:
         daily_plan = self.daily_plan(transaction="1" * 64)
         daily_plan["entries"] = []

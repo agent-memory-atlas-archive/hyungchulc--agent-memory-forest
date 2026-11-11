@@ -232,6 +232,12 @@ identity_words = [...]          # words before an identity shape that make it an
 phone_patterns = []             # regular expressions for national phone forms; the international form
                                 # (+ and 8 to 15 digits) is always recognised
 keep_whole = []                 # regular expressions for a company's or a service's line, kept whole
+[credentials]
+label_words = [...]             # words before a value sent to sign in or to pay: password, passcode, pin,
+                                # one-time code, verification code, security code, door code ... (English);
+                                # add your other languages' words, e.g. ["password", "mot de passe", "code porte"]
+joining_words = ["is", "was"]   # words between a label and its value without a colon ("the PIN is …")
+count_words = [...]             # words after a number that make it a count: characters, digits, times ...
 [subjects]
 types = [...]                   # the subject types (section 4); `agent` and `collection` are always in it
 system_id = ""                  # the id of the system's own subject, when the forest keeps one

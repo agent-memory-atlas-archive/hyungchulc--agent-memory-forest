@@ -16,7 +16,8 @@ the tree until the version 1 commands replace it.
   `rename`, `promote`, `merge`, `archive`, `move-branch`, `new-tree`, `new-agent`, `retire-tree`,
   `fold-tree`, `set-type`, `set`, `recut-stream`, `plan` and `resolve`; `levels check | apply`;
   `collections demote | admit | recut | list | cite-entries`; `record size | kinds | trim | history`;
-  `archive put | show | list | check`; `numbers check | star`; `check`; `lint`; `recover`
+  `archive put | show | list | check`; `numbers check | star`; `credentials check | fix`; `check`; `lint`;
+  `recover`
 - `forest check [NAME …] [--sync]` is the one check command: the journal, the structure, the derived
   lists, the pointers, the agents, the levels and the categories, one line per problem
 - the lint registers `board_leaves_stale`, `branch_list_stale`, `board_pointers_stale`,
@@ -43,6 +44,13 @@ the tree until the version 1 commands replace it.
   demotion; every operation that moves an entry rewrites the sources that cited it, in the same write.
   `forest collections cite-entries [--dry-run]` gives the lines of an older forest their entry sources
   once, archiving each page first and changing only the tags
+- a value sent to sign in or to pay (a password, a PIN, a one-time, verification or door code) after a
+  label word is removed, never starred: record lines the tools write, the text a model hands the 0.3
+  writer, and what `archive show`, `record history`, `record kinds --examples`, `registry show`, `search
+  --include-body` and the structured context show carry `[REDACTED]` in its place. The lint reports
+  `credential_in_full`; `forest credentials check | fix` finds and masks such lines, archiving each page
+  first. New settings: `credentials.label_words` (English by default; a forest adds its other languages),
+  `credentials.joining_words` and `credentials.count_words`
 - the contract states two rules for writing with a model: a line that states what quoted turns say is
   filed only after a second reading of the same turns judged it; a subject is never merged into another on
   what its own material claims, and subjects that would share a name each carry a distinguishing word

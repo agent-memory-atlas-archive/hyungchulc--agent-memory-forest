@@ -694,6 +694,26 @@ When the owner says that something is not to be remembered:
    entries. The archive keeps the bytes it was given, and the raw lane `06 istm` keeps its bytes; a
    page that holds such a number whole is the violation `account_number_in_full` (section 8).
 
+### Sign-in values
+
+1. A value sent to sign in or to pay (a password, a passcode, a PIN, a one-time or verification code, a
+   card's security code, a door or gate code) is never written on a page, not even starred. The page keeps
+   that a value was sent, who sent it, to whom and for which account, and `[REDACTED]` in the value's place:
+   `- 2042-05-13 16:40 America/Halifax — Idris Mallow: gave Juno the yard gate code [REDACTED].`
+2. A value is recognised by the word before it, one of `credentials.label_words` (English words by default;
+   a forest adds the words of its other languages there). After a colon or an equals sign any value counts;
+   without one, a run of 3 to 64 characters that holds a digit and is no date, time, path or mail address,
+   and that no word of `credentials.count_words` follows ("a password of 12 characters" is a rule, not a
+   value).
+3. Every record line a tool writes is masked this way (section 4, What a record line is), the writer of the
+   daily record and the version 0.3 writer mask the text a model hands them, and the tools mask what they
+   show: a page, an archive copy, record lines read back from a history file, example lines, registry
+   entries and search bodies. The archive and the raw lane `06 istm` keep the bytes they were given. A page
+   line that holds such a value is the violation `credential_in_full` (section 8), and `forest credentials
+   fix` masks it, archiving the page first.
+4. A code with no label word before it (a bare number in a quoted turn that only a reader can tell is a
+   sign-in value) is not recognised by this rule.
+
 ## 5. Pages above the leaves
 
 - **The root index** (`01 xltm/XLTM.md`) is an index with three sections:
@@ -843,6 +863,7 @@ owner someone who likes that sport.
 | `current_state_untagged`, `current_state_stale` | a current-state line without its date and source, or with a source changed since, gone, or (an entry source) moved to another place (section 5) |
 | `reference_stale` | a code-span path to a forest page or folder that is not there and is not marked `` (archived)`` |
 | `account_number_in_full` | an account, IBAN, card, identity or person's phone number written in full (section 4) |
+| `credential_in_full` | a line that holds a value sent to sign in or to pay after a label word (section 4, Sign-in values) |
 
 **Upkeep**, the rules the forest still breaks on many pages, each counted with examples and the rule that
 fixes it:
@@ -958,6 +979,9 @@ below may still change while the code is ported; the design's milestones say whe
   they empty and the one record line naming where they are kept, no byte of a changed page differs. `plan`
   prints the same run without writing, with every line still waiting for a reading by subject, digest and
   line; `check` exits 1 while a run would change something or a line waits.
+- **`forest numbers check | star`** and **`forest credentials check | fix`** find the pages that hold a
+  number in full or a sign-in value (by line, never by value) and star or mask them, each page archived
+  first and its copy proven to hold the page's bytes before the page is written (section 4).
 - **`forest registry build | find`** compiles the registry and finds a subject or a collection entry by any
   name or spelling.
 - **`forest check [NAME …]`** runs every registered check, or the ones it names: the structure of the
