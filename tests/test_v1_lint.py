@@ -98,6 +98,15 @@ class LintCodeTests(CheckForestTestCase):
         self.assert_hits("leaf_dated_name", {month: page, day: page, day.replace(".md", "-2.md"): page}, [])
         self.assert_hits("leaf_dated_name", {day: page}, [day])
 
+    def test_board_state_empty(self) -> None:
+        empty = "## Current state\n\n- Tobin keeps the workshop (as of 2051-03-02; source `04 stm/workshop/people/tobin-reel.md`)\n\n"
+        root = self.workshop()
+        self.edit(root, PEOPLE_BOARD, empty, "## Current state\n\n")
+        self.assertEqual(self.hit_paths(root, "board_state_empty"), [PEOPLE_BOARD])
+        # A folder that holds only collection pages asks for no current state.
+        (root / OWNER_LEAF).unlink()
+        self.assertEqual(self.hit_paths(root, "board_state_empty"), [])
+
     def test_leaf_recorder_dump(self) -> None:
         body = "- seen 10:01:02, 10:01:09, 10:01:15, 10:01:21 on the stand camera"
         self.assert_hits("leaf_recorder_dump", {STAND: leaf("truing-stand", STAND_UP, body=body)}, [STAND])

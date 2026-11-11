@@ -828,6 +828,7 @@ fixes it:
 | `board_pointers_stale` | a `## Pointers` list that differs from what the `about:` lines elsewhere make of it |
 | `board_pointer_stale` | a pointer to the board's own leaf, or a bare name instead of a path |
 | `board_entity_missing` | a subject's board without `entity:` |
+| `board_state_empty` | a board with no line under `## Current state` while its folder holds a leaf that is not a collection page (section 5: its current state gathers what its leaves hold) |
 | `current_state_date_ahead` | an `as of` date later than its source's `updated_at` |
 | `leaf_channel_subtopic` | a sub-topic named after a channel |
 | `timeline_zone_missing` | a timed Timeline line with no zone on a leaf with no `timezone` |

@@ -121,9 +121,13 @@ class EndToEndTests(ForestTestCase):
         index = root / "03 mtm/studio/studio_MTM.md"
         index.write_text(index.read_text(encoding="utf-8").replace("## Subjects\n", "## Subjects\n\n" + SUBJECTS),
                          encoding="utf-8")
-        (root / "03 mtm/studio/kilns.md").write_text(KILNS_BOARD, encoding="utf-8")
+        (root / "03 mtm/studio/kilns.md").write_text(KILNS_BOARD.replace("## Current state\n", (
+            "## Current state\n\n- Kiln Two: fired a load of bowls to cone 6 "
+            "(as of 2042-05-14; source `04 stm/studio/kilns/kiln-two.md`)\n")), encoding="utf-8")
         (root / "03 mtm/studio/glazes.md").write_text(KILNS_BOARD.replace("Kilns", "Glazes").replace(
-            "kilns, one leaf each", "glazes, one leaf each"), encoding="utf-8")
+            "kilns, one leaf each", "glazes, one leaf each").replace("## Current state\n", (
+                "## Current state\n\n- Celadon: a batch mixed for the next firing "
+                "(as of 2042-05-14; source `04 stm/studio/glazes/celadon.md`)\n")), encoding="utf-8")
         for path, page in (("04 stm/studio/kilns/kiln-two.md", KILN_TWO), ("04 stm/studio/glazes/celadon.md",
                                                                             CELADON)):
             (root / path).parent.mkdir(parents=True, exist_ok=True)

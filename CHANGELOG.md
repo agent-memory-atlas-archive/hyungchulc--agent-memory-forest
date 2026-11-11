@@ -38,6 +38,8 @@ the tree until the version 1 commands replace it.
   `forest archive check` verifies copies and blocks against the manifest
 - `forest move set-type` and `forest move set` write change lines; `retire-tree`, `fold-tree` and
   `recut-stream` write provenance lines
+- the upkeep code `board_state_empty`: a board with no line under `## Current state` while its folder
+  holds a leaf that is not a collection page; the synthetic forest's agent boards now carry theirs
 - `forest repeats plan | apply | check`: `leaf_lines_repeated` counts fact lines only (a line in a fenced
   block or a bare reference is none); within a subject a reference line lives in the subject's index leaf;
   each other shared line goes to the home a decisions file names, or is judged once into

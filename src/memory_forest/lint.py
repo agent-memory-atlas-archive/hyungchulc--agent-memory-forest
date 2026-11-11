@@ -505,6 +505,22 @@ def board_entity_missing(forest: ForestView) -> list[Hit]:
     return found
 
 
+def board_state_empty(forest: ForestView) -> list[Hit]:
+    """A board with no line under ``## Current state`` while its folder holds a leaf (collection pages aside)."""
+    found = []
+    leaves = forest.with_role(layout.PageRole.LEAF)
+    for path in forest.boards:
+        info = layout.classify(path)
+        prefix = layout.leaf_folder(info.tree or "", info.branch or "") + "/"
+        held = [leaf for leaf in leaves if leaf.startswith(prefix) and "/" not in leaf[len(prefix):]]
+        if not held:
+            continue
+        if not any(line.strip() for _number, line in _section_lines(forest, path, "Current state")):
+            found.append(_hit("board_state_empty", path, None,
+                              f"`## Current state` holds no line while the folder holds {len(held)} leaves"))
+    return found
+
+
 def current_state_date_ahead(forest: ForestView) -> list[Hit]:
     found = []
     for path, number, line in current_state_lines(forest):
@@ -640,6 +656,8 @@ _TABLE: Final[tuple[LintCode, ...]] = (
     LintCode("board_pointer_stale", UPKEEP, "a pointer names another branch's page by its path",
              supplied_later("board_pointer_stale")),
     LintCode("board_entity_missing", UPKEEP, "a subject's board has `entity:`", board_entity_missing),
+    LintCode("board_state_empty", UPKEEP, "a board's current state gathers what its leaves hold, by kind",
+             board_state_empty),
     LintCode("current_state_date_ahead", UPKEEP, "`as of` is the date of the evidence, never later than its source",
              current_state_date_ahead),
     LintCode("leaf_channel_subtopic", UPKEEP, "a channel is never a sub-topic", leaf_channel_subtopic),

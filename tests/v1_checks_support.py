@@ -92,7 +92,9 @@ def files() -> dict[str, str]:
             "## Links\n\n- up: [[02 ltm/workshop_LTM|workshop LTM]]\n\n## Update record\n"
         ),
         PEOPLE_BOARD: (
-            "# People\n\n## About\n\nPeople Tobin meets.\n\n## Current state\n\n## Leaves\n\n"
+            "# People\n\n## About\n\nPeople Tobin meets.\n\n## Current state\n\n"
+            "- Tobin keeps the workshop (as of 2051-03-02; source `04 stm/workshop/people/tobin-reel.md`)\n\n"
+            "## Leaves\n\n"
             "- `tobin-reel.md` — Tobin himself (updated 2051-03-02)\n"
             "- `seen-once-2051-q1.md` — people seen once (updated 2051-03-02)\n\n## Pointers\n\n"
             "## Links\n\n- up: [[02 ltm/workshop_LTM|workshop LTM]]\n\n## Update record\n"
@@ -104,6 +106,7 @@ def files() -> dict[str, str]:
         ),
         "03 mtm/desk-bot/runs.md": (
             "---\nentity: desk-bot\n---\n\n# Desk Bot: runs\n\n## About\n\nIts runs.\n\n## Current state\n\n"
+            "- Runs: the morning list (as of 2051-03-02; source `04 stm/desk-bot/runs/daily-runs.md`)\n\n"
             "## Leaves\n\n- `daily-runs.md` — its runs (updated 2051-03-02)\n\n## Pointers\n\n"
             "## Links\n\n- up: [[02 ltm/desk-bot_LTM|desk-bot LTM]]\n\n## Update record\n"
         ),
