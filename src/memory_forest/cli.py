@@ -488,6 +488,10 @@ FOREST_COMMANDS: list[ForestCommand] = [
                   (arg("--path", default=None, help="only this page's entries"),)),
 ]
 
+from .tool_commands import TOOL_COMMANDS  # noqa: E402  (move, levels, collections, check)
+
+FOREST_COMMANDS.extend(TOOL_COMMANDS)
+
 
 def build_forest_parser(commands: Sequence[ForestCommand] | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

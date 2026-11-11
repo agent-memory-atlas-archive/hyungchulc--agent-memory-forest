@@ -122,9 +122,9 @@ class DispatchTests(unittest.TestCase):
             calls.append(getattr(arguments, "thing"))
             return 0
 
-        commands = [*cli.FOREST_COMMANDS, cli.ForestCommand(("levels", "check"), run, "test", (cli.arg("thing"),))]
+        commands = [*cli.FOREST_COMMANDS, cli.ForestCommand(("levels", "probe"), run, "test", (cli.arg("thing"),))]
         parser = cli.build_forest_parser(commands)
-        arguments = parser.parse_args(["levels", "check", "x", "--root", "/r"])
+        arguments = parser.parse_args(["levels", "probe", "x", "--root", "/r"])
         self.assertEqual(arguments._run(arguments), 0)
         self.assertEqual((calls, arguments.root), (["x"], "/r"))
         words = {command.words for command in cli.FOREST_COMMANDS}
