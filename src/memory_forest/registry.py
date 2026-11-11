@@ -443,7 +443,10 @@ def build(root: str | os.PathLike[str], *, config: Config | None = None) -> Regi
     entry_index: dict[str, dict[str, str]] = {}
     for subject_id, subject in entities.items():
         subject["leaves"] = sorted(leaves.get(subject_id, []))
-        subject["standing"] = any(_text(heads[path].get("standing")) for path in subject["leaves"])
+        subject["standing"] = next(
+            (_text(heads[path].get("standing")) for path in subject["leaves"] if _text(heads[path].get("standing"))),
+            "",
+        )
         subject["pointers"] = _board_pointers(safe_root, subject)
         if subject["type"] != COLLECTION_TYPE:
             continue
@@ -508,7 +511,7 @@ def build(root: str | os.PathLike[str], *, config: Config | None = None) -> Regi
                         "aliases": list(entry.aliases),
                         "page": page_path,
                         "line": entry.line,
-                        "standing": bool(entry.standing),
+                        "standing": entry.standing,
                         "kind": entry.kind,
                     }
                 )

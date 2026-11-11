@@ -107,13 +107,20 @@ class BuildTests(ForestTestCase):
         files["04 stm/people/self/ilse-varrow.md"] = leaf_text(
             "ilse-varrow", kind="profile", extra='standing: own — "her own bakery"'
         )
+        page = "04 stm/people/regulars/seen-once-2051-q1.md"
+        files[page] = files[page].replace(
+            "- entry: `bram-eskell` · person\n",
+            '- entry: `bram-eskell` · person\n- standing: said — "Bram brings our apples every week" (2051-03-02)\n',
+        )
         built = registry.build(self.make_forest(files))
-        self.assertTrue(built.subject("ilse-varrow")["standing"])
-        self.assertFalse(built.subject("deck-oven")["standing"])
+        self.assertEqual(built.subject("ilse-varrow")["standing"], 'own — "her own bakery"')
+        self.assertEqual(built.subject("deck-oven")["standing"], "")
         tamsin = built.entry("tamsin-orrow")
         self.assertEqual(tamsin["aliases"], ["Тамсин Орров", "Tam"])
         self.assertEqual(tamsin["kind"], "event")
         self.assertEqual(tamsin["collection"], "regulars-seen-once")
+        self.assertEqual(tamsin["standing"], "")
+        self.assertTrue(built.entry("bram-eskell")["standing"].startswith("said — "))
 
 
 class ProblemTests(ForestTestCase):
