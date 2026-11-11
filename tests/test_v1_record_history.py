@@ -146,3 +146,34 @@ class RecordHistoryTests(CheckForestTestCase):
         second = record.trim_page(root, FIXES)
         self.assertEqual(second.archive_path, first.archive_path)
         self.assertIsNone(second.pointer)
+
+    def test_a_page_merged_from_two_trimmed_pages_reads_both_files_once(self) -> None:
+        from memory_forest.plan import Plan
+
+        root = self.page_with([change(f"2051-01-{day:02d}") for day in range(1, 29)])
+        (root / FIXES).write_text(leaf("truing-stand", STAND_UP, subtopic="fixes", record="\n".join(
+            change(f"2051-02-{day:02d}") for day in range(1, 29))), encoding="utf-8")
+        first = record.trim_page(root, STAND)
+        second = record.trim_page(root, FIXES)
+        self.assertNotEqual(first.archive_path, second.archive_path)
+        moved = [*first.plan.moved, *second.plan.moved]
+        plan = Plan.open(root, today="2051-05-01")
+        move.merge_lines(plan, STAND, FIXES, why="one sub-topic")
+        plan.commit()
+        kept = self.record_of(root, FIXES)
+        pointers = [line for line in kept if RecordPointerLine.match(line)]
+        self.assertEqual(sorted(pointers), sorted([first.pointer, second.pointer]))
+        found = [line.render() for line in record.archived_record_lines(root, FIXES)]
+        self.assertEqual(sorted(found), sorted(moved))
+        self.assertEqual(len(found), len(set(found)))
+        sizes = {name: (root / name).stat().st_size for name in (first.archive_path, second.archive_path)}
+        for day in range(1, 29):
+            self.add_line(root, change(f"2051-06-{day:02d}"), FIXES)
+        third = record.trim_page(root, FIXES)
+        target = RecordPointerLine.match(pointers[0]).path
+        self.assertEqual(third.archive_path, target)
+        self.assertIsNone(third.pointer)
+        other = next(name for name in sizes if name != target)
+        self.assertEqual((root / other).stat().st_size, sizes[other])
+        self.assertGreater((root / target).stat().st_size, sizes[target])
+        self.assertEqual(archive.verify(root), [])
