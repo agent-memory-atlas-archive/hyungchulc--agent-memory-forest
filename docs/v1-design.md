@@ -252,6 +252,8 @@ provider = "none"               # none | openai-compatible
 | `record`, `archive` | record trim, the compressed archive | `forest record`, `forest archive` |
 | `maps`, `validate`, `audit` | derived lists (Leaves, Pointers, Branches), structure checks | `forest check` |
 | `lint` | the codes, baselines | `forest lint` |
+| `view` | a read-only view of one forest that the checks share: settings, registry, pages read once | |
+| `cli_upkeep` | the record, numbers, check and lint commands; the table of `forest check`'s checks | `forest record`, `forest numbers`, `forest check`, `forest lint` |
 | `timeline` | the time index and time phrases | `forest timeline` |
 | `search`, `scope` | the search index, coarse-to-fine retrieval, reader scopes | `forest search`, `forest read` |
 | `mcp` | the MCP server | `forest mcp` |

@@ -481,16 +481,19 @@ application, a stay, a trip.
   kinds, each about that page:
   1. a change: what a statement of the page was and what it became (`was "…", now "…"`), quoting the
      statement that changed and not the section around it;
-  2. a removal or a correction made at the owner's word about what the page holds, with the words;
-  3. where the page's own lines came from or went: another page of the forest or an archive copy, named
-     by its path.
+  2. a removal or a correction made at the owner's word about what the page holds: the line quotes what
+     was removed (`removed "…"`) or what the statement was and became, and gives the owner's words
+     (marked as `record.owner_word_names` and `record.quote_marks` say);
+  3. where the page's own lines came from or went: another page of the forest or its lanes, or an archive
+     copy, named by its path in what the line says happened, not only in its `Source:`.
 
   Anything else a run could note about its own work (how many lines it touched, that it rechecked a page
   and changed nothing, that it rewrote a page's form or set a frontmatter key) is the run's receipt and
   stays in the run's directory. A run that changes no statement of a page writes no record line on it.
   This holds for every page alike: a leaf, a board, an index, a tree page.
-- **Record trim.** A record is bounded on every page. When it holds more than
-  `limits.record_keep_bytes` (2,048) bytes:
+- **Record trim.** A record is bounded on every page. When its lines, pointer lines included, hold more
+  than `limits.record_keep_bytes` (2,048) bytes (each line counted with its newline; the pointer lines
+  stay on top and do not count against the budget of item 1):
   1. it keeps the newest lines that fit in that budget, and, whatever their age, every removal or
      correction at the owner's word (so that a later run does not add back what the owner took out), one
      copy of each, oldest first by their leading date;
@@ -593,11 +596,13 @@ When the owner says that something is not to be remembered:
    A person's phone number is written the same way: the first three and the last four characters stay.
    A line the settings name as one to keep whole (`numbers.keep_whole`: patterns for a company's or a
    service's line) stays whole.
-2. A number is an account number because of what stands next to it: a bank's name, an account word in any
-   language, an IBAN whose check digits hold, or a card number whose check digit holds. An order number, a
-   parcel number, an invoice reference, a date and a bank's phone line stay whole.
+2. A number is an account number because of what stands next to it: a bank's name or an account word,
+   both listed in `numbers.account_words`, an IBAN whose check digits hold, or a card number whose check
+   digit holds. An order number, a parcel number, an invoice reference (after a word of
+   `numbers.reference_words`), a date and a bank's phone line stay whole.
 3. A national identity number loses its last digits. Which formats the forest knows, how each is
-   recognised (a birth date with a check digit that holds, or an identity word before it) and how many
+   recognised (its leading digits read as a birth date, or an identity word, `numbers.identity_words`,
+   stands before it) and how many
    trailing characters each hides are settings (`identity_formats`); the contract names no country's
    format as fact. One format is written `"<shape>:<hide>"`: in the shape `N` is a digit, `A` a Latin
    letter, and a space, `-`, `.` or `/` stands for itself; `<hide>` is `after-hyphen` (every character
@@ -618,21 +623,24 @@ When the owner says that something is not to be remembered:
   `forest init` writes these three. Like every page, the root index gains an `## Update record` at its
   end when its first record line is written.
 - **A tree page** (`02 ltm/<tree>_LTM.md`) holds `## Scope`, `## Patterns and rules`, `## Current state`
-  and `## Branches`, then `## Links` and `## Update record`. `## Branches` has one line per branch,
+  and `## Branches`, then `## Links` and `## Update record`, each present; `## Update record` comes with
+  the first record line. `## Branches` has one line per branch,
   `` - `<branch>` — who or what it is at its core, and what it holds ``, the core being its identity,
   roles, lasting traits and ties in one or two sentences.
 - **An agent's tree page** has frontmatter `entity: <agent id>` and holds `## Role`, `## Standing
   instructions`, `## Lessons`, `## Current state` and `## Branches`, then `## Links` and `## Update
-  record`.
+  record`, each present; `## Update record` comes with the first record line.
 - **A tree's index** (`03 mtm/<tree>/<tree>_MTM.md`) holds the tree's registry in `## Subjects`
   (section 2) and its board inventory in `## Branches`, one line per board, `` - `<branch>.md` — <what it
-  is> ``, then `## Links` and `## Update record`.
+  is> ``, then `## Links` and `## Update record`, each present; `## Update record` comes with the first
+  record line.
 - **A branch board** (`03 mtm/<tree>/<branch>.md`) says what its subject or category is, its current state,
   the rules it carries, its leaves and its pointers. A subject's board has frontmatter `entity: <id>`; a
   category's board has none.
   1. Its sections, in this order: `## About`, `## Current state`, `## Rules` (only when it carries rules),
-     `## Leaves`, `## Pointers`, `## Links`, `## Update record`. Every board has `## Current state` and
-     `## Pointers`, left empty while there is nothing for them.
+     `## Leaves`, `## Pointers`, `## Links`, `## Update record`, each present but `## Rules`, which stands
+     only when it carries rules; `## Update record` comes with the first record line. Every board has
+     `## Current state` and `## Pointers`, left empty while there is nothing for them.
   2. `## Leaves` lists every leaf in its folder: ``- `leaf.md` — what it holds (updated YYYY-MM-DD)``, the
      date being the leaf's `updated_at`.
   3. `## Pointers` lists the subject's material that lives elsewhere (section 3, Pointers).
@@ -724,11 +732,11 @@ owner someone who likes that sport.
 | `leaf_misplaced` | a leaf outside its subject's home |
 | `leaf_too_large` | a leaf page over `limits.leaf_max_bytes` |
 | `leaf_dated_name` | a date, period or numbered name outside the allowed suffixes |
-| `leaf_recorder_dump` | recorder rows in a leaf (sections 4 and 7) |
+| `leaf_recorder_dump` | recorder rows in a leaf (sections 4 and 7): outside its record, a line with three or more clock times to the second, a message, run or attachment id (a UUID) or a hash of 32 or more hex characters |
 | `leaf_kind_invalid` | a `kind:` outside the list of section 4 |
 | `about_unknown` | an `about:` id that names no registered subject, names the leaf's own entity, `owner.id` or the system as a whole, or more than 8 ids |
 | `collection_entry_malformed` | a collection entry out of the shape of section 3 |
-| `machine_page` | a machine record as a forest page (section 7) |
+| `machine_page` | a machine record as a forest page (section 7): `status: merged`, a fenced JSON block or JSON object lines, or a table whose rows are mostly ids or hashes |
 | `registry_line_invalid`, `registry_duplicate_id`, `registry_duplicate_alias`, `registry_home_missing` | a registry line out of shape, an id or alias used twice, a home that is not there |
 | `registry_entry_is_subject` | a collection entry's name that a subject also holds |
 | `board_leaves_stale`, `branch_list_stale` | a `## Leaves` or `## Branches` list that misses or names a page |
@@ -766,7 +774,8 @@ How the lint holds a run:
 
 - A run that writes pages takes a **baseline** when it starts. It must fix, before it completes, every
   violation its own pages added and every upkeep hit it added: a leaf whose content it pushed over the cap
-  or grew while over it, a page its own record lines took over the cap, a leaf it saved without `about:`,
+  or grew while over it, a page its own record lines took over its record budget, a record line that is
+  none of the three kinds (`record_run_note`), a leaf it saved without `about:`,
   a leaf it filled with lines copied from another. What was already there when it started is the upkeep
   run's work and never blocks the run. `daily_section_unfiled` is measured on the daily record and never
   holds a run.
@@ -798,11 +807,12 @@ below may still change while the code is ported; the design's milestones say whe
   subject into its category's collection, `admit` moves an entry out into a leaf of its own, `recut` cuts
   a page past the cap by its entries' first days, and `list` names every page with its entries and their
   days. Each logs its moves, so `resolve` follows an entry to its page and back out.
-- **`forest record size | trim`** and **`forest archive put | show`** keep the update records and the
+- **`forest record size | kinds | trim`** and **`forest archive put | show`** keep the update records and the
   archive (section 4).
 - **`forest registry build | find`** compiles the registry and finds a subject or a collection entry by any
   name or spelling.
-- **`forest check`** brings the derived lists up to the pages and checks structure; **`forest lint`**
+- **`forest check`** brings the derived lists up to the pages and checks structure: it runs each registered
+  check, or the one named by its option; **`forest lint`**
   checks the rules (section 8).
 - **`forest timeline`**, **`forest search`**, **`forest read`** and **`forest mcp`** find things (design,
   sections 9 and 10).
