@@ -601,7 +601,13 @@ class Plan:
         self.records.setdefault(path, []).append(line)
 
     def record_change(self, path: str, what: str, was: str, now: str, why: str) -> None:
+        """A change line (the first kind): what a statement or frontmatter value of the page was and became."""
         self.record(path, RecordLine.make(self.today, what, was=was, now=now, why=why).render())
+
+    def record_provenance(self, path: str, what: str, why: str) -> None:
+        """A line of the third kind: where the page's own lines came from or went, ``what`` naming that page or
+        copy by its path in a code span."""
+        self.record(path, RecordLine.make(self.today, what, why=why).render())
 
     def map(self, old: str, new: str) -> None:
         """References to ``old`` (a page, or a folder without ``.md``) follow it to ``new``."""

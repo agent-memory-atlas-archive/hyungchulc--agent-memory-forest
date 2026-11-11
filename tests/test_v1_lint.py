@@ -241,11 +241,12 @@ class LintCodeTests(CheckForestTestCase):
         self.assert_hits("leaf_writer_remark", {STAND: leaf("truing-stand", STAND_UP, body=body)}, [])
 
     def test_supplied_later_codes_are_reported_as_not_checked(self) -> None:
-        report = lint.lint(self.workshop(), codes=["level_due", "leaf_over_cap"])
-        self.assertEqual(report.not_checked, ["level_due"])
+        report = lint.lint(self.workshop(), codes=["daily_section_unfiled", "leaf_over_cap"])
+        self.assertEqual(report.not_checked, ["daily_section_unfiled"])
         self.assertEqual(report.checked, ["leaf_over_cap"])
+        self.assertEqual(lint.SUPPLIED_LATER, ("daily_section_unfiled",))
         with self.assertRaises(NotImplementedError):
-            lint.CODES["level_due"].check(None)  # type: ignore[arg-type]
+            lint.CODES["daily_section_unfiled"].check(None)  # type: ignore[arg-type]
 
     def test_an_unknown_code_is_an_error(self) -> None:
         with self.assertRaises(MemoryForestError):
@@ -310,7 +311,7 @@ class LintCommandTests(CheckForestTestCase):
         result = forest("lint", "--root", str(SYNTHETIC_FOREST))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(b"0 violations, 0 upkeep", result.stdout)
-        self.assertIn(b"not checked: board_leaves_stale", result.stdout)
+        self.assertIn(b"not checked: daily_section_unfiled\n", result.stdout)
 
     def test_baseline_then_against_and_exit_codes(self) -> None:
         root = self.workshop({STAND: leaf("truing-stand", STAND_UP, kind="diary")})

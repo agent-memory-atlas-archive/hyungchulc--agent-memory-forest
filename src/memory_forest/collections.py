@@ -519,12 +519,13 @@ def cut(plan: Plan, path: str, *, why: str) -> list[str]:
             if name != path:
                 plan.log("recut", f"{path}#{entry.id}", f"{name}#{entry.id}", subject=entry.id, why=why)
         if name != path:
-            plan.record_change(name, "Entries came by first day", path, name, why)
+            plan.record_provenance(name, f"Entries came from `{path}`, cut by their first days", why)
     others = [name for name in made if name != path]
     if is_quarter(period):
         plan.fold_page(path, first_name, reason=why, operation="recut")
     else:
-        plan.record_change(path, "Entries moved out by first day", path, ", ".join(others), why)
+        plan.record_provenance(path, "Entries moved out by their first days to "
+                               + ", ".join(f"`{other}`" for other in others), why)
     lines = [line for line in body_lines(parts.render(plan)) if not line.startswith("# ")]
     plan.expect(f"collection page {path}", lines, made)
     plan.touch(tree)
@@ -746,7 +747,7 @@ def admit(plan: Plan, entry_id: str) -> str:
         ReferenceLine(day, f"{entry.name} admitted as a leaf of its own", leaf).render()
     )
     plan.update(page_path, parts.render(plan))
-    plan.record_change(page_path, f"Entry `{entry_id}` moved out", f"{page_path}#{entry_id}", leaf, why)
+    plan.record_provenance(page_path, f"Entry `{entry_id}` moved out to its own leaf `{leaf}`", why)
     plan.log("admit", f"{page_path}#{entry_id}", leaf, subject=entry_id, why=why)
     plan.hints[leaf] = entry.name
     expected = [line for line in material if EntryLine.match(line.strip()) is None
@@ -819,3 +820,53 @@ def _register() -> None:
 
 _register()
 
+
+
+# ═══════════════════════════════ the category limit ═══════════════════════════════
+
+
+def category_sizes(plan: Plan) -> dict[str, int]:
+    """Each category branch's board with its count of leaves, its collection pages counting as one leaf.
+
+    A category is a branch whose board names no subject (no ``entity:``, and no
+    subject's registry line has it as home).
+    """
+    homes = {ref.home for ref in plan.subjects()}
+    sizes: dict[str, int] = {}
+    for path in plan.pages():
+        info = layout.classify(path)
+        if info.role is not layout.PageRole.BOARD or not info.tree or not info.branch:
+            continue
+        if path in homes or field_of(plan.read(path), "entity"):
+            continue
+        pages = plan.folder_pages(layout.leaf_folder(info.tree, info.branch))
+        collected = [page for page in pages if layout.page_role(page) is layout.PageRole.COLLECTION_PAGE]
+        sizes[path] = len(pages) - len(collected) + (1 if collected else 0)
+    return sizes
+
+
+def too_large(plan: Plan) -> list[registry.Problem]:
+    """``category_too_large``: a category branch over ``limits.category_max_leaves``."""
+    limit = plan.config.limits.category_max_leaves
+    return [
+        registry.Problem("category_too_large", path, None,
+                         f"{count} leaves, over {limit}: split the category by kind of subject, never by date")
+        for path, count in sorted(category_sizes(plan).items())
+        if count > limit
+    ]
+
+
+def _lint_too_large(view: Any) -> list[Any]:
+    from . import lint
+
+    return lint.hits_from(too_large(Plan.open(view.root, config=view.config)))
+
+
+def _register_lint() -> None:
+    from . import lint
+
+    lint.register(lint.LintCode("category_too_large", lint.DUE, "a category over `limits.category_max_leaves` splits "
+                                "by kind of subject", _lint_too_large))
+
+
+_register_lint()

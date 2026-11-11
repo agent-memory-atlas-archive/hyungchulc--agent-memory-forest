@@ -144,9 +144,9 @@ class CheckCommandTests(CheckForestTestCase):
 
     def test_one_line_per_problem_and_exit_1(self) -> None:
         root = self.workshop({STAND: leaf("", STAND_UP)})
-        result = forest("check", "--structure", "--root", str(root))
+        result = forest("check", "structure", "--root", str(root))
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout.decode().splitlines(), [f"{STAND}: leaf_entity_missing: no `entity:` in the frontmatter"])
         as_json = json.loads(forest("check", "--root", str(root), "--json").stdout)
-        self.assertEqual(as_json["checks"], ["structure"])
+        self.assertEqual(as_json["checks"], ["structure", "lists", "pointers", "agents", "levels", "categories"])
         self.assertFalse(as_json["ok"])

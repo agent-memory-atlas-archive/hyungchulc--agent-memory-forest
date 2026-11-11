@@ -33,8 +33,10 @@ from typing import Any, Final
 
 from . import layout, registry
 from .locking import LockToken
-from .model import DOT, RECORD_SECTION, ListLine, parse_page
+from .config import Config
+from .model import DOT, RECORD_SECTION, ListLine, code_spans, parse_page
 from .plan import Plan, first_prose, title_of
+from .registry import Problem
 
 LEAVES: Final[str] = "Leaves"
 POINTERS: Final[str] = "Pointers"
@@ -331,10 +333,55 @@ def sync(plan: Plan, *, trees: Iterable[str] | None = None, root_index: bool = T
     return changes
 
 
-def check(root: str | os.PathLike[str], *, trees: Iterable[str] | None = None) -> list[ListChange]:
+def check(root: str | os.PathLike[str], *, trees: Iterable[str] | None = None,
+          config: Config | None = None) -> list[ListChange]:
     """Every derived list that differs from what the pages make of it (nothing is written)."""
-    plan = Plan.open(root)
+    plan = Plan.open(root, config=config)
     return sync(plan, trees=trees)
+
+
+def _targets(lines: list[str]) -> str:
+    return ", ".join(f"`{target}`" for line in lines if (target := _target_of(line)))
+
+
+def _target_of(line: str) -> str | None:
+    parsed = ListLine.match(line)
+    return parsed.target if parsed is not None else None
+
+
+def change_problem(change: ListChange) -> Problem:
+    """One list that differs, as one problem line: its code, its page, and what it misses, names or has stale."""
+    parts = []
+    if change.added:
+        parts.append(f"misses {_targets(change.added)}")
+    if change.removed:
+        parts.append(f"names {_targets(change.removed)}, no page of the list")
+    if change.updated:
+        parts.append(f"has a stale line for {_targets(change.updated)}")
+    return Problem(change.code, change.path, None, f"`## {change.section}` " + "; ".join(parts))
+
+
+def pointer_problems(plan: Plan) -> list[Problem]:
+    """``board_pointer_stale``: a board's pointer to a leaf of its own folder, or a bare name instead of a path."""
+    found = []
+    for path in plan.pages():
+        info = layout.classify(path)
+        if info.role is not layout.PageRole.BOARD or not info.tree or not info.branch:
+            continue
+        section = parse_page(plan.read(path)).section(POINTERS)
+        if section is None:
+            continue
+        own = layout.leaf_folder(info.tree, info.branch) + "/"
+        for _index, bare in section.items():
+            spans = [span.text.strip() for span in code_spans(bare)]
+            target = next((span for span in spans if layout.is_forest_path(span)), None)
+            if target is None:
+                found.append(Problem("board_pointer_stale", path, None,
+                                     f"a pointer names no page by its path: {bare.strip()[:80]!r}"))
+            elif target.startswith(own):
+                found.append(Problem("board_pointer_stale", path, None,
+                                     f"a pointer to `{target}`, a leaf of the board's own folder (`## Leaves` lists it)"))
+    return found
 
 
 def apply(
@@ -343,6 +390,7 @@ def apply(
     trees: Iterable[str] | None = None,
     dry_run: bool = False,
     lock: LockToken | str | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """``forest check --sync``: rewrite the derived lists that differ, under the writer lock."""
     from .plan import run
@@ -354,7 +402,7 @@ def apply(
         found.extend(sync(plan, trees=trees))
         return [change.as_dict() for change in found]
 
-    return run(root, build, dry_run=dry_run, lock=lock)
+    return run(root, build, dry_run=dry_run, lock=lock, config=config)
 
 
 def render_change(change: ListChange) -> list[str]:
@@ -364,3 +412,47 @@ def render_change(change: ListChange) -> list[str]:
     lines += [f"  ~ {line}" for line in change.updated]
     return lines
 
+
+
+# ─────────────────────────────── the lint codes of the derived lists ───────────────────────────────
+
+
+def _lint_changes(view: Any) -> list[ListChange]:
+    cached = view.__dict__.get("_maps_changes")
+    if cached is None:
+        cached = check(view.root, config=view.config)
+        view.__dict__["_maps_changes"] = cached
+    return cached
+
+
+def _lint_list(code: str) -> Callable[[Any], list[Any]]:
+    def found(view: Any) -> list[Any]:
+        from . import lint
+
+        return lint.hits_from(change_problem(change) for change in _lint_changes(view) if change.code == code)
+
+    found.__name__ = code
+    return found
+
+
+def _lint_pointer(view: Any) -> list[Any]:
+    from . import lint
+
+    return lint.hits_from(pointer_problems(Plan.open(view.root, config=view.config)))
+
+
+def _register() -> None:
+    from . import lint
+
+    rule = "`forest check --sync` brings it up to the pages"
+    lint.register(lint.LintCode("board_leaves_stale", lint.VIOLATION, "`## Leaves` lists the board's folder; " + rule,
+                                _lint_list("board_leaves_stale"), False))
+    lint.register(lint.LintCode("branch_list_stale", lint.VIOLATION, "`## Branches`, `## Trees` and `## Agents` "
+                                "list the pages; " + rule, _lint_list("branch_list_stale"), False))
+    lint.register(lint.LintCode("board_pointers_stale", lint.UPKEEP, "`## Pointers` is what the `about:` lines "
+                                "elsewhere make of it; " + rule, _lint_list("board_pointers_stale")))
+    lint.register(lint.LintCode("board_pointer_stale", lint.UPKEEP, "a pointer names another branch's page by its "
+                                "path", _lint_pointer))
+
+
+_register()

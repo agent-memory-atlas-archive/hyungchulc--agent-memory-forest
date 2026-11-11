@@ -66,8 +66,9 @@ FRAME_SECTIONS: Final[tuple[str, ...]] = (DAILY_TOTALS, TIMELINE, LINKS_SECTION,
 BOARD_SECTIONS: Final[tuple[str, ...]] = ("About", "Current state", "Rules", "Leaves", POINTERS, LINKS_SECTION)
 AREA_SECTIONS: Final[tuple[str, ...]] = ("Scope", "Patterns and rules", "Current state", "Branches")
 AGENT_SECTIONS: Final[tuple[str, ...]] = ("Role", "Standing instructions", "Lessons", "Current state", "Branches")
-SHARED_BRANCH: Final[str] = "shared"
-DEFAULT_SUBTOPIC: Final[str] = "profile"
+# What `## Role` holds while an agent's role is not set (contract, section 5): a marker, never a sentence
+# that could be read as the agent's role.
+ROLE_UNSET: Final[str] = "(not set)"
 _STANDING_RE: Final[re.Pattern[str]] = re.compile(r'(?:said — ".+" \(\d{4}-\d{2}-\d{2}\)|own — ".+")')
 _REGISTRY_MARKS: Final[tuple[str, ...]] = ("·", ";", "`")
 
@@ -282,6 +283,7 @@ def leaf(plan: Plan, source: str, target: str, *, entity: str | None = None) -> 
     plan.move_page(src, dst, operation="move", why=why, subject=entity or field_of(before, "entity") or None)
     if entity is not None and field_of(before, "entity") != entity:
         plan.update(dst, with_field(plan.read(dst), "entity", entity))
+        plan.record_change(dst, "`entity:`", field_of(before, "entity"), entity, why)
     plan.expect(f"leaf {src}", body_lines(before), [dst])
     _done(plan, f"leaf {src} -> {dst}")
     return dst
@@ -458,7 +460,7 @@ def _subtopic_name(plan: Plan, path: str, subject_id: str) -> str:
         subtopic = field_of(plan.read(path), "subtopic")
         if subtopic and subtopic != subject_id and layout.is_slug(subtopic):
             return f"{subtopic}.md"
-        return f"{DEFAULT_SUBTOPIC}.md"
+        return f"{plan.config.levels.default_subtopic}.md"
     return f"{stem}.md"
 
 
@@ -511,7 +513,8 @@ def _take_over(plan: Plan, ref: SubjectRef, why: str) -> None:
     the tree's ``shared`` branch (contract, section 3, Levels)."""
     tree, subject_id = ref.tree, ref.id
     board, folder = layout.board(tree, subject_id), layout.leaf_folder(tree, subject_id)
-    shared_board, shared_folder = layout.board(tree, SHARED_BRANCH), layout.leaf_folder(tree, SHARED_BRANCH)
+    shared = plan.config.levels.shared_branch
+    shared_board, shared_folder = layout.board(tree, shared), layout.leaf_folder(tree, shared)
     others = [path for path in plan.folder_pages(folder) if field_of(plan.read(path), "entity") != subject_id]
     collection = _collection_ref_in(plan, tree, subject_id)
     if others:
@@ -523,17 +526,17 @@ def _take_over(plan: Plan, ref: SubjectRef, why: str) -> None:
         if clashes:
             refuse("leaf_name_clash", "Leaves of the category have names the shared branch already holds.",
                    paths=clashes)
-        if collection is not None and _collection_ref_in(plan, tree, SHARED_BRANCH) is not None:
+        if collection is not None and _collection_ref_in(plan, tree, shared) is not None:
             refuse("takeover_collection_conflict", "Both the category and the shared branch keep a collection.",
                    subject=collection.id)
         for path in others:
             target = f"{shared_folder}/{PurePosixPath(path).name}"
             plan.move_page(path, target, operation="move", why=why, subject=field_of(plan.read(path), "entity") or None)
-        plan.record_change(board, "Leaves of other subjects moved", folder, shared_folder, why)
         plan.settle()
         if collection is not None:
-            _follow_collection(plan, plan.subject(collection.id), tree, SHARED_BRANCH, why)
+            _follow_collection(plan, plan.subject(collection.id), tree, shared, why)
     plan.update(board, with_field(plan.read(board), "entity", subject_id))
+    plan.record_change(board, "`entity:`", "", subject_id, why)
 
 
 def _promote_to_tree(plan: Plan, ref: SubjectRef, why: str) -> None:
@@ -597,8 +600,8 @@ def _promote_to_tree(plan: Plan, ref: SubjectRef, why: str) -> None:
     plan.map(folder, f"{layout.STM}/{subject_id}")
     plan.remove_dir(folder)
     plan.make_dir(f"{layout.STM}/{subject_id}")
-    plan.record_change(page, "Lines came from the board", board, page, why)
-    plan.record_change(ref.index, f"Registry line of `{subject_id}` moved", ref.index, index, why)
+    plan.record_provenance(page, f"Lines came from the board `{board}`", why)
+    plan.record_provenance(ref.index, f"Registry line of `{subject_id}` went to `{index}`", why)
     old_page = layout.tree_page(old_tree)
     if plan.exists(old_page):
         plan.update(old_page, add_items(plan.read(old_page), POINTERS, [f"- `{page}` — {ref.name}, now a tree of its own"],
@@ -695,7 +698,7 @@ def merge_lines(plan: Plan, source: str, target: str, *, why: str) -> None:
     plan.update(target, text)
     plan.expect(f"merged page {source}", body_lines(src_text), [target])
     plan.fold_page(source, target, reason=why, operation="merge")
-    plan.record_change(target, "Lines merged in", source, target, why)
+    plan.record_provenance(target, f"Lines merged in from `{source}`", why)
 
 
 def merge(plan: Plan, keep: str, drop: str) -> None:
@@ -762,7 +765,7 @@ def merge(plan: Plan, keep: str, drop: str) -> None:
             old_folder = layout.leaf_folder(dropped.tree, drop)
             plan.map(old_folder, folder)
             plan.remove_dir(old_folder)
-            plan.record_change(keep_board, "Lines merged in", old_board, keep_board, why)
+            plan.record_provenance(keep_board, f"Lines merged in from `{old_board}`", why)
     aliases = list(kept.line.aliases)
     held = {registry.normalize_name(name) for name in (kept.id, kept.name, *aliases)}
     for name in (dropped.name, *dropped.line.aliases):
@@ -773,8 +776,8 @@ def merge(plan: Plan, keep: str, drop: str) -> None:
     plan.replace_subject(plan.subject(keep), replace(plan.subject(keep).line, aliases=aliases))
     plan.replace_about(drop, keep)
     plan.log("merge", f"{dropped.index}#{drop}", f"{kept.index}#{keep}", subject=keep, why=why)
-    plan.record_change(dropped.index, f"Registry line of `{drop}` merged", f"{dropped.index}#{drop}",
-                       f"{kept.index}#{keep}", why)
+    plan.record_provenance(dropped.index, f"Registry line of `{drop}` merged into the line of `{keep}` in "
+                           f"`{kept.index}`", why)
     plan.touch(kept.tree, dropped.tree)
     _done(plan, f"merge {drop} -> {keep}")
 
@@ -857,10 +860,10 @@ def move_branch(plan: Plan, tree: str, branch: str, new_tree: str, *, name: str 
                  why=why)
     if homed:
         lines = ", ".join(f"`{ref.id}`" for ref in homed)
-        plan.record_change(layout.tree_index(tree), f"Registry lines of {lines} moved", layout.tree_index(tree),
-                           layout.tree_index(new_tree), why)
-        plan.record_change(layout.tree_index(new_tree), f"Registry lines of {lines} came", layout.tree_index(tree),
-                           layout.tree_index(new_tree), why)
+        plan.record_provenance(layout.tree_index(tree), f"Registry lines of {lines} went to "
+                               f"`{layout.tree_index(new_tree)}`", why)
+        plan.record_provenance(layout.tree_index(new_tree), f"Registry lines of {lines} came from "
+                               f"`{layout.tree_index(tree)}`", why)
     plan.touch(tree, new_tree)
     plan.settle()
     if owner is not None and new_branch != branch:
@@ -899,13 +902,31 @@ def new_tree(plan: Plan, tree: str, *, name: str | None = None, description: str
     _done(plan, f"new-tree {tree}")
 
 
-def new_agent(plan: Plan, agent_id: str, *, name: str, role: str, aliases: Iterable[str] = ()) -> None:
-    """An agent's tree (design, section 6): its registry line, tree page, index and line under ``## Agents``."""
+def new_agent(plan: Plan, agent_id: str, *, name: str | None = None, role: str | None = None,
+              aliases: Iterable[str] = ()) -> None:
+    """An agent's tree (design, section 6): its registry line, tree page, index and line under ``## Agents``.
+
+    A name not given is the id; a role not given leaves ``## Role`` with ``ROLE_UNSET``.
+    """
+    if not ensure_agent(plan, agent_id, name=name, role=role, aliases=aliases, refuse_existing=True):
+        refuse("tree_exists", "The agent has its tree already.", subject=agent_id)
+
+
+def ensure_agent(plan: Plan, agent_id: str, *, name: str | None = None, role: str | None = None,
+                 aliases: Iterable[str] = (), refuse_existing: bool = False) -> bool:
+    """The one way an agent's tree is made; True when it made the tree.
+
+    An agent that is registered already is left as it is (a later name in the
+    settings is the ``rename`` operation's to carry out; a subject retyped to
+    an agent below level tree is promoted by ``levels apply``).
+    """
+    _slug(agent_id, "agent id")
+    existing = plan.find_subject(agent_id)
+    if existing is not None and not refuse_existing:
+        return False
     _tree_free(plan, agent_id)
-    title = _name_ok(name, "agent's name")
-    purpose = " ".join(str(role or "").split())
-    if not purpose:
-        refuse("role_missing", "A new agent needs a role: one sentence on what it is for.")
+    title = _name_ok(name if name and name.strip() else agent_id, "agent's name")
+    purpose = " ".join(str(role or "").split()) or ROLE_UNSET
     others = [_name_ok(alias, "alias") for alias in aliases]
     holders = plan.name_holders([agent_id, title, *others])
     if holders or agent_id in plan.known_ids():
@@ -918,6 +939,7 @@ def new_agent(plan: Plan, agent_id: str, *, name: str, role: str, aliases: Itera
     plan.hints[f"agent:{agent_id}"] = purpose
     plan.root_lists = True
     _done(plan, f"new-agent {agent_id}")
+    return True
 
 
 def retire_tree(plan: Plan, tree: str, *, into: str | None = None) -> None:
@@ -956,7 +978,7 @@ def retire_tree(plan: Plan, tree: str, *, into: str | None = None) -> None:
     for folder in (layout.tree_folder(tree), f"{layout.STM}/{tree}"):
         plan.mark_archived(folder)
         plan.remove_dir(folder)
-    plan.record_change(successor, f"Tree `{tree}` retired into this page", page, successor, why)
+    plan.record_provenance(successor, f"Took the rules of the retired tree `{page}`, now archived", why)
     plan.root_lists = True
     _done(plan, f"retire-tree {tree} -> {successor}")
 
@@ -985,7 +1007,7 @@ def fold_tree(plan: Plan, tree: str, *, into: str, name: str | None = None, type
                subjects=others)
     new_type = type_ or ref.type
     if new_type == registry.AGENT_TYPE:
-        new_type = type_ or "component"
+        new_type = type_ or plan.config.agents.folded_type
         if new_type == registry.AGENT_TYPE or new_type not in plan.config.subject_types:
             refuse("fold_tree_type_missing", "An agent folded into a branch is no tree any more and takes another "
                    "type (--type).", subject=tree)
@@ -1057,9 +1079,8 @@ def fold_tree(plan: Plan, tree: str, *, into: str, name: str | None = None, type
                     plan.update(path, with_field(text, "entity", new_id))
         plan.replace_about(tree, new_id)
     plan.log("fold-tree", f"{old_index}#{tree}", f"{layout.tree_index(into)}#{new_id}", subject=new_id, why=why)
-    plan.record_change(board, "Lines came from the folded tree", old_page, board, why)
-    plan.record_change(layout.tree_index(into), f"Registry line of `{new_id}` came", old_index,
-                       layout.tree_index(into), why)
+    plan.record_provenance(board, f"Lines came from the folded tree's page `{old_page}`", why)
+    plan.record_provenance(layout.tree_index(into), f"Registry line of `{new_id}` came from `{old_index}`", why)
     description = first_prose(tree_text, "Role" if agent else "Scope")
     if description:
         plan.hints[f"branch:{into}/{branch}"] = description
@@ -1100,6 +1121,7 @@ def set_fields(plan: Plan, path: str, *, kind: str | None = None, about: str | N
     if layout.page_role(target) is not layout.PageRole.LEAF:
         refuse("not_a_leaf", "Only a leaf's frontmatter is set this way.", path=target)
     text = plan.read(target)
+    before = text
     entity = field_of(text, "entity")
     if kind is not None:
         if kind not in registry.LEAF_KINDS or kind == registry.COLLECTION_KIND:
@@ -1131,6 +1153,11 @@ def set_fields(plan: Plan, path: str, *, kind: str | None = None, about: str | N
                    value=value)
         else:
             text = with_field(text, "standing", value)
+    why = plan.reason("set by hand")
+    for key in ("kind", "about", "standing"):
+        was, now = field_of(before, key), field_of(text, key)
+        if was != now:
+            plan.record_change(target, f"`{key}:`", was, now, why)
     plan.update(target, text)
     _done(plan, f"set {target}")
 
@@ -1292,7 +1319,8 @@ def recut_stream(plan: Plan, subject_id: str, leaves: list[str]) -> list[str]:
         made.append(target)
         owners = list(dict.fromkeys(member[3] for member in members))
         if owners != [target]:
-            plan.record_change(target, "Timeline lines re-cut by period", '", "'.join(owners), target, why)
+            plan.record_provenance(target, "Timeline lines came from " + ", ".join(f"`{owner}`" for owner in owners
+                                                                             if owner != target), why)
         plan.hints[target] = f"{ref.name}: {_words(stem)}, {period}"
         size = len(encode(parse_page(text).content_text()))
         if size > cap:
@@ -1341,7 +1369,8 @@ OPERATIONS: dict[str, Callable[..., Any]] = {
     "archive": _op_archive,
     "move-branch": _op_move_branch,
     "new-tree": lambda plan, tree, description, name=None: new_tree(plan, tree, name=name, description=description),
-    "new-agent": lambda plan, id, name, role, aliases=(): new_agent(plan, id, name=name, role=role, aliases=aliases),
+    "new-agent": lambda plan, id, name=None, role=None, aliases=(): new_agent(plan, id, name=name, role=role,
+                                                                              aliases=aliases),
     "retire-tree": lambda plan, tree, into=None: retire_tree(plan, tree, into=into),
     "fold-tree": _op_fold_tree,
     "set-type": lambda plan, subject, type: set_type(plan, subject, type),

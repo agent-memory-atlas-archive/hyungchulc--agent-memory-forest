@@ -1,4 +1,4 @@
-"""The ``forest`` subcommands that move things: ``move …``, ``levels …``, ``collections …`` and ``check``.
+"""The ``forest`` subcommands that move things: ``move …``, ``levels …`` and ``collections …``.
 
 Each writing command takes ``--dry-run`` (print the plan as JSON, write
 nothing), ``--why`` (the reason its move-log and record lines give) and
@@ -12,7 +12,6 @@ from typing import Any
 
 from . import collections as forest_collections
 from . import levels as forest_levels
-from . import maps as forest_maps
 from . import move as forest_move
 from .cli import ForestCommand, _print_json, _print_lines, arg, forest_root
 
@@ -102,24 +101,6 @@ def cmd_collections_list(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_check(arguments: argparse.Namespace) -> int:
-    root = forest_root(arguments)
-    if arguments.sync:
-        result = forest_maps.apply(root, dry_run=arguments.dry_run, lock=arguments.lock_token)
-        changes = result.get("result") or []
-        if arguments.json or arguments.dry_run:
-            _print_json({"ok": True, **result})
-        else:
-            _print_lines(f"{change['path']}: ## {change['section']} brought up to the pages" for change in changes)
-        return 0
-    found = forest_maps.check(root)
-    if arguments.json:
-        _print_json({"ok": not found, "stale": [change.as_dict() for change in found]})
-    else:
-        _print_lines(line for change in found for line in forest_maps.render_change(change))
-    return 1 if found else 0
-
-
 TOOL_COMMANDS: list[ForestCommand] = [
     ForestCommand(("move", "leaf"), _move("leaf", source="source", target="target", entity="entity"),
                   "Move a leaf to another folder or name.",
@@ -147,7 +128,8 @@ TOOL_COMMANDS: list[ForestCommand] = [
                   (arg("tree"), arg("--name", default=None), arg("--description", required=True), *_WRITING)),
     ForestCommand(("move", "new-agent"), _move("new-agent", id="id", name="name", role="role", aliases="aliases"),
                   "Create an agent's tree: registry line, tree page, index and its line under ## Agents.",
-                  (arg("id"), arg("--name", required=True), arg("--role", required=True),
+                  (arg("id"), arg("--name", default=None, help="its name (default: the id)"),
+                   arg("--role", default=None, help="one sentence on what it is for (default: not set)"),
                    arg("--alias", dest="aliases", action="append", default=[]), *_WRITING)),
     ForestCommand(("move", "retire-tree"), _move("retire-tree", tree="tree", into="into"),
                   "Retire an agent's tree (status ended) or an emptied tree into the page that took its rules.",
@@ -180,7 +162,5 @@ TOOL_COMMANDS: list[ForestCommand] = [
     ForestCommand(("collections", "recut"), _collections("recut"), "Cut a collection page past the cap.",
                   (arg("target", metavar="page"), *_WRITING)),
     ForestCommand(("collections", "list"), cmd_collections_list, "List every collection page with its entries."),
-    ForestCommand(("check",), cmd_check, "Bring the derived lists up to the pages (--sync) or list those that differ.",
-                  (arg("--sync", action="store_true"), _DRY, _LOCK)),
 ]
 

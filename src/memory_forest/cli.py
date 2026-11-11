@@ -488,7 +488,7 @@ FOREST_COMMANDS: list[ForestCommand] = [
                   (arg("--path", default=None, help="only this page's entries"),)),
 ]
 
-from .tool_commands import TOOL_COMMANDS  # noqa: E402  (move, levels, collections, check)
+from .tool_commands import TOOL_COMMANDS  # noqa: E402  (move, levels, collections)
 
 FOREST_COMMANDS.extend(TOOL_COMMANDS)
 

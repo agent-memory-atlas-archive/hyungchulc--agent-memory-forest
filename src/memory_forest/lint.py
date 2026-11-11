@@ -124,6 +124,11 @@ def _from_problems(problems: Iterable[Problem]) -> list[Hit]:
     return [_hit(problem.code, problem.path, problem.line, problem.detail) for problem in problems]
 
 
+def hits_from(problems: Iterable[Problem]) -> list[Hit]:
+    """Hits made from ``forest check`` problems of the same codes (a module that registers a code uses it)."""
+    return _from_problems(problems)
+
+
 def _section_lines(forest: ForestView, path: str, name: str) -> list[tuple[int, str]]:
     """(line number, bare line) of every line of the named H2 sections of a page."""
     page = forest.page(path)
@@ -681,17 +686,13 @@ _TABLE: Final[tuple[LintCode, ...]] = (
              supplied_later("category_too_large")),
 )
 CODES: Final[dict[str, LintCode]] = {entry.code: entry for entry in _TABLE}
-# The codes whose detection other modules supply (the level rule, the derived lists, the stage
-# programs); each is registered above with a check that raises `NotChecked`.
-SUPPLIED_LATER: Final[tuple[str, ...]] = (
-    "board_leaves_stale",
-    "branch_list_stale",
-    "board_pointers_stale",
-    "board_pointer_stale",
-    "daily_section_unfiled",
-    "level_due",
-    "category_too_large",
-)
+# The codes whose detection a later milestone supplies (the stage programs); each is registered above
+# with a check that raises `NotChecked`. The derived lists (`maps`), the level rule (`levels`), the
+# category limit (`collections`) and the agents (`agents`) register their codes with `register` when
+# `lint` loads them.
+SUPPLIED_LATER: Final[tuple[str, ...]] = ("daily_section_unfiled",)
+# The modules that register codes of their own.
+REGISTERING_MODULES: Final[tuple[str, ...]] = ("maps", "levels", "collections", "agents")
 # Upkeep a run may not add (contract, section 8, How the lint holds a run).
 RUN_MAY_NOT_ADD: Final[frozenset[str]] = frozenset(
     entry.code for entry in _TABLE if entry.class_ == UPKEEP and not entry.run_may_add
@@ -701,10 +702,23 @@ SOURCE_LANE_CODES: Final[frozenset[str]] = frozenset({"daily_section_unfiled"})
 
 
 def register(entry: LintCode) -> None:
-    """Supply or replace a code's check (the modules that own a ``SUPPLIED_LATER`` code call this)."""
+    """Supply or replace a code's check (the modules that own a code's detection call this when loaded)."""
     if entry.code in CODES and CODES[entry.code].class_ != entry.class_:
         raise MemoryForestError("lint_code_invalid", "A code keeps its class.", details={"code": entry.code})
     CODES[entry.code] = entry
+    if entry.class_ == UPKEEP and not entry.run_may_add:
+        _RUN_MAY_NOT_ADD_EXTRA.add(entry.code)
+
+
+_RUN_MAY_NOT_ADD_EXTRA: set[str] = set()
+
+
+def load_registering_modules() -> None:
+    """Import the modules that register codes (each registers once, at its import)."""
+    import importlib
+
+    for name in REGISTERING_MODULES:
+        importlib.import_module(f"{__package__}.{name}")
 
 
 # ─────────────────────────────── baselines ───────────────────────────────
@@ -880,7 +894,8 @@ class LintReport:
             return self.violations
         return [
             hit for hit in self.hits
-            if hit.new and (hit.class_ == VIOLATION or hit.code in RUN_MAY_NOT_ADD)
+            if hit.new and (hit.class_ == VIOLATION or hit.code in RUN_MAY_NOT_ADD
+                            or hit.code in _RUN_MAY_NOT_ADD_EXTRA)
         ]
 
     @property
@@ -939,6 +954,7 @@ def lint(
     against: Baseline | None = None,
 ) -> LintReport:
     """Run the named codes (every code by default) on the forest at ``root``."""
+    load_registering_modules()
     forest = ForestView.open(root, config=config)
     wanted = list(CODES) if codes is None else list(dict.fromkeys(codes))
     unknown = [code for code in wanted if code not in CODES]

@@ -187,6 +187,20 @@ class LevelSettings:
     )
     # A line that opens with one of these tool names followed by `alerted` does not count either.
     tool_names: tuple[str, ...] = ("Calendar", "Reminders")
+    # The branch that takes a category's other leaves when a subject promoted to a branch takes
+    # over the category's board (contract, section 3, Levels).
+    shared_branch: str = "shared"
+    # The sub-topic a leaf subject's only leaf takes in its own folder when the leaf names none.
+    default_subtopic: str = "profile"
+
+
+@dataclass(frozen=True, slots=True)
+class KnownAgent:
+    """An agent declared in the settings, ``[agents.known.<id>]``: its name and role, each optional."""
+
+    id: str
+    name: str = ""
+    role: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +208,16 @@ class AgentSettings:
     policy: str = "subject-first"
     orchestrators: tuple[str, ...] = ()
     default_scope: str = "own+shared"
+    # Whether the first file in a raw lane `06 istm/<id>/` makes its agent's tree (contract,
+    # section 3, Agent trees); with false, every agent is declared under `[agents.known.<id>]`.
+    auto_create: bool = True
+    # The type an agent's subject takes when `fold-tree` turns its tree into a branch.
+    folded_type: str = "component"
+    # The agents declared in the settings, by id.
+    known: tuple[KnownAgent, ...] = ()
+
+    def declared(self, agent_id: str) -> KnownAgent | None:
+        return next((item for item in self.known if item.id == agent_id), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +414,26 @@ def parse_identity_format(text: str, *, key: str = "numbers.identity_formats", s
     return IdentityFormat(shape=shape, hide=hide)
 
 
+def _known_agents(key: str, raw: Any, source: str | None) -> tuple[KnownAgent, ...]:
+    """``[agents.known.<id>]`` tables: each id a slug, each table with an optional ``name`` and ``role``."""
+    if not isinstance(raw, Mapping):
+        raise _error(key, "must be a table of agents, one `[agents.known.<id>]` each", source)
+    found = []
+    for agent_id, table in raw.items():
+        dotted = f"{key}.{agent_id}"
+        if _SLUG_RE.fullmatch(agent_id) is None:
+            raise _error(dotted, f"{agent_id!r} is not a slug", source)
+        if not isinstance(table, Mapping):
+            raise _error(dotted, "must be a table with `name` and `role`", source)
+        values: dict[str, str] = {}
+        for field_name, value in table.items():
+            if field_name not in ("name", "role"):
+                raise _error(f"{dotted}.{field_name}", "is not a known setting", source)
+            values[field_name] = " ".join(_string(f"{dotted}.{field_name}", value, source).split())
+        found.append(KnownAgent(agent_id, **values))
+    return tuple(sorted(found, key=lambda item: item.id))
+
+
 def _section(name: str, raw: Any, source: str | None) -> Any:
     settings_type = _SECTIONS[name]
     if not isinstance(raw, Mapping):
@@ -407,8 +451,12 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
                 parse_identity_format(item, key=dotted, source=source)
                 for item in _strings(dotted, value, source)
             )
+        elif name == "agents" and key == "known":
+            values[key] = _known_agents(dotted, value, source)
         elif isinstance(default, bool):
-            raise _error(dotted, "is not supported", source)  # no boolean settings exist
+            if not isinstance(value, bool):
+                raise _error(dotted, "must be true or false", source)
+            values[key] = value
         elif isinstance(default, int):
             values[key] = _integer(dotted, value, source)
         elif isinstance(default, tuple):
@@ -459,6 +507,12 @@ def _validate(config: Config) -> Config:
     for value in config.agents.orchestrators:
         if _SLUG_RE.fullmatch(value) is None:
             raise _error("agents.orchestrators", f"{value!r} is not a slug", source)
+    folded = config.agents.folded_type
+    if _SLUG_RE.fullmatch(folded) is None or folded in REQUIRED_TYPES:
+        raise _error("agents.folded_type", f"{folded!r} is not a slug other than `agent` and `collection`", source)
+    for key in ("shared_branch", "default_subtopic"):
+        if _SLUG_RE.fullmatch(getattr(levels, key)) is None:
+            raise _error(f"levels.{key}", f"{getattr(levels, key)!r} is not a slug", source)
     if config.embeddings.provider not in EMBEDDING_PROVIDERS:
         raise _error("embeddings.provider", f"must be one of {', '.join(EMBEDDING_PROVIDERS)}", source)
     for key in ("phone_patterns", "keep_whole"):
@@ -529,6 +583,8 @@ def find_root(start: str | os.PathLike[str]) -> Path | None:
 def _toml_value(value: Any) -> str:
     if isinstance(value, IdentityFormat):
         return _toml_value(value.text)
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, str):
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
@@ -547,5 +603,14 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
         lines.append("")
         lines.append(f"[{name}]")
         for item in fields(section):
+            if name == "agents" and item.name == "known":
+                continue
             lines.append(f"{item.name} = {_toml_value(getattr(section, item.name))}")
+        if name == "agents":
+            for agent in section.known:
+                lines.append("")
+                lines.append(f"[agents.known.{agent.id}]")
+                for key in ("name", "role"):
+                    if getattr(agent, key):
+                        lines.append(f"{key} = {_toml_value(getattr(agent, key))}")
     return "\n".join(lines) + "\n"

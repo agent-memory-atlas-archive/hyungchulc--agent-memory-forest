@@ -2,70 +2,49 @@
 
 ``cli`` imports this module after its own helpers are defined and adds
 ``COMMANDS`` to its command table. ``forest check`` runs every check of
-``FOREST_CHECKS`` (with no option) or the ones named by their options; a
-module that adds a check appends one ``NamedCheck`` to that table.
+``checks.FOREST_CHECKS``, or the ones it names; with ``--sync`` it first
+brings the derived lists up to the pages under the writer lock.
 """
 
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
-from dataclasses import dataclass
-from pathlib import Path
 
 from . import lint as forest_lint
+from . import maps as forest_maps
 from . import numbers as forest_numbers
 from . import record as forest_record
-from . import validate as forest_validate
+from .checks import FOREST_CHECKS, run_checks
 from .cli import ForestCommand, _print_json, _print_lines, arg, forest_root
-from .config import Config, load_config
+from .config import load_config
 from .errors import MemoryForestError
-from .locking import LockToken
-from .registry import Problem
 
 
 # ─────────────────────────────── forest check ───────────────────────────────
 
 
-@dataclass(frozen=True, slots=True)
-class NamedCheck:
-    """One part of ``forest check``: ``--<name>`` asks for it alone; ``order`` sets when it runs."""
-
-    name: str
-    run: Callable[..., list[Problem]]
-    help: str
-    order: int = 50
-
-
-def _structure(root: Path, *, config: Config, lock: LockToken | str | None = None) -> list[Problem]:
-    return forest_validate.check_structure(root, config=config)
-
-
-FOREST_CHECKS: list[NamedCheck] = [
-    NamedCheck("structure", _structure, "page roles, frontmatter, sections, links, homes, trees and agents"),
-]
-
-
 def cmd_check(arguments: argparse.Namespace) -> int:
     root = forest_root(arguments)
     config = load_config(root)
-    asked = [check for check in FOREST_CHECKS if getattr(arguments, f"check_{check.name}", False)]
-    chosen = sorted(asked or FOREST_CHECKS, key=lambda check: check.order)
-    problems: list[Problem] = []
-    for check in chosen:
-        problems.extend(check.run(root, config=config, lock=arguments.lock_token))
+    synced: list[dict] = []
+    if arguments.sync:
+        result = forest_maps.apply(root, lock=arguments.lock_token, config=config)
+        synced = result.get("result") or []
+    chosen, problems = run_checks(root, config, arguments.names)
     if arguments.json:
-        _print_json({"checks": [check.name for check in chosen], "ok": not problems,
+        _print_json({"checks": [check.name for check in chosen], "ok": not problems, "synced": synced,
                      "problems": [problem.as_dict() for problem in problems]})
     else:
+        _print_lines(f"{change['path']}: ## {change['section']} brought up to the pages" for change in synced)
         _print_lines(problem.render() for problem in problems)
     return 1 if problems else 0
 
 
 def _check_arguments() -> tuple:
+    names = ", ".join(check.name for check in FOREST_CHECKS)
     return (
-        *(arg(f"--{check.name}", dest=f"check_{check.name}", action="store_true", help=check.help)
-          for check in FOREST_CHECKS),
+        arg("names", nargs="*", metavar="NAME", help=f"run only these checks ({names})"),
+        arg("--sync", action="store_true", help="first bring the derived lists up to the pages, under the writer lock"),
         arg("--lock-token", default=None, help="The writer lock token of a caller that already holds the lock."),
     )
 
@@ -189,8 +168,9 @@ COMMANDS: list[ForestCommand] = [
                   "kinds, never digits); exit 1 when there is one.", (_PATHS, _ALL)),
     ForestCommand(("numbers", "star"), cmd_numbers_star, "Star the numbers written in full, archiving each page "
                   "first.", (_PATHS, _ALL, _DRY, _LOCK)),
-    ForestCommand(("check",), cmd_check, "Check the forest's structure (every registered check, or those named); "
-                  "exit 1 when there is a problem.", _check_arguments()),
+    ForestCommand(("check",), cmd_check, "Run every check (or those named): structure, derived lists, pointers, "
+                  "agents, levels, categories; one line per problem; exit 1 when there is one. --sync first brings "
+                  "the derived lists up to the pages.", _check_arguments()),
     ForestCommand(("lint",), cmd_lint, "Check the contract's rules; exit 1 when the run must fix something.",
                   (arg("--baseline", default=None, metavar="FILE", help="write the present hits to FILE"),
                    arg("--against", default=None, metavar="FILE",

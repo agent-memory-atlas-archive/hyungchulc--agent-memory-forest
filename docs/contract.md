@@ -764,6 +764,8 @@ fixes it:
 | `timeline_zone_missing` | a timed Timeline line with no zone on a leaf with no `timezone` |
 | `leaf_writer_remark` | a writer's note or a remark on verification in a leaf (section 4) |
 | `daily_section_unfiled` | a daily section the filing run has filed whose specifics (names, quotes, titles, URLs, amounts, tools used) the leaves do not state as written; boards and tree pages do not count |
+| `agent_lane_without_tree` | with `agents.auto_create` false, a raw lane `06 istm/<id>/` whose agent is neither declared in the settings nor registered (section 3, Agent trees) |
+| `agent_settings_differ` | an agent whose settings entry gives a name its registry line does not hold, or a role while its tree page's `## Role` is not set |
 
 **Due work**, never an error:
 

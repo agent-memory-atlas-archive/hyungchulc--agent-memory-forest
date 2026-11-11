@@ -36,14 +36,15 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Final
 
-from . import collections, layout, move, registry
+from . import agents, collections, layout, move, registry
 from .errors import MemoryForestError
 from .locking import LockToken, writer_lock
 from .model import TimelineLine, parse_page
 from .plan import Plan, SubjectRef, encode, run
 from .safety import require_real_root
 
-ACTIONS: Final[tuple[str, ...]] = ("admit", "promote")
+ACTIONS: Final[tuple[str, ...]] = ("agent", "admit", "promote")
+NO_LEVEL: Final[str] = "none"
 _REFERENCE_MARK: Final[str] = ": recorded in `"
 
 
@@ -211,6 +212,14 @@ def _span(days: Iterable[str]) -> str:
     return f"{len(ordered)} distinct days ({ordered[0]} to {ordered[-1]})"
 
 
+def agent_subjects(plan: Plan) -> agents.Subjects:
+    """Each registered id's type and the area (shared) trees of the planned forest."""
+    refs = plan.subjects()
+    agent_pages = {ref.home for ref in refs if ref.type == registry.AGENT_TYPE}
+    areas = frozenset(tree for tree in plan.trees() if layout.tree_page(tree) not in agent_pages)
+    return agents.Subjects({ref.id: ref.type for ref in refs}, areas)
+
+
 def due(plan: Plan, subjects: Iterable[str] | None = None) -> list[Due]:
     """Every level change due in the planned forest (only for ``subjects`` when given)."""
     wanted = set(subjects) if subjects is not None else None
@@ -259,6 +268,11 @@ def due(plan: Plan, subjects: Iterable[str] | None = None) -> list[Due]:
         if reasons:
             found.append(Due(entry.id, "admit", "entry", "leaf", f"{page}#{entry.id}", sorted(days), 0,
                              "; ".join(reasons)))
+    for item in agents.due(plan.root, plan.config, agent_subjects(plan)):
+        if wanted is not None and item.id not in wanted:
+            continue
+        found.append(Due(item.id, "agent", NO_LEVEL, "tree", item.source, [], 0,
+                         f"an agent is a tree from its first day ({'declared in the settings' if item.source == agents.CONFIG_PATH else 'its raw lane holds a file'})"))
     order = {action: index for index, action in enumerate(ACTIONS)}
     found.sort(key=lambda item: (order[item.action], item.subject))
     return found
@@ -276,6 +290,11 @@ def carry_out(plan: Plan, item: Due) -> str:
     try:
         if item.action == "admit":
             return collections.admit(plan, item.subject)
+        if item.action == "agent":
+            known = plan.config.agents.declared(item.subject)
+            made = move.ensure_agent(plan, item.subject, name=known.name if known else None,
+                                     role=known.role if known else None)
+            return "tree" if made else "unchanged"
         return move.promote(plan, item.subject)
     finally:
         plan.why = previous
@@ -329,3 +348,30 @@ def apply(
                     continue
                 applied.append({**item.as_dict(), "moves": len(result["moves"]), "result": result.get("result")})
     return {"changes": applied, "refused": refused, "written": True}
+
+
+# ─────────────────────────────── the lint code ───────────────────────────────
+
+
+def due_problems(plan: Plan) -> list[registry.Problem]:
+    """``level_due``: every level change due, as problem lines (``forest check`` and the lint share them)."""
+    return [
+        registry.Problem("level_due", item.home, None,
+                         f"{item.subject} {item.level} -> {item.new_level}: {item.why} (`forest levels apply`)")
+        for item in due(plan)
+    ]
+
+
+def _lint_level_due(view: Any) -> list[Any]:
+    from . import lint
+
+    return lint.hits_from(due_problems(Plan.open(view.root, config=view.config)))
+
+
+def _register_lint() -> None:
+    from . import lint
+
+    lint.register(lint.LintCode("level_due", lint.DUE, "`forest levels apply` carries the level out", _lint_level_due))
+
+
+_register_lint()
