@@ -92,6 +92,16 @@ def star_middle(text: str, *, head: int = KEEP_HEAD, tail: int = KEEP_TAIL) -> s
     return "".join("*" if index in hidden else character for index, character in enumerate(text))
 
 
+def names_a_number(text: str) -> bool:
+    """Whether a name or an id is nothing but a number of seven or more digits (a contact saved under its
+    phone number): digits, with spaces, hyphens, dots, parentheses and a leading plus between them."""
+    value = str(text).strip()
+    if value.startswith("+"):
+        value = value[1:]
+    compact = re.sub(r"[ .()\-]", "", value)
+    return len(compact) >= 7 and compact.isdigit()
+
+
 def luhn_holds(digits: str) -> bool:
     total = 0
     for position, character in enumerate(reversed(digits)):
@@ -340,6 +350,7 @@ __all__ = [
     "find_numbers",
     "iban_holds",
     "luhn_holds",
+    "names_a_number",
     "star",
     "star_middle",
     "star_numbers",

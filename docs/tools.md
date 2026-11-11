@@ -52,7 +52,8 @@ are in the [contract](contract.md), section 3, Agent trees.
   as `<page>#<id>`, a folder moved whole), and one `Path changed: was "…", now "…". Why: …` line to the
   moved page's `## Update record`. A page whose lines came from or went to another page gets a line naming
   that page's path (``Lines merged in from `<path>` ``); a page that was only rewritten because another moved, and
-  a derived list brought up to the pages, get no record line. A page taken out goes to `.forest/archive/`,
+  a derived list brought up to the pages, get no record line. A record line names a person's number only
+  starred, also when a merged subject was saved under its number. A page taken out goes to `.forest/archive/`,
   and references to it are marked ` (archived)`.
 - Common options: `--dry-run` prints the plan as JSON and writes nothing; `--why "…"` gives the reason the
   move log and the record lines carry; `--lock-token` lets a caller that already holds the writer lock run

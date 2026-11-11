@@ -544,6 +544,11 @@ application, a stay, a trip.
   This holds for every page alike: a leaf, a board, an index, a tree page. A page whose links, list lines,
   registry lines or `about:` ids a tool rewrote because another page or subject moved gets no record
   line: the move log is the record of that change. A derived-list sync writes no record line.
+  Every writer of the tools (the move tool and its plans, the collections, the levels, the record trim,
+  the number starring, `forest repeats`) writes only these three kinds, and never a person's number whole:
+  a number written in full in a record line is starred as section 4, Account and identity numbers, says,
+  and a merge of a subject saved under its number (an id or a name that is nothing but a number) names it
+  starred in every line it writes, its alias included.
 - **Record trim.** A record is bounded on every page. When its lines, pointer lines included, hold more
   than `limits.record_keep_bytes` (2,048) bytes (each line counted with its newline; the pointer lines
   stay on top and do not count against the budget of item 1):

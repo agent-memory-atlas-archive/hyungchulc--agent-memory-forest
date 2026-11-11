@@ -8,16 +8,19 @@ byte for byte (the move log is the record of that rewrite).
 
 from __future__ import annotations
 
+import shutil
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_v1_collections import COLLECTION, CollectionTestCase  # noqa: E402
 from test_v1_move import MILLSTONE, REPAIRS, TODAY, stream_page  # noqa: E402
-from v1_support import leaf_text  # noqa: E402
+from v1_support import SYNTHETIC_FOREST, ForestTestCase, leaf_text  # noqa: E402
 
-from memory_forest import collections, levels, lint, maps, move, record  # noqa: E402
+from memory_forest import collections, levels, lint, maps, move, numbers, record, repeats  # noqa: E402
+from memory_forest.config import load_config  # noqa: E402
 from memory_forest.model import RECORD_SECTION, parse_page  # noqa: E402
 
 # A page that names the leaves an operation moves, with a record line of its own.
@@ -141,3 +144,142 @@ class ToolRecordTests(CollectionTestCase):
         self.assertEqual(lines, [f'- {TODAY} — `kind:`: was "event", now "plan". Why: set by hand.'])
         result = move.execute(root, "set-type", subject="deck-oven", type="component", today=TODAY)
         self.assertEqual(result["moves"], [])
+
+
+# ─────────────────────────────── every writer, on the synthetic forest ───────────────────────────────
+
+ACQUAINTANCES = "04 stm/people/acquaintances"
+KILN = "04 stm/studio/kiln-two"
+# An invented caller saved under a made-up number of the reserved 555-01xx range.
+NUMBER_ID = "19025550147"
+NUMBER_NAME = "+1 902 555 0147"
+NUMBER_LEAF = f"{ACQUAINTANCES}/{NUMBER_ID}.md"
+PROFILE_LINES = [
+    "- The kiln's lid hinge was oiled in the spring and has not squeaked since then.",
+    "- Its controller keeps the last twenty firing programs and names each one.",
+    "- The vent fan runs for an hour after every firing, whatever the program.",
+]
+
+
+def all_record_lines(root: Path) -> dict[str, Counter[str]]:
+    """Every page's record lines: its ``## Update record`` and a collection entry's ``### Update record``."""
+    found = {}
+    for page in sorted(root.rglob("*.md")):
+        relative = page.relative_to(root).as_posix()
+        if relative.split("/", 1)[0] not in ("01 xltm", "02 ltm", "03 mtm", "04 stm"):
+            continue
+        lines: Counter[str] = Counter()
+        inside = False
+        for line in page.read_text(encoding="utf-8").splitlines():
+            if line.startswith("#"):
+                inside = line.lstrip("#").strip() == "Update record" and line.startswith(("## ", "### "))
+            elif inside and line.startswith("- "):
+                lines[line] += 1
+        found[relative] = lines
+    return found
+
+
+def add_number_subject(root: Path) -> None:
+    index = root / "03 mtm/people/people_MTM.md"
+    index.write_text(index.read_text(encoding="utf-8").replace(
+        "- `odile-brask`", f"- `{NUMBER_ID}` — {NUMBER_NAME} · person · leaf · `{NUMBER_LEAF}`\n- `odile-brask`", 1),
+        encoding="utf-8")
+    (root / NUMBER_LEAF).write_text(
+        f"---\nentity: {NUMBER_ID}\nsubtopic: calls\nkind: conversation\nabout: none\ntimezone: America/Halifax\n"
+        "updated_at: 2042-05-12\n---\n\n# A caller\n\nA caller who asked about mug orders.\n\n## Timeline\n\n"
+        "- 2042-05-12 10:00 America/Halifax — asked whether the studio sells mugs by the dozen.\n\n## Links\n\n"
+        "- up: [[03 mtm/people/acquaintances|acquaintances MTM]]\n", encoding="utf-8")
+
+
+def add_repeats(root: Path) -> None:
+    for name in ("profile.md", "settings.md"):
+        page = root / KILN / name
+        page.write_text(page.read_text(encoding="utf-8").replace(
+            "## Timeline", "## Notes\n\n" + "\n".join(PROFILE_LINES) + "\n\n## Timeline", 1), encoding="utf-8")
+
+
+def repeats_apply(root: Path) -> None:
+    add_repeats(root)
+    found = repeats.check(root)["undecided"]
+    decisions = [repeats.Decision(item["subject"], item["digest"], f"{KILN}/profile.md", "the profile")
+                 for item in found]
+    repeats.execute(root, decisions, today=TODAY)
+
+
+def record_trim(root: Path) -> None:
+    settings = root / "forest.toml"
+    settings.write_text(settings.read_text(encoding="utf-8").replace("record_keep_bytes = 2048",
+                                                                     "record_keep_bytes = 120"), encoding="utf-8")
+    record.trim(root, all_pages=True)
+
+
+def numbers_star(root: Path) -> None:
+    page = root / ACQUAINTANCES / "odile-brask.md"
+    page.write_text(page.read_text(encoding="utf-8").replace("## Timeline", f"Her number is {NUMBER_NAME}.\n\n"
+                                                             "## Timeline", 1), encoding="utf-8")
+    numbers.star(root, all_pages=True)
+
+
+def board_sync(root: Path) -> None:
+    board = root / "03 mtm/studio/kiln-two.md"
+    board.write_text(board.read_text(encoding="utf-8").replace("## Leaves\n", "## Leaves\n\n- `gone.md` — gone\n", 1),
+                     encoding="utf-8")
+    maps.apply(root)
+
+
+def _move(operation: str, **arguments):
+    return lambda root: move.execute(root, operation, today=TODAY, **arguments)
+
+
+WRITERS = [
+    ("move leaf", _move("leaf", source=f"{KILN}/settings.md", target=f"{KILN}/firing-limits.md")),
+    ("move rename subject", _move("rename", target="kiln-two", new="big-kiln", name="Big Kiln")),
+    ("move rename branch", _move("rename", target="admin/shops", new="stores")),
+    ("move promote", _move("promote", subject="odile-brask")),
+    ("move merge of a number-named subject", lambda root: (add_number_subject(root), move.execute(
+        root, "merge", keep="odile-brask", drop=NUMBER_ID, today=TODAY))),
+    ("move archive", _move("archive", path=f"{KILN}/settings.md", reason="the limits moved to the controller")),
+    ("move move-branch", _move("move-branch", branch="people/acquaintances", tree="admin")),
+    ("move new-tree", _move("new-tree", tree="garden", description="the clay garden behind the studio.")),
+    ("move new-agent", _move("new-agent", id="glaze-bot", name="Glaze Bot", role="mixes the glaze batches")),
+    ("move retire-tree", _move("retire-tree", tree="ledger-bot")),
+    ("move fold-tree", _move("fold-tree", tree="kiln-bot", into="studio")),
+    ("move set-type", _move("set-type", subject="kiln-two", type="component")),
+    ("move set", _move("set", path=f"{ACQUAINTANCES}/odile-brask.md", kind="profile")),
+    ("move recut-stream", _move("recut-stream", subject="kiln-two",
+                                leaves=[f"{KILN}/firings-2042-q1.md", f"{KILN}/firings-2042-q2.md"])),
+    ("move plan", _move("plan", operations=[{"op": "rename", "target": "admin/self", "new": "owner"},
+                                             {"op": "set", "path": f"{KILN}/repairs.md", "kind": "event"}])),
+    ("collections demote", lambda root: collections.execute(root, "demote", "cinderwell-supply", today=TODAY)),
+    ("collections admit", lambda root: collections.execute(root, "admit", "wren-castellane", today=TODAY)),
+    ("levels apply", lambda root: levels.apply(root, today=TODAY)),
+    ("record trim", record_trim),
+    ("numbers star", numbers_star),
+    ("repeats apply", repeats_apply),
+    ("check --sync", board_sync),
+]
+
+
+class EveryWriterTests(ForestTestCase):
+    """Each writer runs on a fresh copy of the synthetic forest; each record line it adds is one of the three
+    kinds by ``record.classify``, and none writes the made-up caller's number whole."""
+
+    def test_every_record_line_a_writer_writes_is_one_of_the_three_kinds(self) -> None:
+        for number, (name, write) in enumerate(WRITERS):
+            with self.subTest(writer=name):
+                root = self.base / f"synthetic-{number}"
+                shutil.copytree(SYNTHETIC_FOREST, root)
+                before = all_record_lines(root)
+                write(root)
+                config = load_config(root)
+                added = []
+                for path, lines in all_record_lines(root).items():
+                    added += [(path, line) for line in (lines - before.get(path, Counter())).elements()]
+                for path, line in added:
+                    self.assertIsNotNone(record.classify(line, config=config), f"{name}: {path}: {line}")
+                    self.assertNotIn("".join(filter(str.isdigit, NUMBER_NAME)), "".join(filter(str.isdigit, line)))
+                    self.assertNotIn(NUMBER_ID, line)
+                if name in ("numbers star", "check --sync"):
+                    self.assertEqual(added, [], f"{name} writes no record line")
+                if name.startswith("move merge"):
+                    self.assertTrue(added, name)

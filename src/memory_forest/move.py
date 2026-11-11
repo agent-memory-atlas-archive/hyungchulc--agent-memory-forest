@@ -27,7 +27,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
-from . import layout, registry
+from . import layout, numbers, registry
 from .errors import MemoryForestError
 from .locking import LockToken
 from .model import (
@@ -772,6 +772,7 @@ def merge(plan: Plan, keep: str, drop: str) -> None:
     aliases = list(kept.line.aliases)
     held = {registry.normalize_name(name) for name in (kept.id, kept.name, *aliases)}
     for name in (dropped.name, *dropped.line.aliases):
+        name = numbers.star_numbers(name, config=plan.config)[0]  # a person's number joins only starred
         if registry.normalize_name(name) not in held:
             aliases.append(name)
             held.add(registry.normalize_name(name))
@@ -781,6 +782,9 @@ def merge(plan: Plan, keep: str, drop: str) -> None:
     plan.log("merge", f"{dropped.index}#{drop}", f"{kept.index}#{keep}", subject=keep, why=why)
     plan.record_provenance(dropped.index, f"Registry line of `{drop}` merged into the line of `{keep}` in "
                            f"`{kept.index}`", why)
+    # A subject saved under a phone number: no record line of the merge writes that number whole.
+    plan.star_in_records(value for ref in (kept, dropped) for value in (ref.id, ref.name, *ref.line.aliases)
+                         if numbers.names_a_number(value))
     plan.touch(kept.tree, dropped.tree)
     _done(plan, f"merge {drop} -> {keep}")
 

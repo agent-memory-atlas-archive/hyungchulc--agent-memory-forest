@@ -641,8 +641,22 @@ class Plan:
         self.moves.append(movelog.record(operation, source, target, subject=subject, reason=why))
 
     def record(self, path: str, line: str) -> None:
-        """A record line for ``path``'s ``## Update record``, added when the plan finishes."""
-        self.records.setdefault(path, []).append(line)
+        """A record line for ``path``'s ``## Update record``, added when the plan finishes; a number written in
+        full in it (contract, section 4, Account and identity numbers) is starred."""
+        from . import numbers
+
+        self.records.setdefault(path, []).append(numbers.star_numbers(line, config=self.config)[0])
+
+    def star_in_records(self, values: Iterable[str]) -> None:
+        """Every record line this plan writes names each of ``values`` (a subject's number-name) only starred."""
+        from . import numbers
+
+        forms = sorted({value for value in values if value}, key=len, reverse=True)
+        for path, lines in self.records.items():
+            for index, line in enumerate(lines):
+                for value in forms:
+                    line = line.replace(value, numbers.star_middle(value))
+                lines[index] = line
 
     def record_change(self, path: str, what: str, was: str, now: str, why: str) -> None:
         """A change line (the first kind): what a statement or frontmatter value of the page was and became."""
