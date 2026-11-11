@@ -153,7 +153,9 @@ def classify(line: str, *, config: Config) -> Kind | None:
         return None
     if carries_owner_words(record.text, config=config):
         return Kind.OWNER_WORDS
-    if record.was is not None and record.now is not None:
+    # Read here rather than through `RecordLine.was`, whose pattern needs a `Why:` or the line's end
+    # after the closing quote and so misses a change line that goes straight on to its `Source:`.
+    if _CHANGE_QUOTES_RE.search(record.text):
         return Kind.CHANGE
     if _names_place(_statement_part(record.text)):
         return Kind.PROVENANCE

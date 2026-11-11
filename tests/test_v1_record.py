@@ -16,7 +16,7 @@ from v1_support import REPOSITORY_ROOT, SYNTHETIC_FOREST  # noqa: E402
 from memory_forest import archive, record  # noqa: E402
 from memory_forest.archive import ArchiveProofError  # noqa: E402
 from memory_forest.config import DEFAULT_CONFIG, parse_config  # noqa: E402
-from memory_forest.model import RecordPointerLine, parse_page  # noqa: E402
+from memory_forest.model import RecordLine, RecordPointerLine, parse_page  # noqa: E402
 from memory_forest.record import Kind, classify  # noqa: E402
 
 STAND_UP = "03 mtm/workshop/truing-stand"
@@ -43,6 +43,8 @@ class ClassifyTests(unittest.TestCase):
         self.assertIs(classify(change("2051-03-02"), config=CONFIG), Kind.CHANGE)
         self.assertIs(classify('- 2051-03-02 — clamp: was "loose", now "tight". Why: worn. Source: `04 stm/x/y/z.md`.',
                                config=CONFIG), Kind.CHANGE)
+        made = RecordLine.make("2051-03-02", "clamp", was="loose", now="tight", sources=["04 stm/x/y/z.md"])
+        self.assertIs(classify(made.render(), config=CONFIG), Kind.CHANGE)
 
     def test_the_owner_s_words_make_a_removal_or_correction(self) -> None:
         line = '- 2051-03-04 — the old rim taken out. Why: Tobin, in the shop chat: "that rim was never mine".'
