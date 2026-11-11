@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 has no equivalent yet: the MCP server with reader scopes ([the v1 design](../v1-design.md), section 10) arrives with milestone 2.
+
 # Memory Forest Retrieve
 
 Memory Forest Retrieve is a caller-owned integration profile for agents that
@@ -103,7 +105,7 @@ directly. It does not put the raw turn into its own output, access the network,
 rebuild the index, repair memory, or search outside the selected root.
 
 Use the accompanying
-[system prompt](../examples/memory-forest-retrieve/system-prompt.md) as an
+[system prompt](../../examples/memory-forest-retrieve/system-prompt.md) as an
 advisory model contract. The mechanical host gate remains necessary because a
 prompt or skill cannot prove that it was followed.
 

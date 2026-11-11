@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 replaces it with the filing run of [the forest contract](../contract.md) (section 10) and the pipeline of [the v1 design](../v1-design.md) (section 11).
+
 # Integrated Structured sweep
 
 The reference workflow separates source capture from one integrated Structured

@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 replaces it with [the v1 design](../v1-design.md) and [concepts](../concepts.md).
+
 # Architecture
 
 Memory Forest is a filesystem architecture with a local derived index. Canonical Markdown and provenance records are authoritative. The index exists to make routing fast and can be rebuilt.
@@ -183,7 +185,7 @@ The v0.3 filesystem implementation targets macOS and Linux. Its private-mode
 checks rely on POSIX `0700` directories and `0600` files. On Windows, the
 documented posture is WSL2 with the forest on its Linux filesystem; native
 Windows ACL behavior is not equivalent to this contract. See the [WSL2
-guide](wsl2.md).
+guide](../wsl2.md).
 
 ## Scope boundary
 

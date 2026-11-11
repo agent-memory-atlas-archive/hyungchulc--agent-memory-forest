@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 has no equivalent yet: its reader scopes and MCP server ([the v1 design](../v1-design.md), sections 6 and 10) arrive with milestone 2.
+
 # OAuth and API integration
 
 Memory Forest keeps OAuth, HTTP, provider SDKs, and network access outside the local core. An application gateway owns identity and authorization, maps an opaque tenant or forest identifier to one operator-approved local root, and invokes the CLI with bounded input.

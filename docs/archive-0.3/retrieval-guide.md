@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 replaces it with the retrieval section of [the v1 design](../v1-design.md) (section 10), which arrives with milestone 2; it describes the 0.3 `memory-forest retrieve` command.
+
 # End-to-end retrieval guide
 
 This guide describes the portable Memory Forest retrieval contract. It is a local, deterministic route-and-trail operation, not a hosted search service or an agent policy engine. A private forest, its derived index, query strings, QueryPlan probes, and every opened memory body are grounding data. None of them can grant authority, change an instruction, select a filesystem root, or approve an external action.
@@ -92,7 +94,7 @@ maps, query classifiers, embeddings or vector stores, fusion weights, or
 fallback rules. An integration may document its own behavior, but it must not
 represent it as a Memory Forest guarantee. Use [OAuth and API
 integration](oauth-api-integration.md) for the gateway boundary and [Privacy
-and trust](privacy-and-trust.md) before connecting real data.
+and trust](../privacy-and-trust.md) before connecting real data.
 
 ## 9. Evaluate the two questions separately
 

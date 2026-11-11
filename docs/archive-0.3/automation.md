@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 replaces it with the stage programs and nightly upkeep of [the v1 design](../v1-design.md) (section 11), which arrive with milestone 3.
+
 # Automation
 
 Memory Forest can be checked, written from strict reviewed plans, and reindexed
@@ -71,7 +73,7 @@ Every scheduler should call the same bounded wrapper:
 ```
 
 The tracked example is
-[`examples/automation/run-maintenance.sh`](../examples/automation/run-maintenance.sh).
+[`examples/automation/run-maintenance.sh`](../../examples/automation/run-maintenance.sh).
 It applies this contract:
 
 1. Require one exact absolute forest root.
@@ -95,7 +97,7 @@ closed rather than guessing that a lock is stale.
 
 ## POSIX cron
 
-Copy [`examples/automation/crontab.example`](../examples/automation/crontab.example)
+Copy [`examples/automation/crontab.example`](../../examples/automation/crontab.example)
 and replace every `/absolute/path/to/...` placeholder.
 
 Before installing it:
@@ -131,7 +133,7 @@ that an unescaped percent sign has special meaning in a crontab command.
 
 For a user-owned forest, use a LaunchAgent rather than a system LaunchDaemon.
 Copy
-[`examples/automation/org.memory-forest.maintenance.plist.example`](../examples/automation/org.memory-forest.maintenance.plist.example)
+[`examples/automation/org.memory-forest.maintenance.plist.example`](../../examples/automation/org.memory-forest.maintenance.plist.example)
 to:
 
 ```text
@@ -209,7 +211,7 @@ completion contracts.
 ### Safe maintenance profile
 
 Use the copyable prompt in
-[`examples/automation/codex-scheduled-task-prompt.md`](../examples/automation/codex-scheduled-task-prompt.md).
+[`examples/automation/codex-scheduled-task-prompt.md`](../../examples/automation/codex-scheduled-task-prompt.md).
 It pins the CLI, wrapper, and forest to absolute paths, tells the scheduled task
 to call the same deterministic wrapper, and forbids fallback scanning,
 canonical edits, repair, promotion, publication, and body output.

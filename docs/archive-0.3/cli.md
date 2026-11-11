@@ -1,3 +1,5 @@
+> Archived from 0.3. It describes the 0.3 `memory-forest` command. Version 1 replaces it with the `forest` commands of [the v1 design](../v1-design.md) (section 13), which arrive by milestone.
+
 # CLI reference
 
 The `memory-forest` CLI is a local reference implementation. Run `memory-forest --help` and each subcommand's `--help` for the installed version.
@@ -262,6 +264,6 @@ Direct Unicode matching and caller-supplied expansion can improve retrieval acro
 The v0.3 CLI supports macOS and Linux on POSIX filesystems with Unix `0700` and
 `0600` permission modes. Windows users should run it in WSL2 with the forest on
 the WSL Linux filesystem. Native Windows ACL semantics are not implemented or
-equivalent to the POSIX safety contract. See the [WSL2 guide](wsl2.md).
+equivalent to the POSIX safety contract. See the [WSL2 guide](../wsl2.md).
 
 For Codex Debug Bridge, retain its helper request and result schema around the CLI rather than treating terminal output as an authenticated protocol. See [Codex Debug Bridge integration](codex-debug-bridge.md).

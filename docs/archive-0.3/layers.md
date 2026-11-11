@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 replaces it with [the forest contract](../contract.md), section 1 (Layers).
+
 # Layer contracts
 
 The numbered directories assign ownership and expected lifetime. They do not assign truth rank.

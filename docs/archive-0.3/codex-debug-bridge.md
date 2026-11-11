@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 has no equivalent: it describes how the 0.3 starter related to another project.
+
 # Codex Debug Bridge integration
 
 [Codex Debug Bridge](https://github.com/hyungchulc/codex-debug-bridge) and Memory Forest solve different problems.

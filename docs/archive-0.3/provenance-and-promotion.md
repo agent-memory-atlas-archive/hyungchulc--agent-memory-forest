@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 replaces it with [the forest contract](../contract.md): levels set by code (section 3), what goes up (section 5) and the update record (section 4).
+
 # Provenance and promotion
 
 Memory Forest treats provenance as part of the memory, not as optional metadata added later.

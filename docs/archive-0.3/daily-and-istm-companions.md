@@ -1,3 +1,5 @@
+> Archived from 0.3. Version 1 replaces it with the `05 daily` and `06 istm` lanes of [the forest contract](../contract.md) (section 1) and the pipeline of [the v1 design](../v1-design.md) (section 11).
+
 # Daily and ISTM companion projects
 
 Memory Forest defines what the `05 daily` and `06 istm` layers own, but the
