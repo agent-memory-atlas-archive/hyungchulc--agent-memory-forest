@@ -45,8 +45,8 @@ number, the setting that holds it is given with its default.
 - Only `.md` files live in the four layers, and no symlinks. Every file and folder name is a slug,
   `[a-z0-9][a-z0-9-]*`, apart from the fixed names `XLTM.md`, `<tree>_LTM.md` and `<tree>_MTM.md`.
 - `.forest/` holds derived and kept state (design, section 3). Everything in it except the move log, the
-  archive and the judged ledger of repeated lines (section 3, One home for each fact) can be deleted and
-  rebuilt.
+  archive, the judged ledger of repeated lines (section 3, One home for each fact) and the judged ledger of
+  sign-in values (section 4, Sign-in values) can be deleted and rebuilt.
 
 ## 2. Subjects and the registry
 
@@ -712,7 +712,14 @@ When the owner says that something is not to be remembered:
    line that holds such a value is the violation `credential_in_full` (section 8), and `forest credentials
    fix` masks it, archiving the page first.
 4. A code with no label word before it (a bare number in a quoted turn that only a reader can tell is a
-   sign-in value) is not recognised by this rule.
+   sign-in value) is judged once by a reader. Each code-shaped token in a quoted turn (4 to 8 digits that do
+   not read as a year, or 6 to 32 letters and digits with at least two digits) that nobody has judged is
+   the upkeep hit `credential_candidate_unjudged`, named by its page, line and place. `forest credentials
+   judge PATH:LINE:PLACE --sign-in` records the value in the forest's ledger as a keyed digest
+   (`.forest/credentials/`, HMAC-SHA256 under a key of mode 0600 beside it), and from then on the value is
+   masked wherever it appears, like a labelled one; `--not-sign-in` records that it is none, so it is not
+   counted again. Neither the key nor a digest is ever printed, and the ledger, like the move log, is kept
+   state.
 
 ## 5. Pages above the leaves
 
@@ -882,6 +889,7 @@ fixes it:
 | `current_state_date_ahead` | an `as of` date later than its source's `updated_at` |
 | `leaf_channel_subtopic` | a sub-topic named after a channel |
 | `timeline_zone_missing` | a timed Timeline line with no zone on a leaf with no `timezone` |
+| `credential_candidate_unjudged` | a code-shaped token in a quoted turn that no reader has judged a sign-in value or not (section 4, Sign-in values) |
 | `leaf_writer_remark` | a writer's note or a remark on verification in a leaf (section 4) |
 | `daily_section_unfiled` | a daily section the filing run has filed whose specifics (names, quotes, titles, URLs, amounts, tools used) the leaves do not state as written; boards and tree pages do not count |
 | `agent_lane_without_tree` | with `agents.auto_create` false, a raw lane `06 istm/<id>/` whose agent is neither declared in the settings nor registered (section 3, Agent trees) |
@@ -982,6 +990,8 @@ below may still change while the code is ported; the design's milestones say whe
 - **`forest numbers check | star`** and **`forest credentials check | fix`** find the pages that hold a
   number in full or a sign-in value (by line, never by value) and star or mask them, each page archived
   first and its copy proven to hold the page's bytes before the page is written (section 4).
+  `forest credentials candidates | judge` list the codes in quoted turns that wait for a reading and record
+  a reader's judgement in the ledger of keyed digests.
 - **`forest registry build | find`** compiles the registry and finds a subject or a collection entry by any
   name or spelling.
 - **`forest check [NAME …]`** runs every registered check, or the ones it names: the structure of the

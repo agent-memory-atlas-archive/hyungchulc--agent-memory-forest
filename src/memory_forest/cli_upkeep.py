@@ -194,6 +194,35 @@ def cmd_credentials_fix(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_credentials_candidates(arguments: argparse.Namespace) -> int:
+    from . import credential_ledger
+    from .view import ForestView
+
+    view = ForestView.open(forest_root(arguments))
+    found = credential_ledger.unjudged(view.root, ((path, view.text(path)) for path in view.paths), view.config)
+    if arguments.json:
+        _print_json({"candidates": [item.as_dict() for item in found], "ok": not found})
+    else:
+        _print_lines([item.name for item in found] + [f"{len(found)} candidates wait for a reading"])
+    return 1 if found else 0
+
+
+def cmd_credentials_judge(arguments: argparse.Namespace) -> int:
+    from . import credential_ledger
+
+    if arguments.sign_in == arguments.not_sign_in:
+        raise MemoryForestError("invalid_arguments", "Pass exactly one of --sign-in and --not-sign-in.")
+    added = credential_ledger.judge(forest_root(arguments), arguments.candidates, sign_in=arguments.sign_in,
+                                    lock=arguments.lock_token)
+    verdict = "sign-in values" if arguments.sign_in else "not sign-in values"
+    if arguments.json:
+        _print_json({"added": added, "ok": True, "verdict": verdict})
+    else:
+        _print_lines([f"{added} judged {verdict}" + ("; `forest credentials fix --all` masks them on the pages"
+                                                     if arguments.sign_in and added else "")])
+    return 0
+
+
 _LOCK = arg("--lock-token", default=None, help="The writer lock token of a caller that already holds the lock.")
 _PATHS = arg("paths", nargs="*", metavar="PATH", help="forest pages, as pages write them")
 _ALL = arg("--all", action="store_true", help="every page of the four forest layers")
@@ -216,6 +245,14 @@ COMMANDS: list[ForestCommand] = [
                   "or to pay (line numbers, never the value); exit 1 when there is one.", (_PATHS, _ALL)),
     ForestCommand(("credentials", "fix"), cmd_credentials_fix, "Replace each sign-in value with [REDACTED], archiving "
                   "each page first.", (_PATHS, _ALL, _DRY, _LOCK)),
+    ForestCommand(("credentials", "candidates"), cmd_credentials_candidates, "List the codes in quoted turns that "
+                  "no reader has judged, as PATH:LINE:PLACE (never the value); exit 1 when there is one."),
+    ForestCommand(("credentials", "judge"), cmd_credentials_judge, "Record a reader's judgement of candidates: "
+                  "--sign-in masks the value wherever it appears, --not-sign-in stops counting it. Only keyed "
+                  "digests are kept.",
+                  (arg("candidates", nargs="+", metavar="PATH:LINE:PLACE"),
+                   arg("--sign-in", action="store_true", help="the values are sign-in values"),
+                   arg("--not-sign-in", action="store_true", help="the values are not sign-in values"), _LOCK)),
     ForestCommand(("check",), cmd_check, "Run every check (or those named): journal, structure, derived lists, pointers, "
                   "agents, levels, categories; one line per problem; exit 1 when there is one. --sync first brings "
                   "the derived lists up to the pages.", _check_arguments()),

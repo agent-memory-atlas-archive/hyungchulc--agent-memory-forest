@@ -171,3 +171,96 @@ class DoorAndFixTests(ForestTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LedgerTests(ForestTestCase):
+    QUOTED = 'Bram Eskell wrote: "it is 739154, see you at the side door".'
+
+    def forest_with_quote(self) -> Path:
+        root = self.make_forest()
+        page = root / LEAF
+        page.write_text(page.read_text(encoding="utf-8").replace("Something happened.", self.QUOTED), encoding="utf-8")
+        other = root / "04 stm/people/self/ilse-varrow.md"
+        other.write_text(other.read_text(encoding="utf-8").replace(
+            "Something happened.", "Ilse noted 739154 for the side door, and the oven runs at 2200 watts."),
+            encoding="utf-8")
+        return root
+
+    def run_forest(self, *arguments: str) -> tuple[int, str]:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = forest_main(list(arguments))
+        return code, output.getvalue()
+
+    def test_a_judged_value_is_masked_everywhere_and_nothing_secret_is_printed(self) -> None:
+        from memory_forest import credential_ledger
+
+        root = self.forest_with_quote()
+        hits = lint.lint(root, codes=["credential_candidate_unjudged"]).hits
+        self.assertEqual([(hit.path, hit.class_) for hit in hits], [(LEAF, lint.UPKEEP)])
+        code, listed = self.run_forest("credentials", "candidates", "--root", str(root))
+        self.assertEqual(code, 1)
+        self.assertNotIn("739154", listed)
+        name = listed.splitlines()[0]
+        self.assertTrue(name.startswith(f"{LEAF}:"), name)
+        code, said = self.run_forest("credentials", "judge", name, "--sign-in", "--root", str(root), "--json")
+        self.assertEqual(code, 0)
+        key = root / ".forest/credentials/key"
+        self.assertEqual(key.stat().st_mode & 0o777, 0o600)
+        secret_forms = [key.read_bytes().hex()]
+        ledger = credential_ledger.load(root)
+        self.assertIsNotNone(ledger)
+        digest = ledger.digest("739154")
+        secret_forms.append(digest)
+        stored = (root / ".forest/credentials/sign-in.jsonl").read_text(encoding="utf-8")
+        self.assertIn(digest, stored)
+        self.assertNotIn("739154", stored)
+        for form in secret_forms:
+            self.assertNotIn(form, said)
+            self.assertNotIn(form, repr(ledger))
+        self.assertEqual(lint.lint(root, codes=["credential_candidate_unjudged"]).hits, [])
+        found = {hit.path for hit in lint.lint(root, codes=["credential_in_full"]).hits}
+        self.assertEqual(found, {LEAF, "04 stm/people/self/ilse-varrow.md"})
+        credentials.fix(root, all_pages=True)
+        self.assertIn(f'"it is {R}, see you at the side door"', (root / LEAF).read_text(encoding="utf-8"))
+        elsewhere = (root / "04 stm/people/self/ilse-varrow.md").read_text(encoding="utf-8")
+        self.assertIn(f"Ilse noted {R} for the side door, and the oven runs at 2200 watts.", elsewhere)
+        config = parse_config((root / "forest.toml").read_text(encoding="utf-8"), source=str(root / "forest.toml"))
+        self.assertEqual(credentials.mask("call 739154 later", config=config), f"call {R} later")
+        for text in ("739154 and 7391540", "x739154", "no digits here"):
+            self.assertEqual(credential_ledger.mask_known(text, ledger),
+                             credential_ledger.mask_known(text, ledger, guarded=False))
+
+    def test_a_value_judged_not_a_sign_in_value_is_not_counted_again(self) -> None:
+        root = self.forest_with_quote()
+        _, listed = self.run_forest("credentials", "candidates", "--root", str(root))
+        code, _ = self.run_forest("credentials", "judge", listed.splitlines()[0], "--not-sign-in", "--root", str(root))
+        self.assertEqual(code, 0)
+        self.assertEqual(lint.lint(root, codes=["credential_candidate_unjudged"]).hits, [])
+        self.assertEqual(lint.lint(root, codes=["credential_in_full"]).hits, [])
+        self.assertTrue((root / ".forest/credentials/judged.jsonl").exists())
+
+    def test_an_exposed_key_or_a_lost_key_stops_the_ledger(self) -> None:
+        from memory_forest import credential_ledger
+
+        root = self.forest_with_quote()
+        _, listed = self.run_forest("credentials", "candidates", "--root", str(root))
+        self.run_forest("credentials", "judge", listed.splitlines()[0], "--sign-in", "--root", str(root))
+        key = root / ".forest/credentials/key"
+        key.chmod(0o644)
+        with self.assertRaises(MemoryForestError) as raised:
+            credential_ledger.load(root)
+        self.assertEqual(raised.exception.code, "credential_key_exposed")
+        key.unlink()
+        with self.assertRaises(MemoryForestError) as raised:
+            credential_ledger.load(root)
+        self.assertEqual(raised.exception.code, "credential_key_missing")
+
+    def test_a_bad_candidate_name_is_refused_without_writing(self) -> None:
+        root = self.forest_with_quote()
+        for name in (f"{LEAF}:1:1", f"{LEAF}:999:1", "nowhere", "../escape.md:1:1"):
+            with self.assertRaises(MemoryForestError, msg=name):
+                from memory_forest import credential_ledger
+
+                credential_ledger.judge(root, [name], sign_in=True)
+        self.assertFalse((root / ".forest/credentials/key").exists())

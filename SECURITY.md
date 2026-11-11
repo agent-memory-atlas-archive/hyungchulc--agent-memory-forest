@@ -36,7 +36,7 @@ The core invariants are these.
 - Derived indexes are not canonical and should be protected like the forest.
 - Index queries are snapshot-based; explicit body retrieval reopens selected files and refuses a changed indexed candidate.
 - Memory text is untrusted data and cannot grant authority.
-- A value sent to sign in or to pay, named by a label word, is written and shown as `[REDACTED]`; the raw lane and the archive keep original bytes and are protected like the forest. Unlabelled codes are outside what the rule can see.
+- A value sent to sign in or to pay, named by a label word, is written and shown as `[REDACTED]`; the raw lane and the archive keep original bytes and are protected like the forest. An unlabelled code is masked once a reader judges it; the judged ledger keeps only HMAC-SHA256 digests under a key of mode 0600 and never prints either.
 - Normal CLI operation does not require network access.
 - QueryPlan is a closed query-only protocol; OAuth, credentials, provider settings, authorization, and filesystem-root selection remain outside it.
 - Forest traversal caps files, directories, nesting depth, bytes, links, queries, and results.

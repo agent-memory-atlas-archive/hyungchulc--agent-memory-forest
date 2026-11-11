@@ -429,6 +429,18 @@ def credential_in_full(forest: ForestView) -> list[Hit]:
 # ─────────────────────────────── upkeep ───────────────────────────────
 
 
+def credential_candidate_unjudged(forest: ForestView) -> list[Hit]:
+    """A code-shaped token in a quoted turn that no reader has judged (contract, section 4, Sign-in values):
+    named by its line and place, never by its value."""
+    from . import credential_ledger
+
+    found = credential_ledger.unjudged(forest.root, ((path, forest.text(path)) for path in forest.paths),
+                                       forest.config)
+    return [_hit("credential_candidate_unjudged", item.path, item.line,
+                 f"candidate {item.place} of the line waits for a reading (`forest credentials judge "
+                 f"{item.name} --sign-in | --not-sign-in`)") for item in found]
+
+
 def leaf_over_cap(forest: ForestView) -> list[Hit]:
     cap = forest.config.limits.leaf_cap_bytes
     return [
@@ -680,6 +692,8 @@ _TABLE: Final[tuple[LintCode, ...]] = (
     LintCode("leaf_channel_subtopic", UPKEEP, "a channel is never a sub-topic", leaf_channel_subtopic),
     LintCode("timeline_zone_missing", UPKEEP, "a timed Timeline line names its zone, or the leaf has `timezone:`",
              timeline_zone_missing),
+    LintCode("credential_candidate_unjudged", UPKEEP, "a reader judges each code in a quoted turn once "
+             "(`forest credentials judge`)", credential_candidate_unjudged),
     LintCode("leaf_writer_remark", UPKEEP, "remarks become open points in the source's words", leaf_writer_remark),
     LintCode("daily_section_unfiled", UPKEEP, "the leaves state the specifics of a filed daily section",
              supplied_later("daily_section_unfiled")),

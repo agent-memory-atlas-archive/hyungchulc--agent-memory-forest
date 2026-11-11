@@ -18,7 +18,7 @@ Memory Forest does not make an attached model local. If a caller opens a memory 
 
 ## Sign-in values
 
-Version 1 removes a value sent to sign in or to pay (a password, a PIN, a one-time, verification or door code) when a label word names it: every record line a tool writes, the text a model hands the daily writer, and every page, archive copy, record line or search body a tool shows carry `[REDACTED]` in its place, and the lint reports a page line that still holds one. The raw lane `06 istm` and the archive keep the bytes they were given. A code with no label word before it, or a label word in a language the settings do not list, is not recognised; see [Privacy and trust](docs/privacy-and-trust.md).
+Version 1 removes a value sent to sign in or to pay (a password, a PIN, a one-time, verification or door code) when a label word names it: every record line a tool writes, the text a model hands the daily writer, and every page, archive copy, record line or search body a tool shows carry `[REDACTED]` in its place, and the lint reports a page line that still holds one. The raw lane `06 istm` and the archive keep the bytes they were given. A code with no label word before it is masked only after a reader judges it a sign-in value; the forest then keeps a keyed digest of it (never the value) under `.forest/credentials/`, whose key file is readable by its owner only. A label word in a language the settings do not list is not recognised; see [Privacy and trust](docs/privacy-and-trust.md).
 
 ## Route-only behavior
 

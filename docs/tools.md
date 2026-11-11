@@ -381,3 +381,19 @@ forest credentials check --all
 forest credentials fix --all
 # the line now reads: Ilse sent the supplier portal password: [REDACTED].
 ```
+
+A code with no label word (`"it is 739154, see you at the side door"`) is for a reader to judge, once.
+`credentials candidates` lists each code-shaped token in a quoted turn that nobody has judged, as
+`PATH:LINE:PLACE` and never by value (the lint counts them as `credential_candidate_unjudged`);
+`credentials judge PATH:LINE:PLACE … --sign-in` keeps an HMAC-SHA256 digest of each value in
+`.forest/credentials/sign-in.jsonl`, under a key made on first use in `.forest/credentials/key` (mode
+0600), and from then on that value is masked wherever it appears; `--not-sign-in` keeps its digest in
+`judged.jsonl` so it is not counted again. Neither the key nor a digest is printed.
+
+```sh
+forest credentials candidates
+# 04 stm/bakery/suppliers/millstone-flour.md:14:1
+# 1 candidates wait for a reading
+forest credentials judge "04 stm/bakery/suppliers/millstone-flour.md:14:1" --sign-in
+forest credentials fix --all
+```

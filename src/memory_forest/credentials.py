@@ -15,6 +15,10 @@ A value is recognised by the word before it, one of ``credentials.label_words``
   address, and is not followed by one of ``credentials.count_words``
   (``a password of 12 characters``): a word alone after a label is prose.
 
+A value with no label word (a bare code in a quoted turn) is masked once a
+reader has judged it, through the forest's ledger of keyed digests
+(``credential_ledger``).
+
 Each step runs only when the text holds what its pattern cannot match
 without (a guard that is a necessary condition of the pattern, so a guarded
 step gives what the unguarded one gives). ``mask`` is idempotent: a masked
@@ -170,8 +174,12 @@ def mask_labelled(text: str, *, config: Config, guarded: bool = True) -> str:
 
 
 def mask(text: str, *, config: Config) -> str:
-    """Every sign-in value ``text`` holds after a label word replaced by ``[REDACTED]``."""
-    return mask_labelled(text, config=config)
+    """Every sign-in value ``text`` holds replaced by ``[REDACTED]``: after a label word, and, in a forest
+    that keeps a judged ledger (``credential_ledger``), every value a reader judged a sign-in value."""
+    from . import credential_ledger
+
+    text = mask_labelled(text, config=config)
+    return credential_ledger.mask_known(text, credential_ledger.for_config(config))
 
 
 def shown(value: Any, *, config: Config) -> Any:

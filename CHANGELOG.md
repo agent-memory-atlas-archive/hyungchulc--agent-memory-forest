@@ -16,8 +16,8 @@ the tree until the version 1 commands replace it.
   `rename`, `promote`, `merge`, `archive`, `move-branch`, `new-tree`, `new-agent`, `retire-tree`,
   `fold-tree`, `set-type`, `set`, `recut-stream`, `plan` and `resolve`; `levels check | apply`;
   `collections demote | admit | recut | list | cite-entries`; `record size | kinds | trim | history`;
-  `archive put | show | list | check`; `numbers check | star`; `credentials check | fix`; `check`; `lint`;
-  `recover`
+  `archive put | show | list | check`; `numbers check | star`; `credentials check | fix | candidates |
+  judge`; `check`; `lint`; `recover`
 - `forest check [NAME …] [--sync]` is the one check command: the journal, the structure, the derived
   lists, the pointers, the agents, the levels and the categories, one line per problem
 - the lint registers `board_leaves_stale`, `branch_list_stale`, `board_pointers_stale`,
@@ -51,6 +51,10 @@ the tree until the version 1 commands replace it.
   `credential_in_full`; `forest credentials check | fix` finds and masks such lines, archiving each page
   first. New settings: `credentials.label_words` (English by default; a forest adds its other languages),
   `credentials.joining_words` and `credentials.count_words`
+- a code in a quoted turn with no label word is judged once by a reader: `forest credentials candidates`
+  lists the unjudged ones by page, line and place (the lint counts `credential_candidate_unjudged`), and
+  `forest credentials judge … --sign-in | --not-sign-in` keeps an HMAC-SHA256 digest of the value under a
+  key of mode 0600 in `.forest/credentials/`; a value judged a sign-in value is masked wherever it appears
 - the contract states two rules for writing with a model: a line that states what quoted turns say is
   filed only after a second reading of the same turns judged it; a subject is never merged into another on
   what its own material claims, and subjects that would share a name each carry a distinguishing word
