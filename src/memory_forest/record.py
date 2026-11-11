@@ -4,16 +4,18 @@ A page's ``## Update record`` holds only the page's own history, in three
 kinds of line (``Kind``). ``classify`` says which kind a line is; a line that
 is none of them is a run's note, which belongs in the run's own directory.
 
-``plan_trim`` decides what a trim keeps and moves; ``trim_page`` archives the
-page, proves that every moved line is in the archive copy byte for byte, and
-only then writes the page with a pointer line naming the copy.
-``archived_record_lines`` reads the record lines back out of the copies, so
+``plan_trim`` decides what a trim keeps and moves; ``trim_page`` appends the
+moved lines as one block to the page's record history file, proves the block
+byte for byte, and only then writes the page (with its one pointer line at
+the first trim). ``archived_record_lines`` reads the record lines back out of
+the history file (and of whole-page copies of forests trimmed the old way), so
 that a subject's history stays whole after a trim.
 """
 
 from __future__ import annotations
 
 import enum
+import hashlib
 import os
 import re
 from collections import Counter
@@ -358,6 +360,16 @@ def _check_rewrite(original: Page, new_text: str, plan: TrimPlan, pointer: str |
         )
 
 
+def history_pointer(page: Page) -> RecordPointerLine | None:
+    """The first pointer line of a page that names a record history file (the one a trim appends to)."""
+    prefix = f"{layout.ARCHIVE_DIR}/{forest_archive.HISTORY_DIR}/"
+    for line in record_lines(page):
+        pointer = RecordPointerLine.match(line.strip())
+        if pointer is not None and pointer.path.startswith(prefix):
+            return pointer
+    return None
+
+
 def trim_page(
     root: str | os.PathLike[str],
     path: str,
@@ -368,10 +380,12 @@ def trim_page(
 ) -> TrimResult:
     """Trim one page's record; a page that nothing moves on is never written.
 
-    The page is archived first (a kept copy, reason ``record-trim``), the
-    archive copy must hold every moved line byte for byte
-    (``archive.prove_lines_archived``), and only then is the page written,
-    atomically, with its new pointer line.
+    The moved lines are appended as one block to the page's record history
+    file (the file its pointer line names, or, at the first trim, a new one),
+    and proved there byte for byte and in order; only then is the page
+    written, atomically: at the first trim with the one pointer line it keeps
+    for life, at every later trim with only the moved lines taken out. The
+    page is read back as written.
     """
     safe_root = require_real_root(root)
     settings = config if config is not None else load_config(safe_root)
@@ -386,24 +400,34 @@ def trim_page(
     result = TrimResult(relative, plan)
     if not plan.applies or dry_run:
         return result
+    raw = text.encode("utf-8", "surrogateescape")
+    page_sha = hashlib.sha256(raw).hexdigest()
     with writer_lock(safe_root, token=lock, label="record trim") as held:
         if read_text(target) != text:
             raise MemoryForestError("record_page_changed", "The page changed while it was read; nothing was written.",
                                     details={"path": relative})
-        entry = forest_archive.put(safe_root, relative, reason=TRIM_REASON, keep=True, lock=held)
-        forest_archive.prove_lines_archived(safe_root, relative, plan.moved, entry=entry)
-        if forest_archive.read_copy(safe_root, entry) != text.encode("utf-8", "surrogateescape"):
-            raise MemoryForestError("record_page_changed", "The archive copy is not the page as it was read.",
-                                    details={"path": relative})
-        pointer = RecordPointerLine(plan.first, plan.last, len(plan.moved), entry.archive_path).render()
+        existing = history_pointer(page)
+        if existing is not None:
+            history_file = existing.path.removeprefix(layout.ARCHIVE_DIR + "/")
+        else:
+            named = [pointer.path for line in record_lines(page) if (pointer := RecordPointerLine.match(line.strip()))]
+            history_file = forest_archive.history_file_for(safe_root, relative, page_sha, named)
+        block = forest_archive.append_block(safe_root, history_file, page=relative, page_sha256=page_sha,
+                                            lines=list(plan.moved), first=plan.first, last=plan.last, lock=held)
+        pointer = None if existing is not None else RecordPointerLine(plan.first, plan.last, len(plan.moved),
+                                                                     block.archive_path).render()
         new_text = trimmed_text(page, plan, pointer)
         _check_rewrite(page, new_text, plan, pointer)
         if read_text(target) != text:
-            raise MemoryForestError("record_page_changed", "The page changed while it was archived; nothing was written.",
+            raise MemoryForestError("record_page_changed", "The page changed while it was trimmed; nothing was written.",
                                     details={"path": relative})
-        atomic_write(target, new_text.encode("utf-8", "surrogateescape"))
+        payload = new_text.encode("utf-8", "surrogateescape")
+        atomic_write(target, payload)
+        if target.read_bytes() != payload:
+            raise MemoryForestError("write_readback_failed", "The page did not read back as written.",
+                                    details={"path": relative})
     result.written = True
-    result.archive_path = entry.archive_path
+    result.archive_path = block.archive_path
     result.pointer = pointer
     return result
 
@@ -534,13 +558,20 @@ def _entry_for_copy(root: Path, archive_path: str) -> forest_archive.ArchiveEntr
     return None
 
 
-def archived_record_lines(root: str | os.PathLike[str], path: str) -> list[RecordLine]:
-    """The dated record lines of a page that its archive copies hold and the page no longer does.
+def _history_lines(root: Path, history_file: str) -> list[str]:
+    """The record lines a history file holds, in their order (its block headers aside); one read."""
+    data = forest_archive.read_history(root, history_file).decode("utf-8", "surrogateescape")
+    return [line for line in data.split("\n") if line.strip() and not line.startswith("<!-- record lines moved ")]
 
-    Every pointer line of the page is followed, and every pointer line in the
-    copies it reaches, so the lines of several trims are all found. Each line
-    is returned once, oldest first by its date (lines of one date in the
-    order they were found).
+
+def archived_record_lines(root: str | os.PathLike[str], path: str) -> list[RecordLine]:
+    """The dated record lines of a page that its record history file and archive copies hold and the page
+    no longer does.
+
+    A pointer to a record history file is read once. A pointer to a
+    whole-page copy (a forest trimmed before history files) is followed, and
+    every pointer line in the copies it reaches. Exact duplicates are returned
+    once, oldest first by date (lines of one date in the order found).
     """
     safe_root = require_real_root(root)
     relative = layout.normalize(path)
@@ -550,11 +581,24 @@ def archived_record_lines(root: str | os.PathLike[str], path: str) -> list[Recor
     visited: set[str] = set()
     found: list[RecordLine] = []
     seen: set[str] = set()
+    history_prefix = f"{layout.ARCHIVE_DIR}/{forest_archive.HISTORY_DIR}/"
+
+    def take(line: str) -> None:
+        record = RecordLine.match(line.strip())
+        if record is None or line in on_page or line in seen:
+            return
+        seen.add(line)
+        found.append(record)
+
     while queue:
         copy_path = queue.pop(0)
         if copy_path in visited:
             continue
         visited.add(copy_path)
+        if copy_path.startswith(history_prefix):
+            for line in _history_lines(safe_root, copy_path.removeprefix(layout.ARCHIVE_DIR + "/")):
+                take(line)
+            continue
         entry = _entry_for_copy(safe_root, copy_path)
         if entry is None:
             raise MemoryForestError(
@@ -568,9 +612,5 @@ def archived_record_lines(root: str | os.PathLike[str], path: str) -> list[Recor
             if pointer is not None:
                 queue.append(pointer.path)
                 continue
-            record = RecordLine.match(line.strip())
-            if record is None or line in on_page or line in seen:
-                continue
-            seen.add(line)
-            found.append(record)
+            take(line)
     return sorted(found, key=lambda record: record.date)

@@ -661,7 +661,7 @@ _TABLE: Final[tuple[LintCode, ...]] = (
     LintCode("record_over_budget", UPKEEP, "a record over `limits.record_keep_bytes` is trimmed "
              "(`forest record trim`)", record_over_budget, False, sized=True),
     LintCode("record_run_note", UPKEEP, "a record holds only the three kinds of line; a run's note moves to the "
-             "archive copy (`forest record trim`)", record_run_note, False),
+             "record history file (`forest record trim`)", record_run_note, False),
     LintCode("leaf_kind_missing", UPKEEP, "every leaf has `kind:`", _MISSING_KIND),
     LintCode("leaf_about_missing", UPKEEP, "every leaf but a collection page has `about:`", leaf_about_missing, False),
     LintCode("leaf_updated_missing", UPKEEP, "every leaf has `updated_at:`", _MISSING_UPDATED),

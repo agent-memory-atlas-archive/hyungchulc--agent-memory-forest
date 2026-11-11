@@ -98,8 +98,9 @@ and `archive/` can be deleted and rebuilt.
   frontmatter value of the page was before it changed (`was "…", now "…"`), what was taken out or corrected at the owner's word
   about the page, and where the page's own lines came from or went. It is bounded on every page, a leaf
   or above: the newest lines that fit a small budget stay with the owner's removals and corrections, and
-  older lines move verbatim to the page's archive copy, where the subject timeline still reads the
-  changes. A run's note about its own work (how many lines it touched, that it rechecked and changed
+  older lines move verbatim to the page's record history file (one per page for its whole life, only
+  appended to, one block per trim), named by the one pointer line the page keeps, where the subject
+  timeline still reads the changes. A trim's cost follows what moves, not the page. A run's note about its own work (how many lines it touched, that it rechecked and changed
   nothing, that it rewrote a page's form) is never written on a page: it goes with the run's receipts,
   and a run that changes no statement writes no record line.
 
@@ -159,9 +160,12 @@ A helper started for one task works as the agent that started it.
   log's length) durably before its first write and removes it after the move-log append; the registry is
   rebuilt after that. A standing journal is a dead writer's: the next taker of the writer lock, or
   `forest recover`, rolls it back, and `forest check` reports it until then. `forest move resolve <old path>` follows the log to the present place.
-- `.forest/archive/` holds one compressed copy per archived version of a page, under the date it was
-  archived, with a manifest line (old path, hash, size, reason, the leaf it was folded into). Nothing is
-  deleted. `forest archive show <old path>` prints the latest copy and `forest archive list` every copy.
+- `.forest/archive/` holds one compressed copy per version of a page that an operation took out or
+  rewrote whole, under the date it was archived, with a manifest line (old path, hash, size, reason, the
+  leaf it was folded into), and `record-history/`, one append-only file per page whose record was trimmed,
+  each block with its manifest row (page, file, offset, length, hash, counts, dates). Nothing is deleted;
+  a copy a rolled-back commit stored stays. `forest archive show <old path>` prints the latest copy,
+  `forest archive list` every copy, and `forest archive check` verifies copies and blocks.
 - Machine output (hash tables, run receipts, recorder rows, derived views) never becomes a forest page.
 
 ## 8. The lint

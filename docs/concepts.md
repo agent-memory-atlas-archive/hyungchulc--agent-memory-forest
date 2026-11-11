@@ -127,9 +127,11 @@ The old Timeline line stays too, marked `[superseded 2042-05-14]`.
 
 Records grow. A leaf's size cap (8 KB by default) counts its content only, not its record, so history never
 forces a split. When the record makes the page too long, `forest record trim` keeps the newest lines and
-every line that quotes the owner, and moves the rest, verbatim, to the page's copy in `.forest/archive/`,
-leaving a pointer line. Nothing is deleted: archived pages and trimmed lines are compressed copies listed in
-a manifest, and `forest archive show` prints them.
+every line that quotes the owner, and appends the rest, verbatim, as one block to the page's record history
+file in `.forest/archive/record-history/`. The page holds one pointer line to that file for life, however
+often it is trimmed. Nothing is deleted: archived pages are compressed copies, every history block has a
+manifest row, `forest archive check` verifies them, `forest archive show` prints an archived page, and the
+history file is plain Markdown anyone can read.
 
 ## The move log
 

@@ -480,6 +480,15 @@ def cmd_recover(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_archive_check(arguments: argparse.Namespace) -> int:
+    problems = forest_archive.verify(forest_root(arguments))
+    if arguments.json:
+        _print_json({"ok": not problems, "problems": [problem.as_dict() for problem in problems]})
+    else:
+        _print_lines(problem.render() for problem in problems)
+    return 1 if problems else 0
+
+
 _LOCK_TOKEN = arg(
     "--lock-token",
     default=None,
@@ -502,6 +511,8 @@ FOREST_COMMANDS: list[ForestCommand] = [
                    arg("--keep", action="store_true"), _LOCK_TOKEN)),
     ForestCommand(("archive", "show"), cmd_archive_show, "Print the newest archived copy of a page.",
                   (arg("path"),)),
+    ForestCommand(("archive", "check"), cmd_archive_check, "Verify every archive copy and record history block "
+                  "against the manifest; exit 1 when one differs."),
     ForestCommand(("archive", "list"), cmd_archive_list, "List the archive manifest.",
                   (arg("--path", default=None, help="only this page's entries"),)),
 ]

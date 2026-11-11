@@ -520,19 +520,29 @@ application, a stay, a trip.
 - **Record trim.** A record is bounded on every page. When its lines, pointer lines included, hold more
   than `limits.record_keep_bytes` (2,048) bytes (each line counted with its newline; the pointer lines
   stay on top and do not count against the budget of item 1):
-  1. it keeps the newest lines that fit in that budget, and, whatever their age, every removal or
-     correction or exclusion at the owner's word (so that a later run does not add back what the owner took
-     out or excluded), one
-     copy of each, oldest first by their leading date;
-  2. a pointer line on top of the record names the archive copy:
-     ``- Earlier record lines (<first date> – <last date>, <n> lines) are kept in `<archive path>`.``;
-  3. every other line, exact duplicates included, moves verbatim to the page's archive copy. A line that
-     is none of the three kinds moves there whatever the record's size.
+  1. it keeps the newest lines that fit in that budget, and, whatever their age, every removal,
+     correction or exclusion at the owner's word (so that a later run does not add back what the owner
+     took out or excluded), one copy of each, oldest first by their leading date;
+  2. every other line, exact duplicates included, moves verbatim, in its order, to the page's **record
+     history file**, `.forest/archive/record-history/<the page's path at its first trim>` (or the next
+     free `-2`, `-3` name when another page's file holds that name). A line that is none of the three
+     kinds moves there whatever the record's size;
+  3. the page keeps one pointer line for life, written at its first trim and never changed, on top of the
+     record: ``- Earlier record lines (<first date> – <last date>, <n> lines) are kept in `<file>`.``
 
-  `forest record trim` does this and proves that every moved line is in the copy before it writes the
-  page. A later trim adds its own pointer line under the earlier ones. `forest timeline subject <id>`
-  reads the changes in a page's archive copies as well as those on the page, so a subject's history
-  stays whole after a trim.
+  The history file is only ever appended to. Each trim appends one block, an HTML comment line (the day,
+  the page's path then, the SHA-256 of the page text it was cut from, the number of lines and their first
+  and last dates) followed by the moved lines, and the archive manifest lists the block with its offset,
+  length and hash. A later trim adds nothing to the page; it takes out only what moves. `forest record
+  trim` writes the page only after it has proved that the file begins with its bytes before the append,
+  that every moved line stands in the block byte for byte and in order, and that nothing outside the
+  record changed; a trim interrupted before its page write is completed by the next, which finds the
+  block cut from the same page text and does not append it again. A page that moves, is renamed or is
+  re-cut keeps its pointer line and so its file; a page merged into another brings its pointer line to
+  the merged page as a line of where its lines came from, and a trim there appends to the file the first
+  such pointer names. `forest timeline subject <id>` reads the changes in a page's history file (and in
+  the whole-page copies of forests trimmed before history files) as well as those on the page, so a
+  subject's history stays whole after a trim.
 - **Shape**, in this order:
   1. Frontmatter:
      - `entity: <id>` (required);
@@ -727,9 +737,12 @@ owner someone who likes that sport.
   and revision tables; notification decisions without the message text; automation receipts and repeated
   runner prompts; views that code regenerates; merged originals and dumps of retired roots.
 - They live in the lanes, in run directories, or in the archive `.forest/archive/`: one compressed copy
-  per archived version of a page, under the date it was archived and its old path (a page whose record is
-  trimmed twice has two copies), each listed in the archive manifest with its old path, hash, size, reason
-  and, if any, the leaf it was folded into. Nothing is deleted: a copy that a rolled-back commit stored
+  per version of a page that an operation took out or rewrote whole (an archived or folded page, a page
+  before its numbers were starred or an owner's exclusion was taken out), under the date it was archived
+  and its old path, each listed in the archive manifest with its old path, hash, size, reason and, if
+  any, the leaf it was folded into; and one record history file per page whose record was trimmed
+  (section 4, Record trim), each block of it listed in the manifest. `forest archive check` verifies every
+  copy and every block against the manifest. Nothing is deleted: a copy that a rolled-back commit stored
   stays, so the archive only grows. `forest archive show <old path>` prints
   the latest copy of a page, and `forest archive list <old path>` every copy.
 - What a machine repeats becomes facts in the subject's leaf:
@@ -858,7 +871,7 @@ below may still change while the code is ported; the design's milestones say whe
   subject into its category's collection, `admit` moves an entry out into a leaf of its own, `recut` cuts
   a page past the cap by its entries' first days, and `list` names every page with its entries and their
   days. Each logs its moves, so `resolve` follows an entry to its page and back out.
-- **`forest record size | kinds | trim`** and **`forest archive put | show`** keep the update records and the
+- **`forest record size | kinds | trim`** and **`forest archive put | show | list | check`** keep the update records and the
   archive (section 4).
 - **`forest registry build | find`** compiles the registry and finds a subject or a collection entry by any
   name or spelling.

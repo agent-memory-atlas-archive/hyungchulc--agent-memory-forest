@@ -163,12 +163,12 @@ COMMANDS: list[ForestCommand] = [
     ForestCommand(("record", "kinds"), cmd_record_kinds, "Count the forest's record lines by kind and page.",
                   (arg("--examples", type=int, default=0, metavar="N", help="show N lines of each kind"),)),
     ForestCommand(("record", "trim"), cmd_record_trim, "Trim update records over their budget, moving lines to "
-                  "the archive copy.", (_PATHS, _ALL, _DRY, _LOCK)),
+                  "the page's record history file.", (_PATHS, _ALL, _DRY, _LOCK)),
     ForestCommand(("numbers", "check"), cmd_numbers_check, "List the pages that write a number in full (lines and "
                   "kinds, never digits); exit 1 when there is one.", (_PATHS, _ALL)),
     ForestCommand(("numbers", "star"), cmd_numbers_star, "Star the numbers written in full, archiving each page "
                   "first.", (_PATHS, _ALL, _DRY, _LOCK)),
-    ForestCommand(("check",), cmd_check, "Run every check (or those named): structure, derived lists, pointers, "
+    ForestCommand(("check",), cmd_check, "Run every check (or those named): journal, structure, derived lists, pointers, "
                   "agents, levels, categories; one line per problem; exit 1 when there is one. --sync first brings "
                   "the derived lists up to the pages.", _check_arguments()),
     ForestCommand(("lint",), cmd_lint, "Check the contract's rules; exit 1 when the run must fix something.",

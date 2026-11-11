@@ -137,8 +137,9 @@ class TrimTests(CheckForestTestCase):
         self.assertIn(old[0], moved)
         self.assertEqual(pointer.count, len(lines) - len(kept) + 1)
         self.assertEqual((pointer.first, pointer.last), ("2051-01-01", "2051-02-10"))
-        copy = archive.read_copy(root, archive.latest(root, STAND)).decode("utf-8")
-        self.assertEqual(copy, before)
+        history = (root / result.archive_path).read_bytes()
+        self.assertEqual(archive.block_lines(history), list(result.plan.moved))
+        self.assertEqual(archive.entries(root), [])
         self.assertEqual(parse_page((root / STAND).read_text(encoding="utf-8")).content_text(),
                          parse_page(before).content_text())
 
@@ -200,32 +201,42 @@ class TrimTests(CheckForestTestCase):
         self.assertEqual((root / STAND).read_bytes(), before)
         self.assertEqual(archive.entries(root), [])
 
-    def test_the_proof_fails_when_the_copy_lacks_a_moved_line(self) -> None:
-        lines = [change("2051-03-01", 10), "- 2051-03-02 — rechecked, unchanged."]
+    def test_the_proof_fails_when_the_block_lacks_a_moved_line(self) -> None:
+        lines = [change("2051-03-01", 10), "- 2051-03-02 — rechecked, unchanged.", "- 2051-03-03 — tidied."]
         root = self.page_with(lines)
         before = (root / STAND).read_bytes()
+        real = archive.block_bytes
 
-        def lossy_put(forest_root, path, **options):
-            data = before.decode("utf-8").replace(lines[1] + "\n", "").encode("utf-8")
-            return archive.store(forest_root, path, data, reason=options["reason"], lock=options.get("lock"))
+        def lossy(header, moved):
+            return real(header, list(moved)[1:])
 
-        with mock.patch.object(archive, "put", side_effect=lossy_put):
+        with mock.patch.object(archive, "block_bytes", side_effect=lossy):
             with self.assertRaises(ArchiveProofError):
                 record.trim_page(root, STAND)
         self.assertEqual((root / STAND).read_bytes(), before)
+        history = root / ".forest/archive/record-history" / STAND
+        self.assertEqual(history.read_bytes() if history.exists() else b"", b"")
+        self.assertEqual(archive.blocks(root), [])
 
-    def test_a_second_trim_adds_its_pointer_under_the_first(self) -> None:
+    def test_a_second_trim_appends_a_block_and_keeps_the_one_pointer(self) -> None:
         root = self.page_with([change(f"2051-01-{day:02d}") for day in range(1, 29)])
         first = record.trim_page(root, STAND)
+        history = root / first.archive_path
+        first_bytes = history.read_bytes()
         text = (root / STAND).read_text(encoding="utf-8")
         more = "\n".join(change(f"2051-02-{day:02d}") for day in range(1, 29))
         (root / STAND).write_text(text.rstrip("\n") + "\n" + more + "\n", encoding="utf-8")
         second = record.trim_page(root, STAND)
         self.assertTrue(second.written)
+        self.assertIsNone(second.pointer)
+        self.assertEqual(second.archive_path, first.archive_path)
         kept = self.record_of(root)
         self.assertEqual(kept[0], first.pointer)
-        self.assertEqual(kept[1], second.pointer)
-        self.assertNotEqual(first.archive_path, second.archive_path)
+        self.assertEqual(sum(1 for line in kept if RecordPointerLine.match(line)), 1)
+        self.assertTrue(history.read_bytes().startswith(first_bytes))
+        self.assertEqual(len(archive.blocks(root, STAND)), 2)
+        self.assertEqual(len(list(history.parent.iterdir())), 1)
+        self.assertEqual(archive.verify(root), [])
         archived = record.archived_record_lines(root, STAND)
         days = [line.date for line in archived]
         self.assertEqual(days, sorted(days))

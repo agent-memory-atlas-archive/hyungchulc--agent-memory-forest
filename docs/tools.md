@@ -262,9 +262,13 @@ forest record kinds --examples 1
 #   change  04 stm/bakery/ovens/deck-oven.md:24  - 2051-01-01 — Baking temperature: was "201 C", now "202 C". Why: …
 #   run-note  04 stm/bakery/ovens/deck-oven.md:43  - 2051-03-02 — rechecked the page, nothing changed.
 forest record trim "04 stm/bakery/ovens/deck-oven.md"
-# 04 stm/bakery/ovens/deck-oven.md: moved 5 lines, kept 15 (the record holds 2619 bytes, over 2048) -> …
+# 04 stm/bakery/ovens/deck-oven.md: moved 5 lines, kept 15 (the record holds 2619 bytes, over 2048) -> .forest/archive/record-history/04 stm/bakery/ovens/deck-oven.md
 # 1 of 1 pages trimmed
+forest archive check                # every archive copy and record history block against the manifest
 ```
+
+The moved lines go, as one block, to the page's record history file, and the page keeps one pointer line to
+it for life; a later trim appends another block and adds nothing to the page.
 
 ## `forest numbers`
 
