@@ -160,6 +160,7 @@ Details: [Agents](docs/multi-agent.md).
 | [Contract](docs/contract.md) | every rule a forest keeps, stated once |
 | [Agents](docs/multi-agent.md) | agent trees, the two filing policies, reader scopes, the single writer |
 | [Design](docs/v1-design.md) | the package: on-disk layout, settings, package map, milestones |
+| [Structure tools](docs/tools.md) | `forest move`, `levels`, `collections` and `check`, each with an example |
 | [Comparison](docs/comparison.md) | how this differs from Mem0, GBrain, the LLM Wiki idea and plain vector RAG |
 | [Privacy and trust](docs/privacy-and-trust.md) | what stays local, what a reader can see, memory as untrusted data |
 | [Roadmap](docs/roadmap.md) | the three milestones and what comes after |
