@@ -1,0 +1,517 @@
+"""The forest's settings, read from ``forest.toml`` at the forest root.
+
+Every key has a default (design, section 12), so a missing file or a missing
+section means the defaults. A key the loader does not know is an error that
+names it: a misspelt setting must never fall back silently to its default.
+
+The settings that the contract leaves to each forest (the subject types, the
+words that mark a channel, a stage or a dated name, the identity-number
+formats) live here too, so that no rule in the code names one forest's world.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields, replace
+from pathlib import Path
+from typing import Any, Final
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from .errors import MemoryForestError
+
+
+CONFIG_FILENAME: Final[str] = "forest.toml"
+MAX_CONFIG_BYTES: Final[int] = 256 * 1024
+
+POLICIES: Final[tuple[str, ...]] = ("subject-first", "agent-first")
+SCOPES: Final[tuple[str, ...]] = ("own+shared", "all")
+EMBEDDING_PROVIDERS: Final[tuple[str, ...]] = ("none", "openai-compatible")
+
+# Types every forest has, whatever its settings say (contract, section 2).
+REQUIRED_TYPES: Final[tuple[str, ...]] = ("agent", "collection")
+
+_SLUG_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9][a-z0-9-]*")
+_LANGUAGE_RE: Final[re.Pattern[str]] = re.compile(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
+_HIDE_RE: Final[re.Pattern[str]] = re.compile(r"after-hyphen|last-(?P<count>[1-9][0-9]?)")
+_SHAPE_RE: Final[re.Pattern[str]] = re.compile(r"[NA][NA \-./]*[NA]|[NA]")
+
+
+@dataclass(frozen=True, slots=True)
+class ForestSettings:
+    timezone: str = "UTC"
+    language: str = "en"
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerSettings:
+    id: str = "owner"
+    name: str = "the owner"
+    aliases: tuple[str, ...] = ()
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """The owner's name followed by its aliases, each once."""
+        seen: list[str] = []
+        for value in (self.name, *self.aliases):
+            if value not in seen:
+                seen.append(value)
+        return tuple(seen)
+
+
+@dataclass(frozen=True, slots=True)
+class LimitSettings:
+    leaf_cap_bytes: int = 8192
+    leaf_max_bytes: int = 20480
+    record_keep_bytes: int = 2048
+    category_max_leaves: int = 100
+    about_max_ids: int = 8
+    entry_admit_margin_bytes: int = 1024
+    repeat_min_lines: int = 3
+    repeat_min_chars: int = 40
+
+    @property
+    def entry_max_bytes(self) -> int:
+        """The most material a collection entry holds before it is admitted as a leaf."""
+        return self.leaf_cap_bytes - self.entry_admit_margin_bytes
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityFormat:
+    """One national identity number shape to mask.
+
+    The setting is written ``"<shape>:<hide>"``. In the shape ``N`` stands for
+    a digit, ``A`` for a Latin letter, and a space, ``-``, ``.`` or ``/`` for
+    itself. ``<hide>`` is ``after-hyphen`` (every character after the first
+    hyphen) or ``last-<n>`` (the last n letters and digits).
+    """
+
+    shape: str
+    hide: str
+
+    @property
+    def text(self) -> str:
+        return f"{self.shape}:{self.hide}"
+
+    def pattern(self) -> re.Pattern[str]:
+        parts = []
+        for character in self.shape:
+            if character == "N":
+                parts.append("[0-9]")
+            elif character == "A":
+                parts.append("[A-Za-z]")
+            else:
+                parts.append(re.escape(character))
+        return re.compile(r"(?<![0-9A-Za-z])" + "".join(parts) + r"(?![0-9A-Za-z])")
+
+    def mask(self, number: str) -> str:
+        """``number`` (one match of ``pattern``) with its hidden characters starred."""
+        if self.hide == "after-hyphen":
+            head, hyphen, tail = number.partition("-")
+            if not hyphen:
+                return number
+            return head + hyphen + "".join("*" if c.isalnum() else c for c in tail)
+        count = int(self.hide.removeprefix("last-"))
+        characters = list(number)
+        for position in range(len(characters) - 1, -1, -1):
+            if count == 0:
+                break
+            if characters[position].isalnum():
+                characters[position] = "*"
+                count -= 1
+        return "".join(characters)
+
+
+@dataclass(frozen=True, slots=True)
+class NumberSettings:
+    identity_formats: tuple[IdentityFormat, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LevelSettings:
+    leaf_days: int = 2
+    branch_days: int = 5
+    tree_subtopics: int = 3
+    tree_subtopic_days: int = 5
+    tree_subtopic_leaves: int = 3
+    tree_types: tuple[str, ...] = ("project", "topic", "product", "device", "title", "agent")
+    # Leaf kinds that are a sender's stream or the system's notices: a sub-topic made only of
+    # them does not count toward a tree (contract, section 3).
+    stream_kinds: tuple[str, ...] = ("received", "notice", "brief")
+    # Words that, in the sub-topic of a leaf with no `kind:`, mark it as such a stream.
+    stream_subtopic_words: tuple[str, ...] = (
+        "offer",
+        "offers",
+        "alert",
+        "alerts",
+        "newsletter",
+        "newsletters",
+        "mail",
+        "notice",
+        "notices",
+        "digest",
+        "digests",
+        "run-evidence",
+    )
+    # A Timeline line that opens with an agent's id or name, or with one of these stage
+    # names, followed by one of `work_verbs`, records the system's own work and does not
+    # count as a day of the subject (contract, section 3).
+    stage_names: tuple[str, ...] = ("Daily", "the filing run", "the upkeep run")
+    work_verbs: tuple[str, ...] = (
+        "notified",
+        "reminded",
+        "reported",
+        "alerted",
+        "checked",
+        "re-checked",
+        "ran",
+        "sent",
+        "logged",
+        "recorded",
+        "noted",
+    )
+    # A line that opens with one of these tool names followed by `alerted` does not count either.
+    tool_names: tuple[str, ...] = ("Calendar", "Reminders")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSettings:
+    policy: str = "subject-first"
+    orchestrators: tuple[str, ...] = ()
+    default_scope: str = "own+shared"
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingSettings:
+    provider: str = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectSettings:
+    types: tuple[str, ...] = (
+        "person",
+        "group",
+        "organization",
+        "project",
+        "product",
+        "app",
+        "device",
+        "place",
+        "event",
+        "title",
+        "topic",
+        "admin-item",
+        "component",
+        "agent",
+        "collection",
+    )
+    # The id of the system as a whole, when the forest registers one: like the owner's id it
+    # is never named in `about:` (contract, section 3, Pointers). Empty when there is none.
+    system_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class NameSettings:
+    # Words that make a file name dated (contract, section 4, Names): month and season words
+    # in the forest's language. Digits and periods are recognised by shape.
+    date_words: tuple[str, ...] = (
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+        "spring",
+        "summer",
+        "autumn",
+        "winter",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class LintSettings:
+    # Words that name a channel (contract, section 2): a sub-topic made only of them is a
+    # channel, never a sub-topic.
+    channel_words: tuple[str, ...] = (
+        "mail",
+        "email",
+        "inbox",
+        "chat",
+        "chats",
+        "messages",
+        "texts",
+        "sms",
+        "calls",
+        "call-log",
+        "notifications",
+        "browser",
+        "screen",
+    )
+    # Phrases that mark a writer's remark on verification (contract, section 4, Open points).
+    remark_phrases: tuple[str, ...] = (
+        "could not be verified",
+        "not verified",
+        "unverified",
+        "it is unclear whether",
+        "remains unconfirmed",
+        "not yet confirmed by any source",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Config:
+    forest: ForestSettings = field(default_factory=ForestSettings)
+    owner: OwnerSettings = field(default_factory=OwnerSettings)
+    limits: LimitSettings = field(default_factory=LimitSettings)
+    numbers: NumberSettings = field(default_factory=NumberSettings)
+    levels: LevelSettings = field(default_factory=LevelSettings)
+    agents: AgentSettings = field(default_factory=AgentSettings)
+    embeddings: EmbeddingSettings = field(default_factory=EmbeddingSettings)
+    subjects: SubjectSettings = field(default_factory=SubjectSettings)
+    names: NameSettings = field(default_factory=NameSettings)
+    lint: LintSettings = field(default_factory=LintSettings)
+    source: str | None = None
+
+    @property
+    def timezone(self) -> str:
+        return self.forest.timezone
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return ZoneInfo(self.forest.timezone)
+
+    @property
+    def language(self) -> str:
+        return self.forest.language
+
+    @property
+    def subject_types(self) -> frozenset[str]:
+        return frozenset(self.subjects.types)
+
+    @property
+    def about_excluded_ids(self) -> frozenset[str]:
+        """The ids no leaf names in `about:`: the owner's, and the system's when it has one."""
+        return frozenset(value for value in (self.owner.id, self.subjects.system_id) if value)
+
+    def is_orchestrator(self, agent_id: str) -> bool:
+        return agent_id in self.agents.orchestrators
+
+
+DEFAULT_CONFIG: Final[Config] = Config()
+
+_SECTIONS: Final[dict[str, type]] = {
+    "forest": ForestSettings,
+    "owner": OwnerSettings,
+    "limits": LimitSettings,
+    "numbers": NumberSettings,
+    "levels": LevelSettings,
+    "agents": AgentSettings,
+    "embeddings": EmbeddingSettings,
+    "subjects": SubjectSettings,
+    "names": NameSettings,
+    "lint": LintSettings,
+}
+
+
+def _error(key: str, message: str, source: str | None) -> MemoryForestError:
+    details: dict[str, Any] = {"key": key}
+    if source:
+        details["source"] = source
+    return MemoryForestError("config_invalid", f"{key}: {message}", details=details)
+
+
+def _string(key: str, value: Any, source: str | None) -> str:
+    if not isinstance(value, str):
+        raise _error(key, "must be a string", source)
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise _error(key, "must not hold control characters", source)
+    return value
+
+
+def _strings(key: str, value: Any, source: str | None) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise _error(key, "must be a list of strings", source)
+    items = tuple(_string(key, item, source) for item in value)
+    if len(set(items)) != len(items):
+        raise _error(key, "lists a value twice", source)
+    return items
+
+
+def _integer(key: str, value: Any, source: str | None) -> int:
+    if type(value) is not int or value <= 0:
+        raise _error(key, "must be a positive integer", source)
+    return value
+
+
+def parse_identity_format(text: str, *, key: str = "numbers.identity_formats", source: str | None = None) -> IdentityFormat:
+    shape, separator, hide = text.rpartition(":")
+    if not separator or _SHAPE_RE.fullmatch(shape) is None or _HIDE_RE.fullmatch(hide) is None:
+        raise _error(
+            key,
+            f"{text!r} is not '<shape>:<hide>' (shape of N, A, space, '-', '.', '/'; "
+            "hide 'after-hyphen' or 'last-<n>')",
+            source,
+        )
+    if hide == "after-hyphen" and "-" not in shape:
+        raise _error(key, f"{text!r} hides after a hyphen its shape does not have", source)
+    return IdentityFormat(shape=shape, hide=hide)
+
+
+def _section(name: str, raw: Any, source: str | None) -> Any:
+    settings_type = _SECTIONS[name]
+    if not isinstance(raw, Mapping):
+        raise _error(name, "must be a table", source)
+    known = {item.name: item for item in fields(settings_type)}
+    values: dict[str, Any] = {}
+    defaults = settings_type()
+    for key, value in raw.items():
+        dotted = f"{name}.{key}"
+        if key not in known:
+            raise _error(dotted, "is not a known setting", source)
+        default = getattr(defaults, key)
+        if name == "numbers" and key == "identity_formats":
+            values[key] = tuple(
+                parse_identity_format(item, key=dotted, source=source)
+                for item in _strings(dotted, value, source)
+            )
+        elif isinstance(default, bool):
+            raise _error(dotted, "is not supported", source)  # no boolean settings exist
+        elif isinstance(default, int):
+            values[key] = _integer(dotted, value, source)
+        elif isinstance(default, tuple):
+            values[key] = _strings(dotted, value, source)
+        else:
+            values[key] = _string(dotted, value, source)
+    return replace(defaults, **values)
+
+
+def _validate(config: Config) -> Config:
+    source = config.source
+    try:
+        ZoneInfo(config.forest.timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise _error("forest.timezone", f"{config.forest.timezone!r} is not a known time zone", source) from exc
+    if _LANGUAGE_RE.fullmatch(config.forest.language) is None:
+        raise _error("forest.language", f"{config.forest.language!r} is not a language tag", source)
+    if _SLUG_RE.fullmatch(config.owner.id) is None:
+        raise _error("owner.id", f"{config.owner.id!r} is not a slug", source)
+    if not config.owner.name.strip():
+        raise _error("owner.name", "must not be empty", source)
+    if any(not alias.strip() for alias in config.owner.aliases):
+        raise _error("owner.aliases", "must not hold an empty name", source)
+    limits = config.limits
+    if limits.leaf_max_bytes < limits.leaf_cap_bytes:
+        raise _error("limits.leaf_max_bytes", "must not be smaller than limits.leaf_cap_bytes", source)
+    if limits.entry_admit_margin_bytes >= limits.leaf_cap_bytes:
+        raise _error("limits.entry_admit_margin_bytes", "must be smaller than limits.leaf_cap_bytes", source)
+    levels = config.levels
+    if levels.branch_days < levels.leaf_days:
+        raise _error("levels.branch_days", "must not be smaller than levels.leaf_days", source)
+    types = config.subjects.types
+    for value in types:
+        if _SLUG_RE.fullmatch(value) is None:
+            raise _error("subjects.types", f"{value!r} is not a slug", source)
+    missing = [value for value in REQUIRED_TYPES if value not in types]
+    if missing:
+        config = replace(config, subjects=replace(config.subjects, types=(*types, *missing)))
+    for value in levels.tree_types:
+        if value not in config.subjects.types:
+            raise _error("levels.tree_types", f"{value!r} is not one of subjects.types", source)
+    if config.subjects.system_id and _SLUG_RE.fullmatch(config.subjects.system_id) is None:
+        raise _error("subjects.system_id", f"{config.subjects.system_id!r} is not a slug", source)
+    if config.agents.policy not in POLICIES:
+        raise _error("agents.policy", f"must be one of {', '.join(POLICIES)}", source)
+    if config.agents.default_scope not in SCOPES:
+        raise _error("agents.default_scope", f"must be one of {', '.join(SCOPES)}", source)
+    for value in config.agents.orchestrators:
+        if _SLUG_RE.fullmatch(value) is None:
+            raise _error("agents.orchestrators", f"{value!r} is not a slug", source)
+    if config.embeddings.provider not in EMBEDDING_PROVIDERS:
+        raise _error("embeddings.provider", f"must be one of {', '.join(EMBEDDING_PROVIDERS)}", source)
+    return config
+
+
+def parse_config(text: str, *, source: str | None = None) -> Config:
+    """Settings from the text of a ``forest.toml``."""
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise MemoryForestError(
+            "config_invalid",
+            f"forest.toml is not valid TOML: {exc}",
+            details={"source": source} if source else None,
+        ) from exc
+    sections: dict[str, Any] = {}
+    for name, value in raw.items():
+        if name not in _SECTIONS:
+            raise _error(name, "is not a known settings section", source)
+        sections[name] = _section(name, value, source)
+    return _validate(Config(**sections, source=source))
+
+
+def config_path(root: str | os.PathLike[str]) -> Path:
+    return Path(root) / CONFIG_FILENAME
+
+
+def load_config(root: str | os.PathLike[str]) -> Config:
+    """The settings of the forest at ``root``; the defaults when it has no ``forest.toml``."""
+    path = config_path(root)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return DEFAULT_CONFIG
+    if not path.is_file() or path.is_symlink():
+        raise MemoryForestError(
+            "config_invalid",
+            "forest.toml must be a regular file, never a symlink.",
+            details={"source": str(path)},
+        )
+    if info.st_size > MAX_CONFIG_BYTES:
+        raise MemoryForestError(
+            "config_invalid",
+            "forest.toml is larger than any settings file needs to be.",
+            details={"source": str(path), "size": info.st_size},
+        )
+    return parse_config(path.read_text(encoding="utf-8"), source=str(path))
+
+
+def find_root(start: str | os.PathLike[str]) -> Path | None:
+    """The nearest folder at or above ``start`` that holds a ``forest.toml``."""
+    current = Path(os.path.abspath(start))
+    for folder in (current, *current.parents):
+        if (folder / CONFIG_FILENAME).is_file():
+            return folder
+    return None
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, IdentityFormat):
+        return _toml_value(value.text)
+    if isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, tuple):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    raise TypeError(type(value).__name__)
+
+
+def render_config(config: Config = DEFAULT_CONFIG) -> str:
+    """A complete ``forest.toml`` for ``config``, every setting written out."""
+    lines = ["# Settings of this forest. Every key is listed with its value; see the design, section 12."]
+    for name in _SECTIONS:
+        section = getattr(config, name)
+        lines.append("")
+        lines.append(f"[{name}]")
+        for item in fields(section):
+            lines.append(f"{item.name} = {_toml_value(getattr(section, item.name))}")
+    return "\n".join(lines) + "\n"

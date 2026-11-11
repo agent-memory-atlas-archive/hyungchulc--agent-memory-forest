@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -15,6 +16,7 @@ RECEIPTS_DIRECTORY: Final[str] = "receipts"
 RECEIPT_NAME_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}\.json")
 MAX_RECEIPTS: Final[int] = 10_000
 MAX_RECEIPT_BYTES: Final[int] = 256 * 1024
+_CONTROL_RE: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +173,76 @@ def ensure_inside(root: Path, path: Path, *, must_exist: bool = True) -> Path:
             )
         _assert_real(candidate)
     return candidate
+
+
+def safe_join(
+    root: str | os.PathLike[str],
+    relative: str,
+    *,
+    must_exist: bool = False,
+) -> Path:
+    """``root / relative`` after refusing every way the result could leave the root.
+
+    ``relative`` is a forward-slash path inside the root: not absolute, no
+    ``.`` or ``..`` segment, no backslash or control character, NFC. Each
+    component that exists on disk must be a real directory or, for the last
+    one, a regular file or directory; a symlink anywhere is refused. With
+    ``must_exist`` the whole path must exist.
+    """
+    safe_root = require_real_root(root)
+    text = str(relative)
+    if not text or "\\" in text or _CONTROL_RE.search(text):
+        raise MemoryForestError(
+            "invalid_path",
+            "A forest path must be non-empty forward-slash text without control characters.",
+            details={"path": text},
+        )
+    if unicodedata.normalize("NFC", text) != text:
+        raise MemoryForestError(
+            "invalid_path",
+            "A forest path must use NFC Unicode normalization.",
+            details={"path": text},
+        )
+    parts = text.split("/")
+    if text.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+        raise MemoryForestError(
+            "path_escape",
+            "The requested path escapes the selected forest root.",
+            details={"path": text},
+        )
+    current = safe_root
+    for position, part in enumerate(parts):
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if must_exist:
+                raise MemoryForestError(
+                    "path_not_found",
+                    "The requested path does not exist.",
+                    details={"path": text},
+                ) from None
+            return safe_root.joinpath(*parts)
+        if stat.S_ISLNK(info.st_mode):
+            raise MemoryForestError(
+                "symlink_forbidden",
+                "Symlinks are not allowed inside a Memory Forest.",
+                details={"path": "/".join(parts[: position + 1])},
+            )
+        last = position == len(parts) - 1
+        if not last and not stat.S_ISDIR(info.st_mode):
+            raise MemoryForestError(
+                "invalid_path",
+                "A forest path runs through something that is not a directory.",
+                details={"path": "/".join(parts[: position + 1])},
+            )
+        if last and not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise MemoryForestError(
+                "non_regular_file",
+                "Only regular files and directories are allowed in a forest.",
+                details={"path": text},
+            )
+    return current
 
 
 def secure_mkdir(path: Path, *, mode: int = 0o700) -> bool:
