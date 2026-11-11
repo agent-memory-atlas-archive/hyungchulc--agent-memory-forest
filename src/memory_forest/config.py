@@ -127,6 +127,19 @@ class IdentityFormat:
 @dataclass(frozen=True, slots=True)
 class NumberSettings:
     identity_formats: tuple[IdentityFormat, ...] = ()
+    # Words before a number that make it an account number (contract, section 4): account
+    # words in the forest's languages, and the names of the banks the owner uses.
+    account_words: tuple[str, ...] = ("account", "acct", "a/c")
+    # Words before a number that make it a reference that stays whole: an order, a parcel,
+    # an invoice, a booking.
+    reference_words: tuple[str, ...] = ("order", "parcel", "tracking", "invoice", "reference", "booking")
+    # Words before a number that, with a configured identity shape, make it an identity number.
+    identity_words: tuple[str, ...] = ("identity number", "id number", "national id", "personal number")
+    # Regular expressions for the national forms of phone numbers this forest meets; the
+    # international form (a plus sign and 8 to 15 digits) is always recognised.
+    phone_patterns: tuple[str, ...] = ()
+    # Regular expressions for a company's or a service's line, which stays whole.
+    keep_whole: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +280,16 @@ class LintSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordSettings:
+    # How a record line marks the owner's own words (contract, section 4, What a record line
+    # is): one of these name forms, then within the same clause a quotation between one of
+    # the quote-mark pairs. Empty names means the owner's `name` and `aliases`.
+    owner_word_names: tuple[str, ...] = ()
+    # Each pair is two characters, the opening and the closing mark.
+    quote_marks: tuple[str, ...] = ('""', "“”", "«»", "„“")
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     forest: ForestSettings = field(default_factory=ForestSettings)
     owner: OwnerSettings = field(default_factory=OwnerSettings)
@@ -278,6 +301,7 @@ class Config:
     subjects: SubjectSettings = field(default_factory=SubjectSettings)
     names: NameSettings = field(default_factory=NameSettings)
     lint: LintSettings = field(default_factory=LintSettings)
+    record: RecordSettings = field(default_factory=RecordSettings)
     source: str | None = None
 
     @property
@@ -318,6 +342,7 @@ _SECTIONS: Final[dict[str, type]] = {
     "subjects": SubjectSettings,
     "names": NameSettings,
     "lint": LintSettings,
+    "record": RecordSettings,
 }
 
 
@@ -436,6 +461,15 @@ def _validate(config: Config) -> Config:
             raise _error("agents.orchestrators", f"{value!r} is not a slug", source)
     if config.embeddings.provider not in EMBEDDING_PROVIDERS:
         raise _error("embeddings.provider", f"must be one of {', '.join(EMBEDDING_PROVIDERS)}", source)
+    for key in ("phone_patterns", "keep_whole"):
+        for value in getattr(config.numbers, key):
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise _error(f"numbers.{key}", f"{value!r} is not a regular expression: {exc}", source) from exc
+    for value in config.record.quote_marks:
+        if len(value) != 2:
+            raise _error("record.quote_marks", f"{value!r} is not two characters (an opening and a closing mark)", source)
     return config
 
 

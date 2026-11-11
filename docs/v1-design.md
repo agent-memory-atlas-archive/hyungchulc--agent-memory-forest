@@ -200,6 +200,12 @@ repeat_min_chars = 40           # ... each at least this long
 [numbers]
 identity_formats = []           # national identity number shapes to mask, "<shape>:<hide>": N a digit,
                                 # A a letter; hide = after-hyphen | last-<n>, e.g. ["NNNNNN-NNNNNNN:after-hyphen"]
+account_words = ["account", "acct", "a/c"]  # words (and bank names) before a number that make it an account
+reference_words = [...]         # words before a number that keep it whole: order, parcel, invoice, booking ...
+identity_words = [...]          # words before an identity shape that make it an identity number
+phone_patterns = []             # regular expressions for national phone forms; the international form
+                                # (+ and 8 to 15 digits) is always recognised
+keep_whole = []                 # regular expressions for a company's or a service's line, kept whole
 [subjects]
 types = [...]                   # the subject types (section 4); `agent` and `collection` are always in it
 system_id = ""                  # the id of the system's own subject, when the forest keeps one
@@ -220,6 +226,10 @@ tool_names = [...]              #   does not count as a day of its subject
 [lint]
 channel_words = [...]           # channel words a leaf's file name must not carry
 remark_phrases = [...]          # phrases that mark a writer's remark left on a page
+[record]
+owner_word_names = []           # name forms that mark the owner's words in a record line; empty: the
+                                # owner's name and aliases. A name form, then in the same clause a quotation
+quote_marks = ['""', "“”", "«»", "„“"]  # the quote-mark pairs (opening, closing) such a quotation uses
 [agents]
 policy = "subject-first"        # or "agent-first"
 orchestrators = []
