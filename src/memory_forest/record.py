@@ -45,7 +45,6 @@ from .view import read_text, section_start
 TRIM_REASON: Final[str] = "record-trim"
 # The characters a name form may stand from the quotation that follows it, in one clause.
 OWNER_WORD_GAP: Final[int] = 60
-_CHANGE_QUOTES_RE: Final[re.Pattern[str]] = re.compile(r'was "[^"\n]*", now "[^"\n]*"')
 _REASON_OR_SOURCE_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|\.\s+)(?:Why|Sources?):")
 
 
@@ -101,15 +100,20 @@ def owner_word_names(config: Config) -> tuple[str, ...]:
 
 
 def carries_owner_words(text: str, *, config: Config) -> bool:
-    """Whether ``text`` quotes the owner: a name form, then in the same clause a quotation.
+    """Whether ``text`` gives the owner's words: a name form, then in the same clause a quotation.
 
-    The ``was "…", now "…"`` quotes of a change line are the page's own
-    statements, never the owner's words, and are not read.
+    The quotes of what was and what is, and of what was removed, are the
+    page's own statements, never the owner's words, and are not read.
     """
     pattern = _owner_words_re(owner_word_names(config), config.record.quote_marks)
     if pattern is None:
         return False
-    return pattern.search(_CHANGE_QUOTES_RE.sub("", text)) is not None
+    record = RecordLine("", text)
+    if record.was is not None and record.now is not None:
+        text = text.replace(f'was "{record.was}", now "{record.now}"', "", 1)
+    if record.removed is not None:
+        text = text.replace(f'removed "{record.removed}"', "", 1)
+    return pattern.search(text) is not None
 
 
 def _statement_part(text: str) -> str:
@@ -129,21 +133,31 @@ def _names_place(text: str) -> bool:
 def classify(line: str, *, config: Config) -> Kind | None:
     """Which of the three kinds a record line is, or None for a run's note.
 
-    1. ``Kind.CHANGE``: a dated line that quotes what a statement of the page
-       was and what it became, ``was "…", now "…"``.
-    2. ``Kind.OWNER_WORDS``: a dated line that carries the owner's words: one
-       of the name forms of ``record.owner_word_names`` (by default the
-       owner's ``name`` and ``aliases``) followed, within the same clause, by
-       a quotation between one of the ``record.quote_marks`` pairs. It is the
-       removal or correction made at the owner's word; it wins over kind 1,
-       because it is kept whatever its age.
-    3. ``Kind.PROVENANCE``: the ``Earlier record lines (…)`` pointer line, or
-       a dated line that names, in a code span before its ``Why:`` and
-       ``Source:``, the page or archive copy the page's lines came from or
-       went to (a path of the forest or its lanes, or of ``.forest/archive/``).
+    The kinds are read from the fixed words of the line grammar
+    (``was "…", now "…"``, ``removed "…"``, ``Why:``, ``Source:``):
 
-    A line that is none of these (a count of what a run touched, a note that
-    a page was rechecked, an undated line) is a run's note.
+    1. ``Kind.CHANGE``: a dated line that quotes what a statement of the page
+       was and what it became, ``was "…", now "…"``, without the owner's
+       words. It is bounded like any other line.
+    2. ``Kind.OWNER_WORDS``: a removal or a correction made at the owner's
+       word. The line quotes what was taken out (``removed "…"`` in what it
+       says happened) or what the statement was and became (``was "…", now
+       "…"``), AND gives the owner's own words: one of the name forms of
+       ``record.owner_word_names`` (by default the owner's ``name`` and
+       ``aliases``) followed, in the same clause, by a quotation between one
+       of the ``record.quote_marks`` pairs, usually in its ``Why:``. A trim
+       keeps it whatever its age, so a later run does not add back what the
+       owner took out or undo what the owner corrected.
+    3. ``Kind.PROVENANCE``: the ``Earlier record lines (…)`` pointer line, or
+       a dated line that names, in a code span in what it says happened
+       (before its ``Why:`` and ``Source:``), the page or archive copy the
+       page's lines came from or went to (a path of the forest or its lanes,
+       or of ``.forest/archive/``).
+
+    The owner's words on a line that quotes neither a removal nor a change
+    make nothing of it: such a line is kind 3 when it names where lines went,
+    else a run's note, like every other line that is none of these (a count
+    of what a run touched, a note that a page was rechecked, an undated line).
     """
     bare = split_line_ending(line)[0].strip()
     if RecordPointerLine.match(bare) is not None:
@@ -151,13 +165,14 @@ def classify(line: str, *, config: Config) -> Kind | None:
     record = RecordLine.match(bare)
     if record is None:
         return None
-    if carries_owner_words(record.text, config=config):
+    statement = _statement_part(record.text)
+    change = record.was is not None and record.now is not None
+    removal = record.removed is not None and f'removed "{record.removed}"' in statement
+    if (change or removal) and carries_owner_words(record.text, config=config):
         return Kind.OWNER_WORDS
-    # Read here rather than through `RecordLine.was`, whose pattern needs a `Why:` or the line's end
-    # after the closing quote and so misses a change line that goes straight on to its `Source:`.
-    if _CHANGE_QUOTES_RE.search(record.text):
+    if change:
         return Kind.CHANGE
-    if _names_place(_statement_part(record.text)):
+    if _names_place(statement):
         return Kind.PROVENANCE
     return None
 

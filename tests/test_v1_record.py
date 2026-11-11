@@ -47,10 +47,23 @@ class ClassifyTests(unittest.TestCase):
         self.assertIs(classify(made.render(), config=CONFIG), Kind.CHANGE)
 
     def test_the_owner_s_words_make_a_removal_or_correction(self) -> None:
-        line = '- 2051-03-04 — the old rim taken out. Why: Tobin, in the shop chat: "that rim was never mine".'
+        line = '- 2051-03-04 — the old rim: removed "A spare 26-inch rim.". Why: Tobin, in the shop chat: "that rim was never mine".'
         self.assertIs(classify(line, config=CONFIG), Kind.OWNER_WORDS)
+        made = RecordLine.make("2051-03-04", "the old rim", removed="A spare 26-inch rim.", why='Tobin said "not mine"')
+        self.assertIs(classify(made.render(), config=CONFIG), Kind.OWNER_WORDS)
         corrected = '- 2051-03-04 — wheel size: was "26", now "27.5". Why: Tobin Reel said “it is a 27.5”.'
         self.assertIs(classify(corrected, config=CONFIG), Kind.OWNER_WORDS)
+
+    def test_the_owner_s_words_alone_make_no_removal_or_correction(self) -> None:
+        note = '- 2051-03-04 — tidied the page and rechecked every line. Why: Tobin said "keep it tidy".'
+        self.assertIsNone(classify(note, config=CONFIG))
+        moved = ('- 2051-03-04 — the clamp lines moved to `04 stm/workshop/truing-stand/clamps.md`. '
+                 'Why: Tobin said "split it".')
+        self.assertIs(classify(moved, config=CONFIG), Kind.PROVENANCE)
+        removal = '- 2051-03-04 — the old rim: removed "A spare 26-inch rim.". Why: it was sold.'
+        self.assertIsNone(classify(removal, config=CONFIG))
+        reason_only = '- 2051-03-04 — the old rim taken out. Why: Tobin said "removed \"x\"".'
+        self.assertIsNone(classify(reason_only, config=CONFIG))
 
     def test_quotes_of_the_page_s_own_statements_are_not_the_owner_s_words(self) -> None:
         line = '- 2051-03-04 — Tobin\'s clamp: was "loose", now "tight".'
@@ -59,7 +72,7 @@ class ClassifyTests(unittest.TestCase):
         self.assertIsNone(classify(far, config=CONFIG))
 
     def test_the_owner_s_name_forms_and_quote_marks_are_settings(self) -> None:
-        line = "- 2051-03-04 — the rim taken out at the boss's word: «not mine»."
+        line = '- 2051-03-04 — the rim: removed "A spare rim.". Why: the boss said «not mine».'
         self.assertIsNone(classify(line, config=CONFIG))
         custom = parse_config('[record]\nowner_word_names = ["the boss"]\nquote_marks = ["«»"]\n')
         self.assertIs(classify(line, config=custom), Kind.OWNER_WORDS)
@@ -91,7 +104,7 @@ class TrimTests(CheckForestTestCase):
         return record.record_lines(page)
 
     def test_over_the_budget_the_newest_lines_and_the_owner_s_words_stay(self) -> None:
-        owner = '- 2051-01-01 — the old rim taken out. Why: Tobin said "never mine".'
+        owner = '- 2051-01-01 — the old rim: removed "A spare rim.". Why: Tobin said "never mine".'
         old = [change(f"2051-01-{day:02d}") for day in range(2, 28)]
         new = [change(f"2051-02-{day:02d}") for day in range(1, 10)]
         note = "- 2051-02-10 — rechecked, unchanged."
@@ -117,6 +130,34 @@ class TrimTests(CheckForestTestCase):
         self.assertEqual(copy, before)
         self.assertEqual(parse_page((root / STAND).read_text(encoding="utf-8")).content_text(),
                          parse_page(before).content_text())
+
+    def test_a_pass_note_quoting_the_owner_as_its_reason_moves_at_any_size(self) -> None:
+        note = '- 2051-03-02 — rechecked every line of the page. Why: Tobin said "check everything".'
+        root = self.page_with([change("2051-03-01", 10), note])
+        result = record.trim_page(root, STAND)
+        self.assertFalse(result.plan.over_budget)
+        self.assertEqual(result.plan.moved, (note,))
+        self.assertNotIn(note, self.record_of(root))
+
+    def test_the_owner_s_removal_and_correction_stay_through_two_trims_and_old_changes_move(self) -> None:
+        removal = RecordLine.make("2051-01-01", "the old rim", removed="A spare rim.",
+                                  why='Tobin said "never mine"').render()
+        correction = '- 2051-01-02 — wheel size: was "26", now "27.5". Why: Tobin said "it is a 27.5".'
+        plain = change("2051-01-03")
+        root = self.page_with([removal, correction, plain, *(change(f"2051-01-{day:02d}") for day in range(4, 29))])
+        record.trim_page(root, STAND)
+        kept = self.record_of(root)
+        self.assertIn(removal, kept)
+        self.assertIn(correction, kept)
+        self.assertNotIn(plain, kept)
+        text = (root / STAND).read_text(encoding="utf-8")
+        more = "\n".join(change(f"2051-02-{day:02d}") for day in range(1, 29))
+        (root / STAND).write_text(text.rstrip("\n") + "\n" + more + "\n", encoding="utf-8")
+        second = record.trim_page(root, STAND)
+        self.assertTrue(second.written)
+        kept = self.record_of(root)
+        self.assertEqual([line for line in kept if line in (removal, correction)], [removal, correction])
+        self.assertNotIn(change("2051-02-01"), kept)
 
     def test_under_the_budget_only_run_notes_move(self) -> None:
         lines = [change("2051-03-01", 10), "- 2051-03-02 — rechecked, unchanged.", change("2051-03-03", 10)]
