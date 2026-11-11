@@ -4,11 +4,40 @@ All notable changes to Memory Forest are documented in this file. The project fo
 
 ## Unreleased — 1.0.0 (alpha)
 
-Version 1, Agent Memory Forest, is a new generation of the project. This entry lists what the
-documentation now describes; the `forest` commands are being ported in three milestones and none is
-released yet. The 0.3 `memory-forest` command stays in the tree until they replace it.
+Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones. The
+`forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests;
+milestone 2 (finding: the time index, search, the MCP server) and milestone 3 (growing: the stage programs
+and the nightly upkeep) are not built yet. Nothing is released. The 0.3 `memory-forest` command stays in
+the tree until the version 1 commands replace it.
 
 ### Added
+
+- the `forest` command (milestone 1): `init`; `registry build | check | show`; `move` with `leaf`,
+  `rename`, `promote`, `merge`, `archive`, `move-branch`, `new-tree`, `new-agent`, `retire-tree`,
+  `fold-tree`, `set-type`, `set`, `recut-stream`, `plan` and `resolve`; `levels check | apply`;
+  `collections demote | admit | recut | list`; `record size | kinds | trim | history`; `archive put | show |
+  list | check`; `numbers check | star`; `check`; `lint`; `recover`
+- `forest check [NAME …] [--sync]` is the one check command: the journal, the structure, the derived
+  lists, the pointers, the agents, the levels and the categories, one line per problem
+- the lint registers `board_leaves_stale`, `branch_list_stale`, `board_pointers_stale`,
+  `board_pointer_stale`, `level_due`, `category_too_large`, `agent_lane_without_tree` and
+  `agent_settings_differ`; `daily_section_unfiled` is supplied later, with the daily record
+- every record line a tool writes is a change, an owner's word or a provenance line, on the page it is
+  about; the tools write no run notes
+- an agent gets its tree from its settings entry or from the first file in its raw lane
+  (`agents.auto_create`); `forest levels apply` makes it, `forest move new-agent` takes an optional name
+  and role, and a name or role the tree left unset is filled later from the settings
+- new settings: `[agents.known.<id>]`, `agents.auto_create`, `agents.folded_type`,
+  `levels.shared_branch` and `levels.default_subtopic`
+- readers see trees by scope: an orchestrator every tree, an agent the shared trees, its own and those its
+  task names, any other reader the shared trees
+- every commit keeps an undo journal (`.forest/journal/commit.json`); the commit of a killed writer is
+  rolled back by the next writer or by `forest recover`
+- trimmed record lines go to one append-only record history file per page, with one pointer line for
+  life; `forest record history` prints them, `forest archive list` shows each block with its kind, and
+  `forest archive check` verifies copies and blocks against the manifest
+- `forest move set-type` and `forest move set` write change lines; `retire-tree`, `fold-tree` and
+  `recut-stream` write provenance lines
 
 - `docs/contract.md`: the version 1 forest contract, every rule stated once: the lanes and the four forest
   layers; the subject as the unit with one registry line per subject; levels set by code from distinct

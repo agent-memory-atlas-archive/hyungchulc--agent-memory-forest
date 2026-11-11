@@ -186,9 +186,10 @@ Agent Memory Forest is alpha software. Version 1.0.0 is unreleased.
 
 - **Written:** the contract, the design, the concepts and agents guides, and an invented synthetic forest
   that follows the contract.
-- **Milestone 1, skeleton (in this tree, unreleased):** the structure tools (registry, move, levels,
-  collections, record, archive, derived lists, checks, lint, number starring, agents' trees made from
-  their lanes or settings) with tests on made-up forests, and the synthetic forest passing every check.
+- **Milestone 1, skeleton (in this tree, unreleased):** the `forest` structure commands (registry, move,
+  levels, collections, record with its history files, archive, `check`, `lint`, number starring,
+  `recover`), agents' trees made from their lanes or settings, and an undo journal for every commit, with
+  tests on made-up forests and the synthetic forest passing every check.
 - **Milestone 2, finding (not built yet):** the time index, search with reader scopes, the MCP server. The
   reader-scope rule itself (`agents.readable_trees`) is in milestone 1.
 - **Milestone 3, growing (not built yet):** the stage programs and their prompts, the nightly upkeep.
