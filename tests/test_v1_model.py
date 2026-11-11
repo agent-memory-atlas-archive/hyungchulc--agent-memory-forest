@@ -210,6 +210,16 @@ class LineShapeTests(unittest.TestCase):
         made = RecordLine.make("2051-03-02", "oven limit", was="a", now="b", why="seen", sources=["05 daily/2051-03-02.md"])
         self.assertEqual(made.render(), '- 2051-03-02 — oven limit: was "a", now "b". Why: seen. Source: `05 daily/2051-03-02.md`.')
         self.assertEqual(RecordLine.parse(made.render()).now, "b")
+        sourced = RecordLine.parse('- 2051-03-02 — oven limit: was "a", now "b". Source: `05 daily/2051-03-02.md`.')
+        self.assertEqual((sourced.was, sourced.now, sourced.sources), ("a", "b", ["05 daily/2051-03-02.md"]))
+        made = RecordLine.make("2051-03-02", "oven limit", was="a", now="b", sources=["05 daily/2051-03-02.md"])
+        self.assertEqual((RecordLine.parse(made.render()).was, RecordLine.parse(made.render()).now), ("a", "b"))
+        removal = RecordLine.make("2051-03-02", "the rye note", removed="Rye on Fridays.", why='Ilse said "drop it"')
+        self.assertEqual(removal.render(), '- 2051-03-02 — the rye note: removed "Rye on Fridays.". Why: Ilse said "drop it".')
+        parsed = RecordLine.parse(removal.render())
+        self.assertEqual((parsed.what, parsed.removed, parsed.was), ("the rye note", "Rye on Fridays.", None))
+        with self.assertRaises(LineShapeError):
+            RecordLine.make("2051-03-02", "x", was="a", now="b", removed="c")
         pointer = RecordPointerLine(
             "2050-01-02", "2050-12-30", 14, ".forest/archive/2051-03-02/04 stm/bakery/deck-oven/repairs.md.gz"
         )

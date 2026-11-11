@@ -1043,7 +1043,10 @@ class UpLink:
 
 
 _RECORD_RE: Final[re.Pattern[str]] = re.compile(r"- (?P<date>" + _DATE + r") — (?P<text>.*)")
-_WAS_NOW_RE: Final[re.Pattern[str]] = re.compile(r'was "(?P<was>.*?)", now "(?P<now>.*?)"(?=\.?(?: Why:|\s*$))')
+# The closing quote of `now "…"` is followed by the line's end, its `Why:` or its `Source:`.
+_QUOTE_END = r'(?=\.?(?: Why:| Source:|\s*$))'
+_WAS_NOW_RE: Final[re.Pattern[str]] = re.compile(r'was "(?P<was>.*?)", now "(?P<now>.*?)"' + _QUOTE_END)
+_REMOVED_RE: Final[re.Pattern[str]] = re.compile(r'removed "(?P<removed>.*?)"' + _QUOTE_END)
 _WHY_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|\. )Why: (?P<why>.*?)(?=\. Source:|\.?\s*$)")
 _SOURCE_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|\. )Source: (?P<source>.*?)\.?\s*$")
 
@@ -1079,10 +1082,16 @@ class RecordLine:
         now: str | None = None,
         why: str | None = None,
         sources: Iterable[str] = (),
+        removed: str | None = None,
     ) -> RecordLine:
+        """A record line; ``was``/``now`` write a change, ``removed`` a removal (``removed "…"``), never both."""
         text = what
+        if removed is not None and (was is not None or now is not None):
+            raise LineShapeError("a record line is a change or a removal, not both")
         if was is not None or now is not None:
             text += f': was "{was or ""}", now "{now or ""}"'
+        if removed is not None:
+            text += f': removed "{removed}"'
         if why:
             text += f". Why: {why.rstrip('.')}"
         listed = [f"`{source}`" for source in sources]
@@ -1092,7 +1101,7 @@ class RecordLine:
 
     @property
     def what(self) -> str:
-        for marker in (": was ", ". Why: ", ". Source: "):
+        for marker in (": was ", ": removed ", ". Why: ", ". Source: "):
             if marker in self.text:
                 return self.text.split(marker, 1)[0]
         return self.text.rstrip(".")
@@ -1106,6 +1115,12 @@ class RecordLine:
     def now(self) -> str | None:
         found = _WAS_NOW_RE.search(self.text)
         return found["now"] if found else None
+
+    @property
+    def removed(self) -> str | None:
+        """What a removal line quotes as taken out (``removed "…"``), or None."""
+        found = _REMOVED_RE.search(self.text)
+        return found["removed"] if found else None
 
     @property
     def why(self) -> str | None:
