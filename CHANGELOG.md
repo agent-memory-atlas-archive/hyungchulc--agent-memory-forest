@@ -38,6 +38,8 @@ the tree until the version 1 commands replace it.
   `forest archive check` verifies copies and blocks against the manifest
 - `forest move set-type` and `forest move set` write change lines; `retire-tree`, `fold-tree` and
   `recut-stream` write provenance lines
+- the read path stars what it shows: `forest archive show`, the record lines `forest record history` reads
+  back from a history file, `forest record kinds --examples` and `forest registry show`
 - every record line a writer adds goes through the number starring, and a merge of a subject saved under
   its phone number writes that number starred in its record lines and in the alias it adds; one test runs
   every writer on the synthetic forest and classifies each record line it adds

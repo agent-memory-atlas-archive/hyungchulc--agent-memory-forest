@@ -89,7 +89,11 @@ def cmd_record_size(arguments: argparse.Namespace) -> int:
 
 
 def cmd_record_kinds(arguments: argparse.Namespace) -> int:
-    report = forest_record.kinds(forest_root(arguments), examples=arguments.examples)
+    root = forest_root(arguments)
+    report = forest_record.kinds(root, examples=arguments.examples)
+    config = load_config(root)
+    report.examples = {label: [(path, number, forest_numbers.star_shown(text, config=config))
+                               for path, number, text in items] for label, items in report.examples.items()}
     if arguments.json:
         _print_json({"ok": True, **report.as_dict()})
         return 0

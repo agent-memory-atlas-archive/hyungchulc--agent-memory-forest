@@ -323,6 +323,10 @@ forest archive list --path "04 stm/bakery/ovens/deck-oven.md"
 
 ## `forest numbers`
 
+What a tool shows is starred the same way: `forest archive show`, `forest record history`, `forest record
+kinds --examples` and `forest registry show` print a person's number, an account, a card or an identity
+number only starred, while the archive copy and the history file keep their bytes.
+
 `numbers check PATH … | --all` names the pages that write an account, card, identity or person's phone
 number in full, by line and kind and never by digits, and exits 1 when there is one; `numbers star PATH …
 | --all [--dry-run]` stars them, keeping a whole-page copy in the archive first (contract, section 4,

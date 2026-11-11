@@ -13,8 +13,9 @@ from . import __version__
 from . import archive as forest_archive
 from . import layout as forest_layout
 from . import movelog as forest_movelog
+from . import numbers as forest_numbers
 from . import registry as forest_registry
-from .config import find_root
+from .config import find_root, load_config
 from .core import audit_forest, doctor_forest, initialize_forest, validate_forest
 from .errors import MemoryForestError
 from .index import index_forest, route_index, search_index
@@ -387,10 +388,11 @@ def cmd_registry_check(arguments: argparse.Namespace) -> int:
 
 
 def cmd_registry_show(arguments: argparse.Namespace) -> int:
-    built = forest_registry.load(forest_root(arguments))
+    root = forest_root(arguments)
+    built = forest_registry.load(root)
     found = built.subject(arguments.name) or built.entry(arguments.name) or built.lookup(arguments.name)
     if found is not None:
-        _print_json(found)
+        _print_json(forest_numbers.star_shown(found, config=load_config(root)))
         return 0
     matches = built.find(arguments.name)
     if arguments.json:
@@ -444,7 +446,9 @@ def cmd_archive_put(arguments: argparse.Namespace) -> int:
 
 
 def cmd_archive_show(arguments: argparse.Namespace) -> int:
-    data = forest_archive.show(forest_root(arguments), arguments.path)
+    root = forest_root(arguments)
+    text = forest_archive.show(root, arguments.path).decode("utf-8", "surrogateescape")
+    data = forest_numbers.star_shown(text, config=load_config(root)).encode("utf-8", "surrogateescape")
     sys.stdout.flush()
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()

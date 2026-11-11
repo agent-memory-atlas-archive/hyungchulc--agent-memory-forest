@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from v1_checks_support import STAND, CheckForestTestCase, leaf  # noqa: E402
 from v1_support import REPOSITORY_ROOT, SYNTHETIC_FOREST  # noqa: E402
 
-from memory_forest import archive, numbers  # noqa: E402
+from memory_forest import archive, numbers, record  # noqa: E402
 from memory_forest.config import DEFAULT_CONFIG, parse_config, render_config  # noqa: E402
 from memory_forest.errors import MemoryForestError  # noqa: E402
 
@@ -163,6 +163,34 @@ class StarCommandTests(CheckForestTestCase):
     def test_the_synthetic_forest_is_clean(self) -> None:
         result = forest("numbers", "check", "--root", str(SYNTHETIC_FOREST))
         self.assertEqual(result.returncode, 0, result.stdout)
+
+
+
+class ReadPathTests(CheckForestTestCase):
+    """The tools star what they show, as the write path stars what it writes."""
+
+    def test_an_archived_copy_is_shown_starred(self) -> None:
+        root = self.workshop({STAND: leaf("truing-stand", STAND_UP, body=f"Paid with {CARD}.")})
+        numbers.star(root, [STAND])
+        self.assertIn(CARD, archive.read_copy(root, archive.latest(root, STAND)).decode("utf-8"))  # kept whole
+        shown = forest("archive", "show", STAND, "--root", str(root))
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn(b"411* **** **** 1111", shown.stdout)
+        self.assertNotIn(CARD.encode(), shown.stdout)
+
+    def test_record_lines_read_back_from_a_history_file_are_starred(self) -> None:
+        lines = [f'- 2051-01-{day:02d} — Contact line: was "the old desk", now "{PHONE}, ask for the desk". '
+                 "Why: the workshop moved." for day in range(1, 29)]
+        root = self.workshop({STAND: leaf("truing-stand", STAND_UP, record="\n".join(lines))})
+        result = record.trim_page(root, STAND)
+        self.assertTrue(result.written)
+        self.assertIn(PHONE, (root / result.archive_path).read_text(encoding="utf-8"))  # the history keeps bytes
+        read_back = [line.render() for line in record.archived_record_lines(root, STAND)]
+        self.assertTrue(read_back)
+        self.assertTrue(all(numbers.star_middle(PHONE) in line and PHONE not in line for line in read_back))
+        shown = forest("record", "history", STAND, "--root", str(root))
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertNotIn(PHONE.encode(), shown.stdout)
 
 
 if __name__ == "__main__":

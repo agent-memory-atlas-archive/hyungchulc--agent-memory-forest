@@ -677,8 +677,11 @@ When the owner says that something is not to be remembered:
    format as fact. One format is written `"<shape>:<hide>"`: in the shape `N` is a digit, `A` a Latin
    letter, and a space, `-`, `.` or `/` stands for itself; `<hide>` is `after-hyphen` (every character
    after the first hyphen) or `last-<n>` (the last n letters and digits).
-4. Every page a stage writes is starred this way, and the tools star what they show. The raw lane
-   `06 istm` keeps its bytes.
+4. Every page a stage writes is starred this way, every record line a tool writes too (section 4, What a
+   record line is), and the tools star what they show: a page, an archived copy (`forest archive show`),
+   record lines read back from a record history file (`forest record history`), example lines and registry
+   entries. The archive keeps the bytes it was given, and the raw lane `06 istm` keeps its bytes; a
+   page that holds such a number whole is the violation `account_number_in_full` (section 8).
 
 ## 5. Pages above the leaves
 

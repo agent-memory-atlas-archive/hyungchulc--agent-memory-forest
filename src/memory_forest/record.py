@@ -27,6 +27,7 @@ from typing import Any, Final
 
 from . import archive as forest_archive
 from . import layout
+from . import numbers as forest_numbers
 from .config import Config, load_config
 from .errors import MemoryForestError
 from .locking import LockToken, atomic_write, writer_lock
@@ -566,7 +567,7 @@ def _history_lines(root: Path, history_file: str) -> list[str]:
 
 def archived_record_lines(root: str | os.PathLike[str], path: str) -> list[RecordLine]:
     """The dated record lines of a page that its record history file and archive copies hold and the page
-    no longer does.
+    no longer does. A number written in full in them is starred, as on a page.
 
     A pointer to a record history file is read once. A pointer to a
     whole-page copy (a forest trimmed before history files) is followed, and
@@ -574,6 +575,7 @@ def archived_record_lines(root: str | os.PathLike[str], path: str) -> list[Recor
     once, oldest first by date (lines of one date in the order found).
     """
     safe_root = require_real_root(root)
+    settings = load_config(safe_root)
     relative = layout.normalize(path)
     page = parse_page(read_text(layout.resolve(safe_root, relative, must_exist=True)))
     on_page = set(record_lines(page))
@@ -584,6 +586,7 @@ def archived_record_lines(root: str | os.PathLike[str], path: str) -> list[Recor
     history_prefix = f"{layout.ARCHIVE_DIR}/{forest_archive.HISTORY_DIR}/"
 
     def take(line: str) -> None:
+        line = forest_numbers.star_numbers(line, config=settings)[0]  # what is shown is starred
         record = RecordLine.match(line.strip())
         if record is None or line in on_page or line in seen:
             return

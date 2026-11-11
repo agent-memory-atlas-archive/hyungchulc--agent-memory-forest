@@ -242,6 +242,18 @@ def star_numbers(text: str, *, config: Config) -> tuple[str, Counter[str]]:
     return "".join(pieces), Counter(span.kind for span in spans)
 
 
+def star_shown(value: Any, *, config: Config) -> Any:
+    """What a tool shows (a text, or the strings of a JSON-like value), with every number of ``find_numbers``
+    starred: the read path stars what it shows as the write path stars what it writes."""
+    if isinstance(value, str):
+        return star_numbers(value, config=config)[0]
+    if isinstance(value, dict):
+        return {key: star_shown(item, config=config) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [star_shown(item, config=config) for item in value]
+    return value
+
+
 # ─────────────────────────────── pages ───────────────────────────────
 
 
@@ -354,4 +366,5 @@ __all__ = [
     "star",
     "star_middle",
     "star_numbers",
+    "star_shown",
 ]
