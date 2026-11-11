@@ -20,6 +20,16 @@ class PublicReleaseAuditTests(unittest.TestCase):
             (root / "README.md").write_text("# Synthetic Forest\n", encoding="utf-8")
             self.assertTrue(MODULE.audit(root)["ok"])
 
+    def test_a_linked_worktree_git_pointer_is_skipped_like_the_git_folder(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "README.md").write_text("# Synthetic Forest\n", encoding="utf-8")
+            pointer = "gitdir: " + "/" + "Users" + "/person/project/.git/worktrees/one\n"
+            (root / ".git").write_text(pointer, encoding="utf-8")
+            self.assertTrue(MODULE.audit(root)["ok"])
+            (root / ".git").write_text(pointer + "a second line\n", encoding="utf-8")
+            self.assertEqual([item["rule"] for item in MODULE.audit(root)["findings"]], ["absolute_macos_home"])
+
     def test_private_home_and_secret_fail(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

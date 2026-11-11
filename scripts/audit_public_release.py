@@ -16,6 +16,20 @@ MAX_TOTAL_BYTES = 50_000_000
 PRIVATE_RUNTIME_NAMES = {".memory-forest", "memory-forest-data"}
 SKIP_DIRECTORY_NAMES = {".git", ".venv", "__pycache__"}
 SKIP_ROOT_DIRECTORY_NAMES = {"build", "dist"}
+GIT_POINTER_PREFIX = b"gitdir: "
+
+
+def is_git_pointer(entry: os.DirEntry[str]) -> bool:
+    """A linked worktree's `.git` file: one `gitdir:` line, skipped as the `.git` folder is."""
+    if entry.name != ".git" or not entry.is_file(follow_symlinks=False):
+        return False
+    try:
+        with open(entry.path, "rb") as handle:
+            data = handle.read(4097)
+    except OSError:
+        return False
+    lines = data.splitlines()
+    return len(data) <= 4096 and len(lines) == 1 and lines[0].startswith(GIT_POINTER_PREFIX)
 
 
 def patterns() -> list[tuple[str, re.Pattern[str]]]:
@@ -118,6 +132,8 @@ def audit(root: Path) -> dict[str, object]:
                 entry.name in SKIP_DIRECTORY_NAMES
                 or (depth == 0 and entry.name in SKIP_ROOT_DIRECTORY_NAMES)
             ):
+                continue
+            if is_git_pointer(entry):
                 continue
             findings.extend(path_findings(relative, rules))
             if entry.is_symlink():
