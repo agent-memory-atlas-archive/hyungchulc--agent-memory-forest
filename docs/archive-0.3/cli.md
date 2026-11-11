@@ -71,7 +71,7 @@ memory-forest apply-daily ROOT daily-plan.json
 printf '%s' "$daily_plan" | memory-forest apply-daily ROOT -
 ```
 
-Applies a strict [Daily Plan v1](daily-plan.schema.json) to the canonical
+Applies a strict [Daily Plan v1](../daily-plan.schema.json) to the canonical
 `05 daily/YYYY-MM-DD.md` source lane. The plan has exactly
 `schema_version`, `forest_id`, `transaction_id`, `date`, `entries`, and
 `provenance`. `forest_id` is the stable 32-character lowercase hexadecimal
@@ -105,7 +105,7 @@ printf '%s' "$structured_plan" | memory-forest apply-structured ROOT -
 ```
 
 Applies a strict [Structured Sweep Plan
-v1](structured-sweep-plan.schema.json). One plan may create or fully replace
+v1](../structured-sweep-plan.schema.json). One plan may create or fully replace
 semantic targets in XLTM, LTM, MTM, and STM. A target names a layer and only
 the tree, branch, or leaf identifiers valid for that layer. Replace changes
 must bind the exact reviewed preimage SHA-256. Raw paths, delete, move, partial
@@ -131,7 +131,7 @@ printf '%s' "$promotion_plan" | memory-forest promote ROOT -
 ```
 
 Applies the older bounded leaf-promotion [Promotion Plan
-v1](promotion-plan.schema.json). It remains available for integrations that
+v1](../promotion-plan.schema.json). It remains available for integrations that
 need one semantic Daily-to-STM append. New integrations should use
 `structured-context` and `apply-structured` so current structured memory and
 all four layers are judged together. Each
@@ -175,7 +175,7 @@ Successful output contains exactly these fields:
 }
 ```
 
-Receipts use [Write Receipt v1](write-receipt.schema.json). They bind the
+Receipts use [Write Receipt v1](../write-receipt.schema.json). They bind the
 operation, transaction, canonical plan digest, changed canonical paths, and
 the successful validation/audit/index summaries. On an exact retry,
 `already_applied` is `true`, `touched` is empty, and the original receipt hash
@@ -233,7 +233,7 @@ A trail containing direct original-query evidence always ranks ahead of a plan-o
 
 The relationship is ownership and provenance metadata, not an access-control decision. An integrating system may use explicit source records to connect knowledge, decisions, responsibilities, projects, and time, but it must keep identity and permission policy separate.
 
-An optional QueryPlan supplies additive translations, variants, synonyms, or domain terms. It uses the versioned [query-only protocol](query-plan.schema.json). The CLI accepts either a safely revalidated regular non-symlink file or `-` for standard input. The default plan limit is 8 probes and the absolute supported maximum is 16. The whole plan is limited to 32,768 UTF-8 bytes.
+An optional QueryPlan supplies additive translations, variants, synonyms, or domain terms. It uses the versioned [query-only protocol](../query-plan.schema.json). The CLI accepts either a safely revalidated regular non-symlink file or `-` for standard input. The default plan limit is 8 probes and the absolute supported maximum is 16. The whole plan is limited to 32,768 UTF-8 bytes.
 
 ```json
 {

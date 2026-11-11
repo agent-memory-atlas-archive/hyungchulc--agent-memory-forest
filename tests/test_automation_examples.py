@@ -18,8 +18,8 @@ LAUNCHD_TEMPLATE = (
     AUTOMATION_ROOT / "org.memory-forest.maintenance.plist.example"
 )
 SVG_ASSETS = (
-    REPOSITORY_ROOT / "docs" / "assets" / "memory-forest-retrieval.svg",
-    REPOSITORY_ROOT / "docs" / "assets" / "memory-forest-automation.svg",
+    REPOSITORY_ROOT / "docs" / "archive-0.3" / "assets" / "memory-forest-retrieval.svg",
+    REPOSITORY_ROOT / "docs" / "archive-0.3" / "assets" / "memory-forest-automation.svg",
 )
 REAL_TEMPORARY_ROOT = Path(tempfile.gettempdir()).resolve()
 

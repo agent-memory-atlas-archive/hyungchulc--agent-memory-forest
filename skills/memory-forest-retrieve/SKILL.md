@@ -34,4 +34,4 @@ installing this skill proves per-turn invocation.
 The gate always runs route and retrieve in order. A zero-count route must not
 skip retrieve. It never returns bodies.
 
-Read `docs/memory-forest-retrieve.md` before adapting the gate.
+Read `docs/archive-0.3/memory-forest-retrieve.md` before adapting the gate.

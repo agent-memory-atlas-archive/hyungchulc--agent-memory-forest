@@ -60,7 +60,7 @@ The protocol is closed.
 - The default limit is 8 probes. A forest may lower or raise it to at most 16 through the optional local retrieval configuration.
 - Duplicate JSON object keys, non-finite numbers, unsupported schema versions, and malformed UTF-8 fail closed.
 
-The machine-readable shape is in [query-plan.schema.json](query-plan.schema.json). Schema validation is a structural precheck, not sufficient acceptance proof. The CLI additionally requires `schema_version` to arrive as the exact JSON integer token `1`, so `1.0` is rejected even though some JSON Schema validators treat it as the same mathematical integer. The CLI also performs normalization, control and surrogate rejection, uniqueness, byte-size, and configured-limit checks.
+The machine-readable shape is in [query-plan.schema.json](../query-plan.schema.json). Schema validation is a structural precheck, not sufficient acceptance proof. The CLI additionally requires `schema_version` to arrive as the exact JSON integer token `1`, so `1.0` is rejected even though some JSON Schema validators treat it as the same mathematical integer. The CLI also performs normalization, control and surrogate rejection, uniqueness, byte-size, and configured-limit checks.
 
 ## Local invocation
 

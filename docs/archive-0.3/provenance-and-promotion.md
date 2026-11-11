@@ -78,7 +78,7 @@ The v0.3 core applies provenance without accepting executable instructions or
 raw filesystem destinations.
 
 `memory-forest apply-daily ROOT PLAN` accepts [Daily Plan
-v1](daily-plan.schema.json). Its exact top-level fields are
+v1](../daily-plan.schema.json). Its exact top-level fields are
 `schema_version`, `forest_id`, `transaction_id`, `date`, `entries`, and
 `provenance`. Every admitted entry has a stable `entry_id`, bounded
 `source_record_ids`, and an inert summary. Its machine marker binds that entry
@@ -86,12 +86,12 @@ to the plan's exact `provenance.result_sha256`. `transaction_id` must equal
 `provenance.batch_id`.
 
 `memory-forest apply-structured ROOT PLAN` accepts [Structured Sweep Plan
-v1](structured-sweep-plan.schema.json). It binds one reviewed whole-Forest
+v1](../structured-sweep-plan.schema.json). It binds one reviewed whole-Forest
 snapshot and the exact admitted Daily commits, then applies bounded creates or
 full-body replacements across XLTM, LTM, MTM, and STM in one transaction.
 
 `memory-forest promote ROOT PLAN` accepts [Promotion Plan
-v1](promotion-plan.schema.json). Each promotion names existing Daily entry IDs
+v1](../promotion-plan.schema.json). Each promotion names existing Daily entry IDs
 and supplies only:
 
 ```json
@@ -125,7 +125,7 @@ modes, and conflicting transaction IDs. A handled post-write validation,
 audit, or index failure restores the previous canonical files and derived
 index.
 
-A successful [Write Receipt v1](write-receipt.schema.json) is stored at
+A successful [Write Receipt v1](../write-receipt.schema.json) is stored at
 `.memory-forest/receipts/<transaction_id>.json` only after validation, audit,
 and atomic indexing succeed. It binds the operation, plan digest, transaction,
 touched canonical paths, and proof summaries. An exact retry returns the same

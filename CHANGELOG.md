@@ -35,8 +35,9 @@ released yet. The 0.3 `memory-forest` command stays in the tree until they repla
 - the project is presented as "Agent Memory Forest"; `README.md` and `README.ko.md` are rewritten for
   version 1, with a quick start that marks which milestone brings each command
 - `docs/privacy-and-trust.md` and `docs/roadmap.md` are rewritten for version 1
-- the 0.3 documents, schemas and diagrams that version 1 replaces moved to `docs/archive-0.3/`, each with a
-  first line naming what replaces it
+- the 0.3 documents and diagrams that version 1 replaces moved to `docs/archive-0.3/`, each with a first
+  line naming what replaces it; the five 0.3 plan and receipt schemas stay in `docs/`, beside the 0.3 code
+  that still uses them
 
 ### Removed
 

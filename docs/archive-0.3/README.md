@@ -19,7 +19,8 @@ until the version 1 `forest` commands replace it (see [the roadmap](../roadmap.m
 | [codex-debug-bridge.md](codex-debug-bridge.md) | no equivalent |
 | [roadmap.md](roadmap.md) | [the roadmap](../roadmap.md) |
 
-The 0.3 plan and receipt schemas (`daily-plan`, `structured-sweep-plan`, `promotion-plan`, `query-plan`,
-`write-receipt`, all `*.schema.json`) and the 0.3 diagrams under `assets/` are kept beside them. The 0.3
+The 0.3 diagrams under `assets/` are kept beside them. The 0.3 plan and receipt schemas (`daily-plan`,
+`structured-sweep-plan`, `promotion-plan`, `query-plan`, `write-receipt`, all `*.schema.json`) stay in
+[`docs/`](..), beside the 0.3 code that still reads and writes those shapes. The 0.3
 synthetic example forest is in the Git history at the `v0.3.0` tag; the runnable copy that
 `memory-forest init --example` creates is built into the 0.3 code.
