@@ -493,6 +493,12 @@ from .tool_commands import TOOL_COMMANDS  # noqa: E402  (move, levels, collectio
 FOREST_COMMANDS.extend(TOOL_COMMANDS)
 
 
+# The record, numbers, check and lint commands live in their own module, which uses the helpers above.
+from . import cli_upkeep as _cli_upkeep  # noqa: E402
+
+FOREST_COMMANDS += _cli_upkeep.COMMANDS
+
+
 def build_forest_parser(commands: Sequence[ForestCommand] | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="forest",
