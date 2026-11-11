@@ -94,6 +94,12 @@ number, the setting that holds it is given with its default.
   `about:`. The pages are the source; the JSON is derived.
 - One id names one subject, and an alias belongs to one subject. When two ids turn out to be one subject,
   the move tool merges them (section 9).
+- **Named from its own material, never merged on its own material's claim.** A subject takes its name from
+  its own material, but what that material claims about who it is (a sender writing in a company's name may
+  be the company or someone posing as it) is no ground to merge it into another subject. When several
+  subjects would take one name, each carries a distinguishing word (`Lowtide café (mail sender)`) and none
+  takes the bare name; a merge waits for a reader who has read the material of both sides. No tool merges
+  on a name by itself: a name two subjects claim is a registry problem to report.
 - Names and aliases are compared after NFKC normalisation, case folding and collapsing white space: two
   that are equal after that are one name. Two that differ only in punctuation or spacing are reported by
   `forest registry check` as likely the same and are never merged by a tool on that ground alone.
@@ -453,6 +459,9 @@ helper started for one task works as the agent that started it.
 11. Only what the owner opened is filed: a page they visited, a video they played, an item their history
     or a player records. A recommendation, a card or a link only shown to them stays in the daily record,
     with no leaf, Timeline line or summary section of its own.
+12. A line a model writes to state what quoted turns say is filed only after a second reading of the same
+    turns has judged it: kept, corrected or dropped. Code can check that a line's names and numbers stand in
+    its source; it cannot check what the line means.
 
 ### Episodes
 
@@ -986,7 +995,11 @@ below may still change while the code is ported; the design's milestones say whe
   5. keep boards, `## Leaves` lists and current-state lines true for what it touched, carrying up only
      what section 5 allows;
   6. after its commit, run `forest levels apply --subjects` with the subjects it filed, and merge with the
-     move tool any two ids it found to name one subject.
+     move tool any two ids it found to name one subject, having read the material of both (section 2: a
+     name or a claim in one side's material is no ground for a merge).
+
+  A line its model writes to state what quoted turns say is judged by a second reading of the same turns
+  before it is filed (section 4, What a leaf holds).
 
   It never writes machine pages. Under `agent-first` it files what an agent learned into that agent's
   tree (section 3, Agent trees).

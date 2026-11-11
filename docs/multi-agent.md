@@ -161,6 +161,14 @@ This keeps every page change in one place in time, which is what lets the move l
 the lint baseline stay exact. The stage programs that do this arrive in milestone 3; the lock and the move
 tool in milestone 1.
 
+Two rules hold for whoever files with a model. A line the model writes to state what quoted turns say is
+filed only after a second reading of the same turns has kept, corrected or dropped it: code can check that
+its names and numbers stand in the source, never what it means. And a subject is named from its own
+material but never merged into another on what that material claims: a sender that writes in Cinderwell
+Supply's name may be the shop or someone posing as it. When several subjects would take one name, each
+carries a distinguishing word and none takes the bare name, and the merge waits for a reader who has read
+both sides (contract, sections 2 and 4).
+
 ## Sharing a lesson
 
 A lesson starts in the agent that learned it, under `## Lessons` on its tree page, with its date and the leaf

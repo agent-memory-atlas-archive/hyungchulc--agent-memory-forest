@@ -43,6 +43,10 @@ the tree until the version 1 commands replace it.
   demotion; every operation that moves an entry rewrites the sources that cited it, in the same write.
   `forest collections cite-entries [--dry-run]` gives the lines of an older forest their entry sources
   once, archiving each page first and changing only the tags
+- the contract states two rules for writing with a model: a line that states what quoted turns say is
+  filed only after a second reading of the same turns judged it; a subject is never merged into another on
+  what its own material claims, and subjects that would share a name each carry a distinguishing word
+  until a reader who read both sides merges them (no tool merges on a name by itself)
 - `forest move set-type` and `forest move set` write change lines; `retire-tree`, `fold-tree` and
   `recut-stream` write provenance lines
 - a record trim killed inside its append leaves a torn tail that the next trim cuts off before appending
