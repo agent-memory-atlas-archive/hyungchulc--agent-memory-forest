@@ -44,6 +44,7 @@ Issues = "https://github.com/hyungchulc/memory-forest/issues"
 
 [project.scripts]
 memory-forest = "memory_forest.cli:main"
+forest = "memory_forest.cli:forest_main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

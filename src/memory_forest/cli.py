@@ -2,15 +2,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, NoReturn
 
 from . import __version__
+from . import archive as forest_archive
+from . import layout as forest_layout
+from . import movelog as forest_movelog
+from . import registry as forest_registry
+from .config import find_root
 from .core import audit_forest, doctor_forest, initialize_forest, validate_forest
 from .errors import MemoryForestError
 from .index import index_forest, route_index, search_index
 from .model import SCHEMA_VERSION
+from .safety import require_real_root
 from .retrieval import (
     read_query_plan_source,
     retrieve_index,
@@ -285,6 +294,254 @@ def _emit(result: dict[str, Any], *, compact: bool) -> None:
     else:
         text = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
     sys.stdout.write(text + "\n")
+
+
+
+# ═══════════════════════════════ the `forest` command (version 1) ═══════════════════════════════
+#
+# Each subcommand is one function `(arguments) -> exit code` and one line in
+# FOREST_COMMANDS: its words, the function, its help and its arguments. Every
+# command except `init` takes `--root` (default: the nearest folder above the
+# working directory that holds a forest.toml) and `--json`.
+
+
+@dataclass(frozen=True, slots=True)
+class Argument:
+    flags: tuple[str, ...]
+    options: dict[str, Any]
+
+
+def arg(*flags: str, **options: Any) -> Argument:
+    return Argument(flags, options)
+
+
+@dataclass(frozen=True, slots=True)
+class ForestCommand:
+    words: tuple[str, ...]
+    run: Callable[[argparse.Namespace], int]
+    help: str
+    arguments: tuple[Argument, ...] = ()
+    uses_root: bool = True
+
+
+def forest_root(arguments: argparse.Namespace) -> Path:
+    """The forest the command works on: ``--root``, else the nearest folder holding forest.toml."""
+    chosen = getattr(arguments, "root", None)
+    if chosen:
+        return require_real_root(chosen)
+    found = find_root(os.getcwd())
+    return require_real_root(found if found is not None else os.getcwd())
+
+
+def _print_json(value: Any) -> None:
+    sys.stdout.write(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+
+def _print_lines(lines: Iterable[str]) -> None:
+    for line in lines:
+        sys.stdout.write(line + "\n")
+
+
+def cmd_init(arguments: argparse.Namespace) -> int:
+    result = forest_layout.initialize(arguments.directory)
+    if arguments.json:
+        _print_json({"ok": True, **result})
+    else:
+        _print_lines([f"created a forest at {result['root']}", *(f"  {item}" for item in result["created"])])
+    return 0
+
+
+def cmd_registry_build(arguments: argparse.Namespace) -> int:
+    root = forest_root(arguments)
+    built = forest_registry.build_and_write(root)
+    problems = built.problems
+    if arguments.json:
+        _print_json(
+            {
+                "agents": built.agents,
+                "names": len(built.alias_index),
+                "ok": True,
+                "path": forest_layout.REGISTRY_FILE,
+                "problems": [problem.as_dict() for problem in problems],
+                "subjects": len(built.entities),
+            }
+        )
+    else:
+        _print_lines(
+            [
+                f"registry: {len(built.entities)} subjects, {len(built.alias_index)} names, "
+                f"{len(problems)} problems -> {forest_layout.REGISTRY_FILE}",
+                *(problem.render() for problem in problems),
+            ]
+        )
+    return 0
+
+
+def cmd_registry_check(arguments: argparse.Namespace) -> int:
+    problems = forest_registry.check(forest_root(arguments))
+    if arguments.json:
+        _print_json({"ok": not problems, "problems": [problem.as_dict() for problem in problems]})
+    else:
+        _print_lines(problem.render() for problem in problems)
+    return 1 if problems else 0
+
+
+def cmd_registry_show(arguments: argparse.Namespace) -> int:
+    built = forest_registry.load(forest_root(arguments))
+    found = built.subject(arguments.name) or built.entry(arguments.name) or built.lookup(arguments.name)
+    if found is not None:
+        _print_json(found)
+        return 0
+    matches = built.find(arguments.name)
+    if arguments.json:
+        _print_json({"matches": [match.as_dict() for match in matches], "ok": False})
+    else:
+        if matches:
+            sys.stderr.write(f"forest: no subject is named {arguments.name!r}; names that come close:\n")
+        else:
+            sys.stderr.write(f"forest: no subject is named {arguments.name!r}\n")
+        _print_lines(
+            f"{match.id} — {match.name} · {match.level} · {match.home}"
+            + (f" (an entry of {match.collection})" if match.collection else "")
+            for match in matches
+        )
+    return 1
+
+
+def cmd_move_resolve(arguments: argparse.Namespace) -> int:
+    resolution = forest_movelog.resolve(forest_root(arguments), arguments.old_path)
+    if arguments.json:
+        _print_json(resolution.as_dict())
+    else:
+        lines = [f"{resolution.status}: {resolution.path or resolution.query}"]
+        if resolution.archive:
+            lines.append(f"  archived as {forest_layout.ARCHIVE_DIR}/{resolution.archive['archive_file']}")
+        if resolution.successor:
+            lines.append(f"  its facts went to {resolution.successor}")
+        for item in resolution.chain:
+            lines.append(f"  {item.time} {item.operation}: {item.from_path} -> {item.to_path}")
+        if resolution.note:
+            lines.append(f"  note: {resolution.note}")
+        _print_lines(lines)
+    return 0 if resolution.status != "unknown" else 1
+
+
+def cmd_archive_put(arguments: argparse.Namespace) -> int:
+    entry = forest_archive.put(
+        forest_root(arguments),
+        arguments.path,
+        reason=arguments.reason,
+        successor=arguments.successor,
+        keep=arguments.keep,
+        lock=arguments.lock_token,
+    )
+    if arguments.json:
+        _print_json({"entry": entry.as_dict(), "ok": True})
+    else:
+        verb = "copied" if arguments.keep else "archived"
+        _print_lines([f"{verb} {entry.path} -> {entry.archive_path}"])
+    return 0
+
+
+def cmd_archive_show(arguments: argparse.Namespace) -> int:
+    data = forest_archive.show(forest_root(arguments), arguments.path)
+    sys.stdout.flush()
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+    return 0
+
+
+def cmd_archive_list(arguments: argparse.Namespace) -> int:
+    found = forest_archive.entries(forest_root(arguments), arguments.path)
+    if arguments.json:
+        _print_json({"entries": [entry.as_dict() for entry in found], "ok": True})
+    else:
+        _print_lines(
+            f"{entry.time}  {entry.path}  {entry.bytes} B  {entry.reason}"
+            + (f" (successor {entry.successor})" if entry.successor else "")
+            for entry in found
+        )
+    return 0
+
+
+_LOCK_TOKEN = arg(
+    "--lock-token",
+    default=None,
+    help="The writer lock token of a caller that already holds the lock.",
+)
+
+FOREST_COMMANDS: list[ForestCommand] = [
+    ForestCommand(("init",), cmd_init, "Create a new forest in an empty folder.",
+                  (arg("directory", help="the new forest's folder"),), uses_root=False),
+    ForestCommand(("registry", "build"), cmd_registry_build, "Compile .forest/registry.json from the pages."),
+    ForestCommand(("registry", "check"), cmd_registry_check, "List every registry problem; exit 1 when there is one."),
+    ForestCommand(("registry", "show"), cmd_registry_show, "Show a subject or entry by id or by any name.",
+                  (arg("name", help="an id, a name or an alias"),)),
+    ForestCommand(("move", "resolve"), cmd_move_resolve, "Follow the move log from an old path.",
+                  (arg("old_path", help="a forest path as it once was"),)),
+    ForestCommand(("archive", "put"), cmd_archive_put, "Archive a page (with --keep: copy it and leave it).",
+                  (arg("path"), arg("--reason", required=True), arg("--successor", default=None),
+                   arg("--keep", action="store_true"), _LOCK_TOKEN)),
+    ForestCommand(("archive", "show"), cmd_archive_show, "Print the newest archived copy of a page.",
+                  (arg("path"),)),
+    ForestCommand(("archive", "list"), cmd_archive_list, "List the archive manifest.",
+                  (arg("--path", default=None, help="only this page's entries"),)),
+]
+
+
+def build_forest_parser(commands: Sequence[ForestCommand] | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="forest",
+        description="Keep an Agent Memory Forest: a local, plain-Markdown memory. Commands never use the network.",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print JSON")
+    rooted = argparse.ArgumentParser(add_help=False, parents=[common])
+    rooted.add_argument("--root", default=argparse.SUPPRESS, help="the forest root")
+    parser.add_argument("--json", action="store_true", default=False, help="print JSON")
+    parser.add_argument("--root", default=None, help="the forest root")
+    groups: dict[tuple[str, ...], Any] = {(): parser.add_subparsers(dest="command", required=True, metavar="COMMAND")}
+    parsers: dict[tuple[str, ...], argparse.ArgumentParser] = {}
+    for command in commands if commands is not None else FOREST_COMMANDS:
+        for depth in range(1, len(command.words)):
+            prefix = command.words[:depth]
+            if prefix not in parsers:
+                group_parser = groups[prefix[:-1]].add_parser(prefix[-1], help=f"{prefix[-1]} commands")
+                parsers[prefix] = group_parser
+                groups[prefix] = group_parser.add_subparsers(
+                    dest="_".join(("command", *prefix)), required=True, metavar="COMMAND"
+                )
+        leaf = groups[command.words[:-1]].add_parser(
+            command.words[-1],
+            help=command.help,
+            description=command.help,
+            parents=[rooted if command.uses_root else common],
+        )
+        for argument in command.arguments:
+            leaf.add_argument(*argument.flags, **argument.options)
+        leaf.set_defaults(_run=command.run)
+    return parser
+
+
+def forest_main(argv: Sequence[str] | None = None) -> int:
+    parser = build_forest_parser()
+    arguments = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    try:
+        return arguments._run(arguments)
+    except MemoryForestError as exc:
+        if arguments.json:
+            _print_json({"error": exc.as_dict(), "ok": False})
+        else:
+            sys.stderr.write(f"forest: {exc.code}: {exc.message}\n")
+            for key, value in sorted(exc.details.items()):
+                sys.stderr.write(f"  {key}: {value}\n")
+        return 2
+    except OSError as exc:
+        sys.stderr.write(f"forest: filesystem_error: {exc.__class__.__name__}\n")
+        return 2
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":
