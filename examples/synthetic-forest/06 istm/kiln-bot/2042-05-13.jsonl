@@ -1,0 +1,3 @@
+{"lane":"kiln-bot","seq":1,"at":"2042-05-13T07:40:02-03:00","event":"firing_started","kiln":"kiln-two","program":"G6-slow","pieces":38}
+{"lane":"kiln-bot","seq":2,"at":"2042-05-13T15:02:40-03:00","event":"climb_ahead","minutes_ahead":28,"compared_runs":3}
+{"lane":"kiln-bot","seq":3,"at":"2042-05-13T19:10:05-03:00","event":"firing_ended","outcome":"normal","peak":"cone 6","peak_at":"18:55"}

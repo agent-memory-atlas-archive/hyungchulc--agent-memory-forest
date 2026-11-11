@@ -1,0 +1,31 @@
+# Settings of the invented example forest. Every name in it is made up.
+[forest]
+timezone = "America/Halifax"
+language = "en"                 # memory text; quoted words always stay in their own language
+
+[owner]
+id = "juno-hale"
+name = "Juno"
+aliases = ["Juno Hale", "J. Hale"]
+
+[limits]
+leaf_cap_bytes = 8192
+leaf_max_bytes = 20480
+record_keep_bytes = 2048
+category_max_leaves = 100
+
+[levels]
+leaf_days = 2
+branch_days = 5
+tree_subtopics = 3
+tree_subtopic_days = 5
+tree_subtopic_leaves = 3
+tree_types = ["project", "topic", "product", "device", "title", "agent"]
+
+[agents]
+policy = "subject-first"
+orchestrators = ["studio-hub"]
+default_scope = "own+shared"
+
+[embeddings]
+provider = "none"

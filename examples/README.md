@@ -1,37 +1,27 @@
 # Examples
 
-The examples in this directory are synthetic and safe to publish. They demonstrate structure and provenance, not factual knowledge or a production dataset.
+Everything in this directory is invented and safe to publish. It shows structure, not real knowledge.
 
-## Synthetic forest
+## Synthetic forest (version 1)
 
-[synthetic-forest](synthetic-forest/INDEX.md) contains two fictional structured domains across the numbered layers, plus source and archive records. It includes visibly synthetic English, Korean, Japanese, Arabic, and accented Latin retrieval cues for deterministic Unicode tests.
+[synthetic-forest](synthetic-forest/README.md) is a small invented forest that follows the
+[version 1 contract](../docs/contract.md): an owner who runs a pottery studio, three shared trees, an
+orchestrator and two bots each with a tree of its own, a collection page, a leaf subject, a branch subject
+with four sub-topics, an event list split by period, a changed fact with its update record, two days of
+daily pages and a raw lane per agent. It is the same invented world the [concepts](../docs/concepts.md)
+and [agents](../docs/agents.md) guides use.
 
-A Git checkout is intentionally shareable and normally uses `0755` directories and `0644` files. A working forest is private. Use `init --example` to create a private runnable copy of this same fictional route.
+It is a reference to read. The checker for its shapes, `forest lint`, arrives with milestone 1; the 0.3
+`memory-forest` command does not read version 1 forests. Keep any new example visibly invented and run the
+release audit before committing it.
 
-```sh
-demo_parent="$(mktemp -d)"
-demo_root="$(cd "$demo_parent" && pwd -P)/forest"
-memory-forest init "$demo_root" --example
-memory-forest validate "$demo_root"
-memory-forest audit "$demo_root"
-memory-forest index "$demo_root"
-memory-forest route "$demo_root" "instrument calibration"
-memory-forest search "$demo_root" "reference lamp"
-memory-forest retrieve "$demo_root" "임무 복구"
-```
+## 0.3 examples
 
-Remove the temporary forest when you are finished. Do not replace this fixture with real memory. New examples must remain visibly fictional and pass the repository public-release audit.
+The two examples below belong to the 0.3 `memory-forest` command, which stays in this tree until the
+version 1 commands replace it. Their documentation is in [`docs/archive-0.3/`](../docs/archive-0.3/README.md).
 
-## Automation
-
-[automation](automation/README.md) contains a lock-protected maintenance
-wrapper, POSIX crontab example, macOS LaunchAgent template, and bounded Codex
-Scheduled Task prompt. These examples validate and rebuild private derived
-state. They do not capture or promote canonical memory.
-
-## Memory Forest Retrieve
-
-[memory-forest-retrieve](memory-forest-retrieve/README.md) contains a
-metadata-only turn gate and advisory system prompt for hosts that require a
-bounded memory consultation before each non-empty user-authored text turn.
-Mechanical enforcement remains the host's responsibility.
+- [automation](automation/README.md) contains a lock-protected maintenance wrapper, a POSIX crontab
+  example, a macOS LaunchAgent template and a bounded Codex Scheduled Task prompt for 0.3. They validate
+  and rebuild private derived state; they do not capture or file memory.
+- [memory-forest-retrieve](memory-forest-retrieve/README.md) contains a metadata-only turn gate and an
+  advisory system prompt for hosts that require a bounded memory consultation before each user turn.
