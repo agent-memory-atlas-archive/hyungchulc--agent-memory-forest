@@ -132,8 +132,11 @@ class EndToEndTests(ForestTestCase):
         # One command makes the three agents' trees.
         self.assertEqual(forest("levels", "check", *at).returncode, 1)
         applied = self.run_ok("levels", "apply", *at)
-        self.assertEqual(sorted(line.split(":")[0] for line in applied.splitlines()),
-                         ["kiln-bot", "post-bot", "studio-hub"])
+        self.assertEqual(sorted(applied.splitlines()), [
+            "kiln-bot: none -> tree (agent; its raw lane holds a file)",
+            "post-bot: none -> tree (agent; its raw lane holds a file)",
+            "studio-hub: none -> tree (agent; declared in the settings)",
+        ])
         for agent in ("kiln-bot", "post-bot", "studio-hub"):
             self.assertTrue((root / f"02 ltm/{agent}_LTM.md").is_file(), agent)
         agents = (root / "01 xltm/XLTM.md").read_text(encoding="utf-8").split("## Agents", 1)[1]

@@ -368,9 +368,12 @@ helper started for one task works as the agent that started it.
   each agent without a tree as due one, and `forest levels apply` makes it: the registry line (type
   `agent`, level `tree`), the tree page, its index and its line under `## Agents` on the root index.
   `forest move new-agent <id> [--name …] [--role …]` makes the same tree at once. A name not given is the
-  id; a role not given leaves `## Role` with the one line `(not set)`. A tree once made is left as it is:
-  a later name in the settings is carried out by `forest move rename`, and the lint reports the difference
-  (`agent_settings_differ`). With `agents.auto_create` set to `false`, a lane whose agent is neither
+  id; a role not given leaves `## Role` with the one line `(not set)`. An unset value is filled and a set one is
+  never changed: when the settings later give a name or a role that the tree still leaves unset (a name
+  that is the id, a `## Role` of `(not set)`), `forest levels check` reports it as due and `forest levels
+  apply` fills it, with its change line on the tree page; a value set in both places and set differently
+  stays as it is, and the lint reports it (`agent_settings_differ`) until `forest move rename` or an edit
+  makes them one. With `agents.auto_create` set to `false`, a lane whose agent is neither
   declared nor registered is the upkeep hit `agent_lane_without_tree`. A lane folder or a declared id that
   is not a slug, that is a shared tree's id, or that is a reserved name (`owner.id`, `subjects.system_id`,
   `none`, a collection's id) never becomes a tree: `forest check` reports it as `agent_id_invalid`.
@@ -806,7 +809,7 @@ fixes it:
 | `leaf_writer_remark` | a writer's note or a remark on verification in a leaf (section 4) |
 | `daily_section_unfiled` | a daily section the filing run has filed whose specifics (names, quotes, titles, URLs, amounts, tools used) the leaves do not state as written; boards and tree pages do not count |
 | `agent_lane_without_tree` | with `agents.auto_create` false, a raw lane `06 istm/<id>/` whose agent is neither declared in the settings nor registered (section 3, Agent trees) |
-| `agent_settings_differ` | an agent whose settings entry gives a name its registry line does not hold, or a role while its tree page's `## Role` is not set |
+| `agent_settings_differ` | an agent whose settings entry and tree both set its name, or both set its role, to different values (an unset value is filled by `forest levels apply`, section 3, Agent trees) |
 
 **Due work**, never an error:
 

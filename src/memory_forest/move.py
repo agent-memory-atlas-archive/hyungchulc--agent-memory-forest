@@ -31,6 +31,7 @@ from . import layout, registry
 from .errors import MemoryForestError
 from .locking import LockToken
 from .model import (
+    DOT,
     RECORD_SECTION,
     ListLine,
     Page,
@@ -916,9 +917,10 @@ def ensure_agent(plan: Plan, agent_id: str, *, name: str | None = None, role: st
                  aliases: Iterable[str] = (), refuse_existing: bool = False) -> bool:
     """The one way an agent's tree is made; True when it made the tree.
 
-    An agent that is registered already is left as it is (a later name in the
-    settings is the ``rename`` operation's to carry out; a subject retyped to
-    an agent below level tree is promoted by ``levels apply``).
+    An agent that is registered already is left as it is: what its settings
+    entry gives later fills only what the tree left unset (``fill_agent``), a
+    value set in both places is changed by ``rename`` or by hand, and a subject
+    retyped to an agent below level tree is promoted by ``levels apply``.
     """
     _slug(agent_id, "agent id")
     existing = plan.find_subject(agent_id)
@@ -940,6 +942,70 @@ def ensure_agent(plan: Plan, agent_id: str, *, name: str | None = None, role: st
     plan.root_lists = True
     _done(plan, f"new-agent {agent_id}")
     return True
+
+
+def fill_agent(plan: Plan, agent_id: str, fills: Mapping[str, str]) -> list[str]:
+    """Fill what an agent's tree left unset from its settings entry: a name that is still the id, a ``## Role``
+    that is still ``ROLE_UNSET``. Each value filled gets its change line on the tree page; a set value is never
+    changed here (``fills`` comes from ``agents.to_fill``)."""
+    ref = plan.subject(agent_id)
+    page = layout.tree_page(agent_id)
+    if ref.type != registry.AGENT_TYPE or ref.level != "tree" or not plan.exists(page):
+        refuse("not_an_agent_tree", "Only an agent's tree is filled from its settings entry.", subject=agent_id)
+    why = plan.reason(f"the settings entry of `{agent_id}` gives what its tree left unset")
+    filled: list[str] = []
+    name = fills.get("name")
+    if name:
+        title = _name_ok(name, "agent's name")
+        holders = plan.name_holders([title], besides=agent_id)
+        if holders:
+            refuse("name_taken", "Another subject or entry already holds this name.", holders=holders)
+        was = ref.line.name
+        plan.replace_subject(ref, replace(ref.line, name=title))
+        _retitle(plan, agent_id, ref.tree, was, title)
+        plan.record_change(page, f"Name of `{agent_id}`", was, title, why)
+        filled.append("name")
+    role = fills.get("role")
+    if role:
+        text = plan.read(page)
+        section = re.compile(r"(^## Role[ \t]*\r?\n)(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+        found = section.search(text)
+        was = " ".join(found.group(2).split()) if found else ""
+        if found is None or was not in ("", ROLE_UNSET):
+            refuse("role_set", "The tree page's role is set already; a set value is changed by hand.",
+                   subject=agent_id)
+        plan.update(page, text[:found.start(2)] + f"\n{role}\n\n" + text[found.end(2):])
+        plan.record_change(page, f"Role of `{agent_id}`", was, role, why)
+        plan.hints[f"agent:{agent_id}"] = role
+        filled.append("role")
+    if filled:
+        _fill_root_line(plan, agent_id, ref.line.name, fills)
+        plan.root_lists = True
+        plan.touch(ref.tree)
+        _done(plan, f"fill {agent_id} ({', '.join(filled)})")
+    return filled
+
+
+def _fill_root_line(plan: Plan, agent_id: str, was_name: str, fills: Mapping[str, str]) -> None:
+    """The agent's line under the root index's ``## Agents`` shows what was filled where it still shows the
+    unset value word for word (a derived list line: no record line, as for every list line a tool rewrites)."""
+
+    def filled(line: str) -> str:
+        item = ListLine.match(line)
+        if item is None or item.description is None or item.target.strip() != agent_id:
+            return line
+        parts = item.description.split(DOT)
+        if fills.get("name") and parts[0].strip() == was_name:
+            parts[0] = fills["name"]
+        if fills.get("role") and len(parts) > 1 and parts[1].strip() in ("", ROLE_UNSET):
+            parts[1] = fills["role"]
+        return replace(item, description=DOT.join(parts)).render()
+
+    if plan.exists(layout.ROOT_INDEX):
+        text = plan.read(layout.ROOT_INDEX)
+        changed = edit_items(text, "Agents", filled)
+        if changed != text:
+            plan.update(layout.ROOT_INDEX, changed)
 
 
 def retire_tree(plan: Plan, tree: str, *, into: str | None = None) -> None:

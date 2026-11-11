@@ -117,8 +117,9 @@ A helper started for one task works as the agent that started it.
   agent without a tree as due one from its first day, and `forest levels apply` makes it through
   `move.ensure_agent`, the operation `forest move new-agent <id> [--name …] [--role …]` also uses: the
   registry line (type `agent`, level `tree`), the tree page, the index and the line under `## Agents`. A
-  name not given is the id and a role not given is the line `(not set)`; a tree once made is left as it
-  is (a rename is `rename`'s, and the lint says when the settings name another). A lane folder that is
+  name not given is the id and a role not given is the line `(not set)`; a value the tree left unset is filled
+  from the settings by the next `forest levels apply` (`move.fill_agent`, a change line on the tree page),
+  and a value set in both places is never changed by code (contract, section 3). A lane folder that is
   not a slug, a shared tree's id or a reserved name never becomes a tree (`agent_id_invalid`). A subject
   that was filed as a branch and turns out to be an agent is retyped (`set-type <id> agent`) and promoted
   by `forest levels apply` with its leaves. Inside its tree the same rules hold as anywhere: sub-topics

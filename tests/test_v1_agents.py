@@ -100,17 +100,48 @@ class AutomaticTreeTests(AgentTestCase):
         self.assertEqual(levels.apply(root, today=TODAY)["changes"], [])
         self.assertClean(root)
 
-    def test_a_tree_is_left_as_it_is_and_the_lint_says_when_the_settings_name_differs(self) -> None:
+    def declare(self, root: Path, entry: str) -> None:
+        settings = root / "forest.toml"
+        settings.write_text(settings.read_text(encoding="utf-8") + entry, encoding="utf-8")
+
+    def test_the_settings_fill_what_a_tree_left_unset(self) -> None:
         root = self.forest()
         self.lane(root, "post-bot")
         levels.apply(root, today=TODAY)
-        settings = root / "forest.toml"
-        settings.write_text(settings.read_text(encoding="utf-8")
-                            + '\n[agents.known.post-bot]\nname = "Parcel Bot"\nrole = "ships orders"\n',
-                            encoding="utf-8")
+        self.declare(root, '\n[agents.known.post-bot]\nname = "Parcel Bot"\nrole = "ships orders"\n')
+        self.assertEqual([hit for hit in self.lint_hits(root) if "agent_settings_differ" in hit], [])
+        due = levels.check(root)
+        self.assertEqual([(item.subject, item.action, item.why) for item in due],
+                         [("post-bot", "fill", "agent; its settings entry gives its unset name and role")])
+        result = levels.apply(root, today="2042-05-16")
+        self.assertEqual(result["refused"], [])
+        page = (root / "02 ltm/post-bot_LTM.md").read_text(encoding="utf-8")
+        self.assertIn("# Parcel Bot\n", page)
+        self.assertIn("## Role\n\nships orders\n", page)
+        self.assertIn('Name of `post-bot`: was "post-bot", now "Parcel Bot"', page)
+        self.assertIn(f'Role of `post-bot`: was "{move.ROLE_UNSET}", now "ships orders"', page)
+        self.assertIn("- `post-bot` — Parcel Bot · agent · tree · `02 ltm/post-bot_LTM.md`",
+                      (root / "03 mtm/post-bot/post-bot_MTM.md").read_text(encoding="utf-8"))
+        self.assertIn("- `post-bot` — Parcel Bot · ships orders", (root / "01 xltm/XLTM.md").read_text(encoding="utf-8"))
         self.assertEqual(levels.check(root), [])
+        self.assertClean(root)
+
+    def test_a_set_value_is_never_changed_and_the_lint_reports_one_set_differently(self) -> None:
+        root = self.forest()
+        self.lane(root, "post-bot")
+        move.execute(root, "new-agent", id="post-bot", name="Post Bot", role="packs and ships orders", today=TODAY)
+        before = (root / "02 ltm/post-bot_LTM.md").read_bytes()
+        self.declare(root, '\n[agents.known.post-bot]\nname = "Parcel Bot"\nrole = "ships orders"\n')
+        self.assertEqual(levels.check(root), [])
+        self.assertEqual(levels.apply(root, today=TODAY)["changes"], [])
+        self.assertEqual((root / "02 ltm/post-bot_LTM.md").read_bytes(), before)
         hits = [hit for hit in self.lint_hits(root) if "agent_settings_differ" in hit]
         self.assertEqual(len(hits), 2, hits)
+        self.declare(root, "")
+        settings = root / "forest.toml"
+        settings.write_text(settings.read_text(encoding="utf-8").replace('"Parcel Bot"', '"Post Bot"').replace(
+            '"ships orders"', '"Packs and ships orders."'), encoding="utf-8")
+        self.assertEqual([hit for hit in self.lint_hits(root) if "agent_settings_differ" in hit], [])
 
     def test_auto_create_off_makes_a_lane_an_upkeep_hit(self) -> None:
         root = self.forest("")

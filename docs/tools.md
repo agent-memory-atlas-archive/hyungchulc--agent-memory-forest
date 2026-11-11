@@ -16,14 +16,16 @@ and the next upkeep step that settles levels makes its tree:
 ls "06 istm/till-bot"
 # 2051-03-02.jsonl
 forest levels check
-# 06 istm/till-bot/: level_due: till-bot none -> tree: an agent is a tree from its first day (its raw lane holds a file)
+# 06 istm/till-bot/: level_due: till-bot none -> tree: agent; its raw lane holds a file
 forest levels apply
-# till-bot: none -> tree (an agent is a tree from its first day (its raw lane holds a file))
+# till-bot: none -> tree (agent; its raw lane holds a file)
 ```
 
 `02 ltm/till-bot_LTM.md`, `03 mtm/till-bot/till-bot_MTM.md` and the line
 `` - `till-bot` — till-bot · (not set) `` under `## Agents` now exist. To give it a name and a role, declare
-it in `forest.toml` before its first line, or rename it afterwards:
+it in `forest.toml`, before its first line or afterwards: the next `forest levels apply` fills the name
+and the role the tree still leaves unset, each with a change line on its tree page
+(`till-bot: tree -> tree (agent; its settings entry gives its unset name and role)`):
 
 ```toml
 [agents.known.till-bot]

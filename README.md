@@ -21,7 +21,7 @@ makes its tree.
 ls "my-forest/06 istm/post-bot"            # the agent wrote its first line here
 # 2042-05-15.jsonl
 forest levels apply --root my-forest       # one command, the same upkeep step that settles every level
-# post-bot: none -> tree (an agent is a tree from its first day (its raw lane holds a file))
+# post-bot: none -> tree (agent; its raw lane holds a file)
 ls my-forest/"02 ltm"
 # post-bot_LTM.md   studio_LTM.md          # its tree page: role, instructions, lessons, current state, branches
 ```

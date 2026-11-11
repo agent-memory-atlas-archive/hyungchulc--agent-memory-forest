@@ -43,7 +43,7 @@ from .model import TimelineLine, parse_page
 from .plan import Plan, SubjectRef, encode, run
 from .safety import require_real_root
 
-ACTIONS: Final[tuple[str, ...]] = ("agent", "admit", "promote")
+ACTIONS: Final[tuple[str, ...]] = ("agent", "fill", "admit", "promote")
 NO_LEVEL: Final[str] = "none"
 _REFERENCE_MARK: Final[str] = ": recorded in `"
 
@@ -212,6 +212,17 @@ def _span(days: Iterable[str]) -> str:
     return f"{len(ordered)} distinct days ({ordered[0]} to {ordered[-1]})"
 
 
+def agent_fills(plan: Plan, ref: Any) -> dict[str, str]:
+    """What an agent's settings entry gives that its tree still leaves unset (``agents.to_fill``)."""
+    if ref.type != registry.AGENT_TYPE or ref.level != "tree":
+        return {}
+    page = layout.tree_page(ref.id)
+    if not plan.exists(page):
+        return {}
+    return agents.to_fill(plan.config.agents.declared(ref.id), ref.id, ref.line.name,
+                          agents.role_text(plan.read(page)))
+
+
 def agent_subjects(plan: Plan) -> agents.Subjects:
     """Each registered id's type and the area (shared) trees of the planned forest."""
     refs = plan.subjects()
@@ -271,8 +282,15 @@ def due(plan: Plan, subjects: Iterable[str] | None = None) -> list[Due]:
     for item in agents.due(plan.root, plan.config, agent_subjects(plan)):
         if wanted is not None and item.id not in wanted:
             continue
-        found.append(Due(item.id, "agent", NO_LEVEL, "tree", item.source, [], 0,
-                         f"an agent is a tree from its first day ({'declared in the settings' if item.source == agents.CONFIG_PATH else 'its raw lane holds a file'})"))
+        source = "declared in the settings" if item.source == agents.CONFIG_PATH else "its raw lane holds a file"
+        found.append(Due(item.id, "agent", NO_LEVEL, "tree", item.source, [], 0, f"agent; {source}"))
+    for subject_id, ref in sorted(registered.items()):
+        if wanted is not None and subject_id not in wanted:
+            continue
+        fills = agent_fills(plan, ref)
+        if fills:
+            found.append(Due(subject_id, "fill", "tree", "tree", layout.tree_page(subject_id), [], 0,
+                             f"agent; its settings entry gives its unset {' and '.join(fills)}"))
     order = {action: index for index, action in enumerate(ACTIONS)}
     found.sort(key=lambda item: (order[item.action], item.subject))
     return found
@@ -295,6 +313,9 @@ def carry_out(plan: Plan, item: Due) -> str:
             made = move.ensure_agent(plan, item.subject, name=known.name if known else None,
                                      role=known.role if known else None)
             return "tree" if made else "unchanged"
+        if item.action == "fill":
+            filled = move.fill_agent(plan, item.subject, agent_fills(plan, plan.subject(item.subject)))
+            return "filled " + ", ".join(filled) if filled else "unchanged"
         return move.promote(plan, item.subject)
     finally:
         plan.why = previous

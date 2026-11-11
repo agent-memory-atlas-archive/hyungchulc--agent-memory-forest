@@ -143,20 +143,65 @@ def problems(root: str | os.PathLike[str], config: Config, subjects: Subjects) -
     return found
 
 
-def settings_differ(config: Config, names: Mapping[str, str], roles: Mapping[str, str]) -> list[tuple[str, str]]:
-    """(agent id, what differs) for each declared agent whose tree shows another name, or no role where the
-    settings give one. ``names`` and ``roles`` are what each agent's registry line and tree page hold."""
+def role_text(text: str) -> str:
+    """The first paragraph of a tree page's ``## Role``, its whitespace collapsed; empty when there is none."""
+    from .model import parse_page
+
+    section = parse_page(text).section("Role")
+    words: list[str] = []
+    for raw in section.lines if section is not None else []:
+        bare = raw.strip()
+        if not bare:
+            if words:
+                break
+            continue
+        if bare.startswith("#"):
+            break
+        words.append(bare)
+    return " ".join(" ".join(words).split())
+
+
+def _role_unset(role: str) -> bool:
     from .move import ROLE_UNSET
 
+    return role in ("", ROLE_UNSET)
+
+
+def _same_role(one: str, other: str) -> bool:
+    return " ".join(one.split()).rstrip(".").casefold() == " ".join(other.split()).rstrip(".").casefold()
+
+
+def to_fill(known: KnownAgent | None, agent_id: str, name: str, role: str) -> dict[str, str]:
+    """What the settings entry gives that the agent's tree still leaves unset: ``name`` while the registry
+    line's name is the id, ``role`` while ``## Role`` is not set. A value set in the tree is never in it."""
+    if known is None:
+        return {}
+    fills = {}
+    if (known.name and registry.normalize_name(name) == registry.normalize_name(agent_id)
+            and registry.normalize_name(known.name) != registry.normalize_name(agent_id)):
+        fills["name"] = " ".join(known.name.split())
+    if known.role and _role_unset(role):
+        fills["role"] = " ".join(known.role.split())
+    return fills
+
+
+def settings_differ(config: Config, names: Mapping[str, str], roles: Mapping[str, str]) -> list[tuple[str, str]]:
+    """(agent id, what differs) for each declared agent whose tree and settings entry both set a name or a role
+    and set it differently. An unset value is not a difference: ``forest levels apply`` fills it. ``names`` and
+    ``roles`` are what each agent's registry line and tree page hold."""
     found = []
     for known in config.agents.known:
         if known.id not in names:
             continue
-        if known.name and registry.normalize_name(known.name) != registry.normalize_name(names[known.id]):
+        name = names[known.id]
+        if (known.name and registry.normalize_name(name) != registry.normalize_name(known.id)
+                and registry.normalize_name(known.name) != registry.normalize_name(name)):
             found.append((known.id, f"the settings name `{known.id}` \"{known.name}\", its registry line "
-                                    f"\"{names[known.id]}\" (`forest move rename {known.id} --name …`)"))
-        if known.role and roles.get(known.id, "") in ("", ROLE_UNSET):
-            found.append((known.id, f"the settings give `{known.id}` a role and its tree page's `## Role` is not set"))
+                                    f"\"{name}\" (`forest move rename {known.id} --name …`, or change the settings)"))
+        role = roles.get(known.id, "")
+        if known.role and not _role_unset(role) and not _same_role(known.role, role):
+            found.append((known.id, f"the settings give `{known.id}` the role \"{' '.join(known.role.split())}\", "
+                                    f"its tree page's `## Role` \"{role}\" (edit one of them)"))
     return found
 
 
@@ -209,13 +254,11 @@ def _lint_without_tree(view: Any) -> list[Any]:
 
 def tree_roles(view: Any) -> dict[str, str]:
     """Each registered agent's ``## Role`` text as its tree page holds it."""
-    from .plan import first_prose
-
     roles = {}
     for agent_id in view.registry.agents:
         page = layout.tree_page(agent_id)
         if view.exists(page):
-            roles[agent_id] = first_prose(view.text(page), "Role") or ""
+            roles[agent_id] = role_text(view.text(page))
     return roles
 
 
@@ -232,8 +275,8 @@ def _register_lint() -> None:
 
     lint.register(lint.LintCode(WITHOUT_TREE, lint.UPKEEP, "every agent's lane has its agent: declare it under "
                                 "`[agents.known.<id>]` (with `agents.auto_create` false)", _lint_without_tree))
-    lint.register(lint.LintCode(SETTINGS_DIFFER, lint.UPKEEP, "an agent's tree shows the name and role its settings "
-                                "entry gives (`forest move rename`, or edit `## Role`)", _lint_settings_differ))
+    lint.register(lint.LintCode(SETTINGS_DIFFER, lint.UPKEEP, "an agent's tree and its settings entry do not set its "
+                                "name or its role to two different values (`forest move rename`, or edit `## Role`)", _lint_settings_differ))
 
 
 _register_lint()

@@ -41,9 +41,9 @@ The upkeep step that settles levels makes the tree:
 
 ```sh
 forest levels check
-# 06 istm/post-bot/: level_due: post-bot none -> tree: an agent is a tree from its first day (its raw lane holds a file)
+# 06 istm/post-bot/: level_due: post-bot none -> tree: agent; its raw lane holds a file
 forest levels apply
-# post-bot: none -> tree (an agent is a tree from its first day (its raw lane holds a file))
+# post-bot: none -> tree (agent; its raw lane holds a file)
 ```
 
 With the settings entry above, that writes:
@@ -57,9 +57,11 @@ With the settings entry above, that writes:
 
 A name not given is the id (`post-bot`); a role not given leaves `## Role` with the line `(not set)`.
 `forest move new-agent post-bot --name "Post Bot" --role "packs and ships orders"` makes the same tree at
-once, through the same operation. A tree once made is left as it is: if the settings later give another
-name, `forest move rename post-bot --name …` carries it out, and until then the lint reports the
-difference (`agent_settings_differ`).
+once, through the same operation. What the settings give later fills only what the tree left unset:
+a name that is still the id and a role that is still `(not set)` are filled by the next `forest levels
+apply`, with a change line on the tree page. A name or a role set in both places and set differently is
+never changed by code; the lint reports it (`agent_settings_differ`) until `forest move rename post-bot
+--name …` or an edit makes them one.
 
 A forest that wants every agent declared sets `agents.auto_create = false`: a lane then makes no tree,
 and a lane whose agent is not declared is the lint's upkeep hit `agent_lane_without_tree`. A lane folder
