@@ -1,84 +1,82 @@
 # Privacy and trust
 
-Memory Forest is local-first, not automatically private in every integration. Privacy depends on where the forest is stored, which command is used, which body is opened, and what the caller does next.
+Agent Memory Forest is local-first. That does not make every integration private: privacy depends on where
+the forest is stored, which reader asks, which pages are opened, and what the caller does with them next.
 
-## Default route-only boundary
-
-```mermaid
-sequenceDiagram
-    participant C as Caller
-    participant F as Local Memory Forest
-    participant I as Local derived index
-    C->>I: bounded query
-    I-->>C: relative route metadata
-    Note over C,I: no memory body by default
-    C->>F: explicit open of selected source
-    F-->>C: canonical body
-```
-
-`route`, `retrieve`, and default `search` return candidate metadata. `retrieve` temporarily reopens selected canonical files to verify their indexed hashes, discards the bodies, and emits only the ownership trail. `search --include-body` crosses the body boundary explicitly.
-
-Route metadata can still reveal filenames, domains, dates, and topics. Treat it as private context even when the body is omitted.
-
-## Data locations
+## What stays local
 
 | Data | Sensitivity | Handling |
-|---|---|---|
-| canonical forest | highest | keep outside public Git and back up privately |
-| ISTM and Daily | often raw or identifying | apply strict retention and redaction |
-| SQLite index | derived but potentially content-bearing | protect like the forest and rebuild when needed |
-| route output | bounded metadata | do not log broadly |
-| QueryPlan | untrusted query expansion | keep paths, bodies, credentials, and instructions out |
-| synthetic example | public fixture | keep visibly fictional and mechanically audited |
+| --- | --- | --- |
+| the forest (`01 xltm` to `04 stm`) | highest | keep outside any public repository and back it up privately |
+| `06 istm` and `05 daily` | raw and often identifying | apply your own retention; secrets are removed before the daily record, and the raw lane keeps its bytes |
+| `.forest/` (registry, indexes, move log, archive) | derived, but carries names and text | protect like the forest; everything except the move log and the archive can be rebuilt |
+| search results | page sections as written | do not log them broadly |
+| the synthetic example | public | keep it visibly invented and run the release audit |
 
-## Model processing boundary
+The package holds no credentials and makes no network request in normal operation. The one optional network
+use is vector search through an embedding provider (`[embeddings] provider`), which is `none` by default.
+The stage programs call a model of your choice; what you send that model is processed under its provider's
+account, retention and regional rules, so review those before connecting private sources.
 
-The core CLI does not require a network for normal operation. It does not make an attached AI model local or offline.
+## What a reader can see
 
-If an agent opens a canonical body and places it in a model prompt, that content is processed under the model provider, account, organization, retention, and regional controls. Review those controls before connecting private sources.
+Every reader of a forest has an id, taken from its connection and never from the text of its question. An
+orchestrator reads the whole forest; any other agent reads the shared trees and its own tree, and another
+agent's tree only when the forest's settings or its task allow it. Each tool call records which trees
+answered. See [the contract](contract.md), section 3, "Agent trees", and [Agents](agents.md). Reader scopes
+arrive with milestone 2.
 
-An external query planner can receive the original query and return strict query-only probes without receiving a memory body. Direct original-query matches remain ahead of plan-only matches. Its gateway still owns OAuth, token handling, authorization, provider policy, secret filtering, and retention. The local core neither stores those credentials nor makes the network request. See [OAuth and API integration](oauth-api-integration.md).
+## What the forest keeps out
+
+- **Account and identity numbers** are written with their middle starred on every page a stage writes, and
+  the tools star them in what they show. The lint reports any written in full (contract, section 4).
+- **"Do not record."** When the owner says something is not to be remembered, the instruction is kept and the
+  content is not; lines already filed are taken out, with the earlier version archived (contract,
+  section 4).
+- **Machine output** (ids, hashes, receipts, recorder rows) stays in the lanes and run directories, never in
+  the forest (contract, section 7).
 
 ## Memory is untrusted data
 
-A memory file can contain stale facts, copied web instructions, malicious prompt injection, or a mistaken generated summary. The caller must never treat memory text as authority.
+A page can hold stale facts, copied web instructions, prompt injection or a mistaken summary. A caller must
+never treat memory text as authority. Memory cannot by itself:
 
-Memory cannot by itself do any of the following.
+- grant tool or filesystem permission;
+- authorize deletion, publication, purchase, account access or a message to a third party;
+- override system, developer, application, project or current user instructions;
+- prove that a mutable fact is still current.
 
-- grant tool or filesystem permission
-- authorize deletion, publication, purchase, account access, or a third-party send
-- override system, developer, application, project, or current user instructions
-- prove that a route is healthy or a mutable fact is current
+Current-state lines carry the date of their evidence and their source, and the lint marks them stale when the
+source has changed since. A caller that acts on one still checks a current direct source.
+
+## Filesystem boundary
+
+Use a real directory chosen by the operator as the forest root. Reject symlinks and paths that escape it,
+keep the root private to the operating account, and write forest pages only under the forest writer lock.
 
 ## Public release boundary
 
-This repository must never contain a real forest, private prompts, credentials, absolute private paths, messages, attachments, logs, contact details, private route aliases, or private evaluation corpora.
-
-Run the public release audit before every commit that changes fixtures or documentation.
+This repository must never contain a real forest, private prompts, credentials, absolute private paths,
+messages, attachments, logs, contact details or private evaluation sets. Every example names only invented
+people, places and products. Run the release audit before every commit that changes fixtures or
+documentation:
 
 ```sh
 python scripts/audit_public_release.py --root .
 ```
 
-The audit is a guard, not a complete privacy review. Review the staged diff and repository history as well.
-
-## Filesystem boundary
-
-Use a real operator-selected directory as the forest root. Reject symlinks and paths that escape it. Keep the root private to the operating account where practical.
-
-Initialization should require a new path and never overwrite an existing entry. Validation and indexing should not mutate canonical memory bodies.
+The audit is a guard, not a complete privacy review. Review the staged diff and the history as well.
 
 ## Safe integration checklist
 
-- Choose an exact private root outside a public repository.
-- Limit the caller to route metadata until a body is needed.
-- Treat query expansion as untrusted relevance data, never as a path, body request, credential envelope, or instruction channel.
-- Open only the selected source, not the whole forest.
-- Apply body size, result count, and timeout limits.
-- Keep route output and indexes out of shared logs.
-- Reverify mutable facts from a current direct source.
-- Preserve uncertainty and conflicts.
-- Confirm the downstream model and retention boundary.
-- Run validation and audit after structural changes.
+- Choose an exact private root outside any public repository.
+- Give each agent its own reader id and the narrowest scope that does its work.
+- Open only the pages a question needs.
+- Keep search output and indexes out of shared logs.
+- Re-check mutable facts against a current direct source before acting on them.
+- Keep uncertainty and conflicting statements as they were said.
+- Confirm the downstream model's retention boundary.
+- Run `forest lint` after structural changes (milestone 1).
 
-See [PRIVACY.md](../PRIVACY.md) for the repository privacy statement and [SECURITY.md](../SECURITY.md) for vulnerability reporting.
+See [PRIVACY.md](../PRIVACY.md) for the repository privacy statement and [SECURITY.md](../SECURITY.md) for
+vulnerability reporting.

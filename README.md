@@ -1,6 +1,6 @@
-# Memory Forest
+# Agent Memory Forest
 
-**A verifiable local memory architecture for long-running AI agents.**
+**A readable, rule-kept local memory for long-running AI agents and teams of agents.**
 
 [한국어 README](README.ko.md)
 
@@ -9,87 +9,101 @@
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
 
-Memory Forest organizes evidence into a numbered filesystem, preserves where claims came from, and returns routes before it returns memory bodies. Structured records stay human-readable in Markdown, while raw chronology can remain bounded JSONL. Local indexes are derived and replaceable.
+Agent Memory Forest keeps what an agent learns as plain Markdown pages in a few numbered folders. Every fact
+has one home, decided by rules rather than by the chat or the agent that brought it in; a changed fact keeps
+what it was before; a moved page is still found under its old path; and code, not a model, decides where a
+page belongs and when a subject has grown enough to get pages of its own. Several agents can share one
+forest: shared trees for what everyone needs, a tree per agent for what is its own, and an orchestrator that
+reads all of it.
+
+Version 1 is a new generation of the 0.3 Memory Forest. Its rules are written down in full; its code is
+being ported in three milestones (see [Status](#status)).
 
 > [!IMPORTANT]
-> Memory Forest is not a hosted service, an authorization system, or a promise that an AI agent will remember correctly. Memory is grounding data. The caller must open the routed source, resolve conflicts, check freshness, and apply its own authority and safety rules.
+> Agent Memory Forest is not a hosted service, an authorization system, or a promise that an agent will
+> remember correctly. Memory is grounding data: a caller still opens the page it was routed to, checks how
+> fresh it is, and applies its own authority and safety rules. The forest holds no credentials, and
+> everything except optional vector search works with no network.
 
 ## Why this exists
 
-Long-running agents usually fail in one of two ways. They keep too little context, or they accumulate an unstructured pile that is difficult to retrieve and impossible to audit. Memory Forest separates source, lifespan, structure, promotion, and retrieval. Capture, readable evidence, working detail, durable knowledge, and long-horizon anchors remain connected by an inspectable provenance path.
+A long-running agent tends to fail at memory in one of two ways: it keeps too little, or it keeps a pile
+that grows until nothing in it can be found and nobody can correct it. Version 1 is built around a few
+properties that address that directly.
 
-The design is built around these properties.
+- **The subject is the unit.** A person, a project, a device, an agent: each has one registry line with its
+  aliases, and its material lives in its own home.
+- **Places are decided by code.** A subject's level (an entry on a shared page, a leaf, a branch, a tree)
+  follows the number of distinct days its material covers. Every move goes through one tool that rewrites
+  references and logs the move.
+- **One home for each fact.** Other pages carry a dated reference line, not a copy, so facts cannot drift
+  apart.
+- **History is kept.** A changed fact moves to the page's update record; long records are archived
+  verbatim; nothing is deleted.
+- **Upper pages hold what is established.** A preference reaches a summary page only on repeated evidence
+  or the owner's own words, never because it is the newest thing said.
+- **A linter with codes.** Every rule that has a shape is checked, and a run must clean up what it added
+  without being blocked by what was already there.
+- **Built for several agents.** Raw lanes per agent, one writer at a time, reader scopes, and two filing
+  policies.
 
-- **Canonical local storage** - the operator-selected filesystem owns memory content and provenance, while indexes remain replaceable.
-- **Route-first retrieval** - default queries return relative paths and bounded ranking metadata, not raw private bodies.
-- **Root-first retrieval trails** - `retrieve` ranks bounded lexical matches, materializes each match through the canonical XLTM, LTM, MTM, and STM ownership chain, and returns a freshly hash-checked trail.
-- **Provenance-preserving promotion** - a durable summary keeps a pointer to the evidence that justified it.
-- **Rebuildable derived state** - indexes can be deleted and recreated without changing canonical memory.
-- **Mechanical boundaries** - validators and audits check layer ownership, link direction, path safety, and common public-release mistakes.
-
-The tree is canonical because ownership should be deterministic. Wikilinks preserve the evidence path between adjacent layers. Similarity edges, graph communities, embeddings, and visualizations can still be generated, but they remain disposable derived state instead of silently redefining where a memory belongs.
-
-This connected trail can keep knowledge, dated decisions, explicit responsibilities, projects, and time-bound provenance related without turning those relationships into access authority. Identity and permission policy stay with the integrating application.
-
-## Architecture
+## The forest in one picture
 
 ```mermaid
 flowchart TB
-    source["Observed source"] --> istm["06 ISTM<br/>raw chronology and provenance"]
-    istm --> daily["05 Daily<br/>readable source lane"]
-    daily --> stm["04 STM<br/>detailed dated leaves"]
-    stm --> mtm["03 MTM<br/>active recurring branches"]
-    mtm --> ltm["02 LTM<br/>durable trees"]
-    ltm --> xltm["01 XLTM<br/>forest and long-horizon anchors"]
-    stm -. archive candidate .-> archive["00 Life Archive<br/>reusable historical record"]
-    mtm -. archive candidate .-> archive
-    ltm -. archive candidate .-> archive
+    owner(["Owner"]) <--> hub["Orchestrator agent"]
+    hub <--> botA["Bot A"]
+    hub <--> botB["Bot B"]
 
-    xltm --> route["Root-first trail materialization"]
-    route --> metadata["Relative path metadata"]
-    metadata --> open["Explicit canonical source open"]
-    open --> verify["Freshness and conflict check"]
+    subgraph lanes ["Lanes (not forest)"]
+        istm["06 istm<br/>one raw lane per agent, append-only"]
+        daily["05 daily<br/>one readable page per day"]
+        istm --> daily
+    end
+
+    hub -- append --> istm
+    botA -- append --> istm
+    botB -- append --> istm
+
+    daily -- "filing run<br/>one writer at a time" --> stm
+
+    subgraph forest ["Forest"]
+        xltm["01 xltm<br/>identity · trees · agents"]
+        subgraph shared ["Shared trees"]
+            ltm["02 ltm tree pages"] --> mtm["03 mtm indexes and boards"] --> stm["04 stm leaves"]
+        end
+        subgraph own ["Agent trees, one per agent"]
+            altm["role · instructions · lessons"] --> amtm["boards"] --> astm["runs · methods · hand-offs"]
+        end
+        xltm --> ltm
+        xltm --> altm
+    end
+
+    hub -. reads everything .-> forest
+    botA -. reads shared + own .-> shared
+    botB -. reads shared + own .-> shared
 ```
 
-Capture moves upward from recent evidence toward durable structure. The current
-v0.3 `retrieve` command, introduced in v0.2, globally ranks bounded lexical
-evidence, then materializes each candidate in root-first canonical ownership
-order. It reopens the selected files, verifies their indexed hashes, and
-returns metadata-only trails. This is not a staged top-down semantic traversal.
-An XLTM-only lexical match remains a depth-one partial trail instead of fanning
-out across the whole forest. The existing `route` and `search` commands retain
-their v0.1 flat-query behavior and JSON boundary. `00 life_archive` is a side
-archive for reusable history, not a higher truth rank.
+Material moves up from the lanes into the leaves, and only what the leaves establish is carried up to the
+boards and tree pages. Placement goes the other way: the root index says which tree a kind of subject
+belongs to, the tree says which branch, the branch holds the leaf. [Concepts](docs/concepts.md) walks
+through one subject's life from a one-day mention to a tree of its own.
 
-![Memory Forest graph](docs/assets/memory-forest-graph.png)
-
-![Fictional root-first retrieval trail](docs/assets/memory-forest-retrieval.svg)
-
-See the [end-to-end retrieval guide](docs/retrieval-guide.md),
-[Architecture](docs/architecture.md), and [Layer contracts](docs/layers.md) for
-the full model.
-
-## Layer map
-
-| Layer | Object | Responsibility |
-|---|---|---|
-| `00 life_archive` | archive record | reusable project or life history with retained provenance |
-| `01 xltm` | forest | long-horizon anchors and cross-tree invariants |
-| `02 ltm` | tree | durable knowledge and stable thematic contracts |
-| `03 mtm` | branch | active recurring work, procedures, and medium-horizon state |
-| `04 stm` | leaf | detailed dated evidence and short-term actionable context |
-| `05 daily` | daily source | readable, source-bound digest of recent events |
-| `06 istm` | raw source | append-oriented chronology and provenance records |
-
-Layer placement is a responsibility decision, not a confidence score. A claim in XLTM can still be stale or wrong.
+| Folder | Holds |
+| --- | --- |
+| `01 xltm/XLTM.md` | the root index: who the owner is, the list of trees with placement rules, the list of agents |
+| `02 ltm/<tree>_LTM.md` | one page per tree: scope, durable patterns and rules, current state, branches |
+| `03 mtm/<tree>/` | the tree's index (its registry of subjects) and one board per branch |
+| `04 stm/<tree>/<branch>/` | the leaves: one sub-topic of one subject each, in full detail, at most 8 KB of content |
+| `05 daily/` | the readable record of each day (a lane) |
+| `06 istm/` | the raw record, append-only, one lane per agent (a lane) |
+| `.forest/` | the compiled registry, the move log, the archive, indexes and locks |
 
 ## Quick start
 
-Memory Forest is currently an alpha reference implementation for macOS and Linux. It requires Python 3.11 or newer, a POSIX filesystem with Unix permission modes, and no required runtime dependencies outside the standard library.
-
-On Windows, use WSL2 and keep the repository, forest, derived state, and
-temporary work on the WSL Linux filesystem. Read the [WSL2 guide](docs/wsl2.md)
-before connecting a real forest.
+Agent Memory Forest needs Python 3.11 or newer, a POSIX filesystem, and no runtime dependencies outside the
+standard library. On Windows, use WSL2 and keep the forest on the Linux filesystem; read the
+[WSL2 guide](docs/wsl2.md) first.
 
 ```sh
 git clone https://github.com/hyungchulc/memory-forest.git
@@ -99,235 +113,85 @@ python3 -m venv .venv
 python -m pip install -e .
 ```
 
-Create a private synthetic demo with strict runtime permissions, then inspect and query it.
-
-`init` accepts only a new path whose direct parent already exists as a real, non-symlink directory. It never creates missing ancestor directories and refuses every existing target.
-
-```sh
-demo_parent="$(mktemp -d)"
-demo_root="$(cd "$demo_parent" && pwd -P)/forest"
-memory-forest init "$demo_root" --example
-memory-forest doctor "$demo_root"
-memory-forest validate "$demo_root"
-memory-forest audit "$demo_root"
-memory-forest index "$demo_root"
-memory-forest route "$demo_root" "instrument calibration"
-memory-forest search "$demo_root" "reference lamp"
-memory-forest retrieve "$demo_root" "telemetry replay"
-```
-
-Search is metadata-only by default and queries the last built index snapshot. Reading matching bodies is an explicit operation. When a selected canonical file has changed since indexing, body retrieval fails with `index_stale` instead of returning cached text. Rebuild the index after forest changes.
+The version 1 commands are the `forest …` commands of the [design's package map](docs/v1-design.md#13-package-map).
+**None of them is released yet.** Each line below is marked with the milestone that brings it; until
+milestone 1 lands, the installed command is still the 0.3 `memory-forest` (documented in
+[`docs/archive-0.3/`](docs/archive-0.3/cli.md)).
 
 ```sh
-memory-forest search "$demo_root" "reference lamp" --include-body
+# Milestone 1: skeleton and structure tools
+forest init my-forest                          # settings, layers, root index
+forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"
+forest registry build                          # compile every ## Subjects section
+forest levels check                            # which subjects are due a new level
+forest levels apply                            # carry them out through the move tool, logged
+forest check                                   # bring derived lists up to the pages
+forest lint                                    # every rule with a shape, by code
+
+# Milestone 2: finding
+forest search "the big kiln"                   # registry aliases first, then words (and vectors if set)
+forest timeline query "yesterday evening"
+forest mcp                                     # search, read, navigate, timeline with the reader's scope
+
+# Milestone 3: growing
+forest stage …                                 # the daily, filing and upkeep stages around your model
 ```
 
-### Query expansion without putting a model in the core
+To see what a forest looks like before any code runs, read the invented
+[synthetic forest](examples/synthetic-forest/README.md): an owner, three shared trees, an orchestrator and
+two bots, two days of daily pages and a raw lane, about forty small files.
 
-The local core does not call a translation, embedding, or model API. A caller may supply a strict QueryPlan containing query strings only. This allows an OAuth-authenticated gateway to expand a Korean, English, mixed-language, or other Unicode query while keeping tokens, filesystem roots, memory bodies, and authorization outside the plan.
+## Agents in five lines
 
-```json
-{
-  "schema_version": 1,
-  "probes": [
-    {"query": "mission recovery"},
-    {"query": "telemetry replay"}
-  ]
-}
-```
+1. An agent (an orchestrator, a bot, a scheduled stage) is a subject that is a tree from its first day.
+2. Its tree page holds its role, standing instructions, lessons, current state and branches.
+3. `subject-first` (default) files facts in the subject's home tagged `noted by <agent>`; `agent-first`
+   files them in the agent's tree with `about:` pointers, and shares a fact once two agents hold it.
+4. An orchestrator reads the whole forest; other agents read shared trees and their own.
+5. Each agent appends to its own raw lane, and one filing run at a time writes the forest under a lock.
 
-```sh
-printf '%s' '{"schema_version":1,"probes":[{"query":"mission recovery"}]}' \
-  | memory-forest retrieve "$demo_root" "비상 복원" --query-plan -
-```
+Details: [Agents](docs/agents.md).
 
-Every probe object must contain exactly one `query` field. Paths, bodies, tokens, credentials, provider settings, and all other fields are rejected. The original query is always retained. A trail with direct original-query evidence always ranks ahead of a plan-only trail; accepted probes add recall and ranking evidence only within that boundary. The expansion quality is owned by the caller; SQLite Unicode tokenization and supplied probes do not guarantee semantic retrieval for every language.
+## Documentation
 
-See [OAuth and API integration](docs/oauth-api-integration.md), the [QueryPlan schema](docs/query-plan.schema.json), and the [CLI reference](docs/cli.md).
+| Document | What it covers |
+| --- | --- |
+| [Concepts](docs/concepts.md) | the forest for a new reader: layers, a subject's life, one home, what goes up, records, moves, the lint |
+| [Contract](docs/contract.md) | every rule a forest keeps, stated once |
+| [Agents](docs/agents.md) | agent trees, the two filing policies, reader scopes, the single writer |
+| [Design](docs/v1-design.md) | the package: on-disk layout, settings, package map, milestones |
+| [Comparison](docs/comparison.md) | how this differs from Mem0, GBrain, the LLM Wiki idea and plain vector RAG |
+| [Privacy and trust](docs/privacy-and-trust.md) | what stays local, what a reader can see, memory as untrusted data |
+| [Roadmap](docs/roadmap.md) | the three milestones and what comes after |
+| [WSL2](docs/wsl2.md) | running on Windows through WSL2 |
+| [Archive of 0.3](docs/archive-0.3/) | the 0.3 documents that version 1 replaces |
 
-The tracked [synthetic forest](examples/synthetic-forest/INDEX.md) is a human-readable reference. Git does not preserve the private `0700` directory and `0600` file modes required of a runnable forest, so use `init --example` rather than validating the checkout fixture in place. `pwd -P` resolves platform temp-directory aliases before the CLI applies its no-symlink boundary. Remove the temporary demo when you are finished.
+## Status
 
-See the [CLI reference](docs/cli.md) before integrating the output into another process.
+Agent Memory Forest is alpha software. Version 1.0.0 is unreleased.
 
-### Provenance-bound local writes
+- **Written:** the contract, the design, the concepts and agents guides, and an invented synthetic forest
+  that follows the contract.
+- **Milestone 1, skeleton:** the structure tools (registry, move, levels, collections, record, archive,
+  derived lists, lint) with tests on made-up forests, and the synthetic forest passing the lint.
+- **Milestone 2, finding:** the time index, search with reader scopes, the MCP server.
+- **Milestone 3, growing:** the stage programs and their prompts, the nightly upkeep.
 
-v0.3 provides three network-free standard-library write commands. The
-integrated Structured path is the reference path; `promote` remains a bounded
-leaf-promotion compatibility command.
-
-```sh
-chmod 600 daily-plan.json structured-sweep-plan.json
-memory-forest apply-daily "$demo_root" daily-plan.json
-memory-forest apply-structured "$demo_root" structured-sweep-plan.json
-```
-
-`apply-daily` writes only the canonical dated Daily source.
-`structured-context` opens bounded, hash-bound current XLTM/LTM/MTM/STM bodies
-for one integrated review. `apply-structured` accepts semantic targets across
-all four structured layers, applies exact creates or full-body replacements in
-one transaction, and refreshes validation, audit, and the derived index once.
-The semantic hierarchy is exactly XLTM Forest, LTM Tree, MTM Branch, and STM
-Leaf. Structured targets use `tree` as the LTM routing key; it is not a
-separate object level.
-The write commands acquire the same sibling maintenance lock, reject symlink
-and case-fold ambiguity, roll back handled validation/audit/index failures, and
-publish a private receipt only after the new index succeeds.
-Each plan is bound to the stable private `forest_id` created by `init`, so
-replacing a forest at the same pathname fails closed. Empty reviewed arrays
-close as receipt-backed no-ops.
-
-Legacy schema-v1 forests without `forest_id` remain valid for read-only
-validation and retrieval. The v0.3 writers reject them until a supported
-migration assigns an identity; they never edit legacy configuration implicitly.
-
-See [Integrated Structured sweep](docs/integrated-structured-sweep.md),
-[Daily Plan v1](docs/daily-plan.schema.json), [Structured Sweep Plan
-v1](docs/structured-sweep-plan.schema.json), [Write Receipt
-v1](docs/write-receipt.schema.json), and the [CLI reference](docs/cli.md).
-
-## Route-only privacy boundary
-
-The default retrieval boundary is deliberately narrow.
-
-1. A query is evaluated against an exact local forest root and its private derived index.
-2. The tool returns bounded route metadata such as layer, relative path, title, and score.
-3. `retrieve` reopens only the selected trail files to verify current hashes, then discards their bodies before emitting JSON.
-4. The caller separately chooses whether to open a canonical body.
-5. Any opened body is handled under the caller's own model, account, retention, and privacy controls.
-
-The route result is not source truth and does not grant permission. A local SQLite index should be protected like the source forest because it may contain derived text or tokens.
-
-Read [Privacy and trust](docs/privacy-and-trust.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) before connecting a real forest to an agent.
-
-## Required per-turn retrieval
-
-[Memory Forest Retrieve](docs/memory-forest-retrieve.md) is a separate
-caller-owned integration profile for assistants that must consult memory before
-responding to every non-empty user-authored text turn.
-
-Its example gate runs both route and retrieve, returns a metadata-only
-current-turn receipt, and treats zero matches as a successful lookup with no
-evidence. The prompt and companion skill are advisory. Hard enforcement
-requires the host to register the gate before response generation and block
-normal completion without a successful receipt for that exact turn.
-
-The gate never auto-indexes, repairs, scans another root, returns bodies, or
-uses the network. Route and retrieve metadata remain private and untrusted.
-
-## Companion projects
-
-Memory Forest owns the canonical layer and retrieval contracts. Source
-collection and retrieval evaluation are separated into focused companion
-projects.
-
-- [Codex Context for ISTM](https://github.com/hyungchulc/codex-context-for-istm)
-  incrementally collects local Codex conversation sessions into ISTM and
-  produces bounded Daily digests with launchd examples on macOS.
-- [Mac Context for ISTM](https://github.com/hyungchulc/mac-context-for-istm)
-  collects local Apple Mail, Notification Center, Reminders, and Calendar
-  context into a separate private ISTM store on macOS.
-- [Memory Retrieval Lab](https://github.com/hyungchulc/memory-retrieval-lab)
-  measures retrieval quality with synthetic fixtures, reproducible metrics,
-  multilingual cases, and ranker adapters.
-
-The collectors and deterministic baselines are model-independent. An
-integration that adds model-written summaries must document its own provider,
-retention, review, and data-processing boundaries. Read [Daily and ISTM
-companion projects](docs/daily-and-istm-companions.md) for the exact repository
-boundaries and bounded Daily contract.
-
-## Provenance and promotion
-
-Promotion is an adjacent-layer, evidence-preserving operation.
-
-```text
-06 ISTM -> 05 Daily -> 04 STM -> 03 MTM -> 02 LTM -> 01 XLTM
-                         \-------- 00 Life Archive candidate --------/
-```
-
-A promoted record should carry the source pointer, source and capture times, scope, observed fact, derived conclusion, uncertainty, destination, and reason. Promotion does not make a claim true. Mutable facts still require current verification.
-
-The Life Archive arrows above represent selection from structured history, not unrestricted canonical wikilinks. In the current schema, Life Archive links canonically only to adjacent XLTM; nonadjacent evidence remains a plain provenance path.
-
-The reference workflow makes one integrated Structured decision over current
-XLTM/LTM/MTM/STM plus committed Daily. Parent-before-child is the internal
-materialization order within that sweep, not a separate parent-first workflow.
-`audit` requires every LTM, MTM, and STM record to link to its immediate
-canonical parent. Same-layer lateral wikilinks are rejected so ownership
-remains mechanically inspectable.
-
-See [Provenance and promotion](docs/provenance-and-promotion.md).
-
-## Automation
-
-Memory Forest can be validated and reindexed with POSIX cron, a macOS
-LaunchAgent, or a Codex Scheduled Task. Reviewed plans can also be applied
-locally with the same sibling maintenance lock.
-
-![Target operating model for automated Memory Forest maintenance](docs/assets/memory-forest-automation.svg)
-
-The core does not collect source systems or decide semantic promotions. The
-automation starter therefore separates two lanes:
-
-- implemented deterministic maintenance, which locks one exact private root,
-  validates and audits it, then atomically rebuilds the derived index
-- caller-owned integrated layer and structure judgment, followed by the
-  implemented `apply-daily` or `apply-structured` transaction writer with provenance binding,
-  rollback, validation, audit, index, and receipt proof
-
-The repository includes a shared maintenance wrapper, a crontab example, a
-per-user macOS launchd template, and a bounded Codex Scheduled Task prompt. Read
-the [Automation guide](docs/automation.md) before enabling unattended runs.
-Cron and launchd can remain local. A Codex task uses the selected account and
-model processing boundary, so do not send strictly local-only evidence through
-that lane.
-
-## Relationship to Codex Debug Bridge
-
-[Codex Debug Bridge](https://github.com/hyungchulc/codex-debug-bridge) includes a small `memory-forest-starter` as an onboarding path for a private route-only helper. This repository is the standalone portable reference implementation. It adds the CLI, contracts, audits, synthetic example, documentation, and companion skill.
-
-Neither project contains a real private forest. Neither project includes private prompts, unattended source collection or semantic-plan generation, operational logs, personal adapters, or user identifiers. The projects can be used independently.
-
-See [Codex Debug Bridge integration](docs/codex-debug-bridge.md).
-
-## Project status
-
-Memory Forest is alpha software. The v0.3 scope includes strict receipt-backed
-Daily application, bounded current-Forest context, one integrated
-XLTM/LTM/MTM/STM sweep, deterministic root-first retrieval, portable contracts,
-synthetic fixtures, and a route-first body boundary. It is suitable for
-evaluation and adaptation, not unattended high-stakes decision-making.
-
-Candidate directions include measured multilingual routing evaluation, optional ranking adapters, generated graph views, migration tooling, and stronger provenance integrity checks. These are not release promises. See [Roadmap](docs/roadmap.md).
-
-## Repository map
-
-| Path | Purpose |
-|---|---|
-| `src/memory_forest/` | local CLI and reference implementation |
-| `docs/` | architecture, contracts, privacy boundary, and integration guidance |
-| `docs/retrieval-guide.md` | query intake, deterministic retrieval, explicit body boundary, and integration limits |
-| `docs/wsl2.md` | Windows-facing WSL2 filesystem, permission, and backup guidance |
-| `docs/daily-and-istm-companions.md` | bounded Daily contract and companion repository boundaries |
-| `examples/synthetic-forest/` | fictional 00-06 forest with no private identifiers |
-| `examples/automation/` | cron, launchd, and Codex Scheduled Task maintenance examples |
-| `examples/memory-forest-retrieve/` | metadata-only mandatory consultation gate and prompt |
-| `skills/memory-forest/` | companion Codex skill |
-| `skills/memory-forest-retrieve/` | opt-in always-on retrieval integration skill |
-| `tests/` | behavior and regression tests |
-| `scripts/audit_public_release.py` | public-tree secret and identifier audit |
+The 0.3 code (`memory-forest`) stays in this tree until the version 1 commands replace it. It is suitable
+for evaluation and adaptation, not for unattended high-stakes decisions.
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md). Keep fixtures synthetic, keep real forests outside Git, and run the full local check before opening a pull request.
+Read [CONTRIBUTING.md](CONTRIBUTING.md). Keep fixtures invented, keep real forests outside Git, and run the
+full local check before opening a pull request.
 
 ```sh
 make check
 ```
 
-Security issues should follow [SECURITY.md](SECURITY.md). Community participation follows [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Security issues follow [SECURITY.md](SECURITY.md). Community participation follows
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## License
 
-Memory Forest is released under the [GNU General Public License
-v3.0](LICENSE).
+Agent Memory Forest is released under the [GNU General Public License v3.0](LICENSE).

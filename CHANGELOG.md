@@ -2,6 +2,47 @@
 
 All notable changes to Memory Forest are documented in this file. The project follows [Semantic Versioning](https://semver.org/) once a version is released.
 
+## Unreleased — 1.0.0 (alpha)
+
+Version 1, Agent Memory Forest, is a new generation of the project. This entry lists what the
+documentation now describes; the `forest` commands are being ported in three milestones and none is
+released yet. The 0.3 `memory-forest` command stays in the tree until they replace it.
+
+### Added
+
+- `docs/contract.md`: the version 1 forest contract, every rule stated once: the lanes and the four forest
+  layers; the subject as the unit with one registry line per subject; levels set by code from distinct
+  days (collection entry, leaf, branch, tree); collections for subjects seen on one day, with the
+  `standing` line; home trees with general placement rules; recurring events; one home for each fact with
+  reference lines; `about:` pointers and generated `## Pointers`; notices; decisions; shops and purchases;
+  agent trees; the leaf shape, the 8 KB content cap and splits by sub-topic or period; episodes; open
+  points instead of disclaimers; `kind:` from a fixed list; the update record, its trim and the archive;
+  "do not record"; account and identity number masking; what goes up; links; machine records; the lint
+  codes with baselines; the tools; who does what
+- `docs/concepts.md`: the forest explained for a new reader, following one invented subject from a one-day
+  entry to a tree of its own
+- `docs/agents.md`: agent trees, the `subject-first` and `agent-first` filing policies with worked
+  examples, reader scopes, raw lanes and the single writer, sharing a lesson, retiring an agent
+- `docs/comparison.md`: how the design differs from Mem0, GBrain, the LLM Wiki idea and plain vector-store
+  RAG, citing only those projects' own pages with the date they were read
+- `docs/v1-design.md`: the design of version 1, its settings, package map and milestones
+- `examples/synthetic-forest/`: a new invented forest that follows the version 1 contract, with three
+  shared trees, an orchestrator and two bots with trees of their own, `forest.toml`, two days of daily
+  pages and a raw lane per agent
+
+### Changed
+
+- the project is presented as "Agent Memory Forest"; `README.md` and `README.ko.md` are rewritten for
+  version 1, with a quick start that marks which milestone brings each command
+- `docs/privacy-and-trust.md` and `docs/roadmap.md` are rewritten for version 1
+- the 0.3 documents, schemas and diagrams that version 1 replaces moved to `docs/archive-0.3/`, each with a
+  first line naming what replaces it
+
+### Removed
+
+- the 0.3 synthetic example forest under `examples/synthetic-forest/` (kept in the history at `v0.3.0`;
+  the runnable copy built into the 0.3 code is unchanged)
+
 ## 0.3.0 - 2026-08-31
 
 ### Added

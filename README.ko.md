@@ -1,47 +1,108 @@
-# Memory Forest
+# Agent Memory Forest
 
-**오래 실행되는 AI agent를 위한, 검증 가능한 로컬 메모리 구조입니다.**
+**오래 일하는 AI agent와 agent 팀을 위한, 사람이 읽을 수 있고 규칙으로 관리되는 로컬 메모리입니다.**
 
 [English README](README.md)
 
-Memory Forest는 기억을 번호가 붙은 파일 트리에 나눠 저장하고, 각 판단이 어디서 왔는지 추적할 수 있게 합니다. 정리된 기억은 Markdown으로, 원시 시간 기록은 제한된 JSONL로 보관합니다. SQLite index는 검색을 빠르게 하기 위한 파생 데이터라 언제든 다시 만들 수 있습니다.
+[![CI](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml/badge.svg)](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-2EA44F.svg)](LICENSE)
+[![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
+
+Agent Memory Forest는 agent가 알게 된 것을 번호 붙은 몇 개의 폴더 안에 평범한 Markdown 페이지로 남깁니다.
+어떤 사실이 어디에 놓일지는 그 사실을 가져온 대화나 agent가 아니라 규칙이 정합니다. 사실이 바뀌면 바뀌기 전
+내용이 남고, 옮겨진 페이지는 예전 경로로 찾아도 찾아집니다. 페이지가 어디에 있어야 하는지, 어떤 주제가 자기
+페이지를 가질 만큼 자랐는지는 model이 아니라 코드가 판단합니다. 여러 agent가 하나의 forest를 함께 쓸 수도
+있습니다. 모두에게 필요한 것은 공유 tree에, 각 agent 자신의 것은 agent마다 하나씩 있는 tree에 두고,
+orchestrator는 전체를 읽습니다.
+
+버전 1은 0.3 Memory Forest의 다음 세대입니다. 규칙은 모두 문서로 정리되어 있고, 코드는 세 단계에 걸쳐
+옮기는 중입니다. 자세한 내용은 [현재 상태](#현재-상태)를 보세요.
 
 > [!IMPORTANT]
-> Memory Forest는 hosted service도, 권한 시스템도, AI가 정확히 기억한다는 보장도 아닙니다. 검색된 기억은 판단 근거일 뿐입니다. 실제 사용자는 원문을 열어 출처와 최신성, 충돌 여부를 확인하고 별도의 권한·안전 정책을 적용해야 합니다.
+> Agent Memory Forest는 hosted service도, 권한 시스템도, agent가 정확히 기억한다는 보장도 아닙니다. 메모리는
+> 판단의 근거일 뿐입니다. 호출하는 쪽이 안내받은 페이지를 직접 열어 얼마나 최신인지 확인하고, 자기 권한과
+> 안전 규칙을 따로 적용해야 합니다. forest는 credential을 보관하지 않으며, 선택 사항인 vector 검색을 빼면
+> 모든 기능이 network 없이 동작합니다.
 
-## 핵심 원칙
+## 왜 만들었나
 
-- **로컬 파일이 기준입니다.** 운영자가 지정한 filesystem이 원문과 provenance를 소유합니다.
-- **본문보다 경로를 먼저 돌려줍니다.** 기본 검색은 상대 경로, 계층, 제목, 제한된 ranking metadata만 반환합니다.
-- **선택된 후보를 root-first trail로 만듭니다.** `retrieve`는 bounded lexical match를 먼저 순위화한 뒤 `XLTM -> LTM -> MTM -> STM` 순서로 canonical owner를 구성합니다.
-- **선택된 경로를 다시 검증합니다.** 결과를 내기 전에 현재 파일 hash와 index snapshot을 비교합니다.
-- **promotion은 출처를 남깁니다.** 더 오래 보관할 요약도 그 근거가 된 source pointer를 유지합니다.
-- **index는 지워도 됩니다.** 파생 상태를 삭제하거나 다시 만들어도 canonical memory는 바뀌지 않습니다.
-- **기억은 권한이 아닙니다.** 파일 내용이나 QueryPlan은 tool permission이나 외부 행동을 승인할 수 없습니다.
+오래 일하는 agent의 메모리는 대개 둘 중 하나로 무너집니다. 너무 적게 남기거나, 아무것도 찾을 수 없고 아무도
+고칠 수 없을 때까지 쌓이기만 합니다. 버전 1은 이 문제를 정면으로 다루는 몇 가지 원칙 위에 서 있습니다.
 
-## 구조
+- **단위는 subject입니다.** 사람, 프로젝트, 기기, agent마다 별칭까지 담은 registry 한 줄이 있고, 그 자료는
+  자기 자리에 모입니다.
+- **자리는 코드가 정합니다.** subject가 공유 페이지의 한 항목인지, leaf인지, branch인지, tree인지는 그 자료가
+  걸쳐 있는 서로 다른 날짜의 수로 정해집니다. 모든 이동은 참조를 고쳐 쓰고 기록을 남기는 하나의 도구를
+  거칩니다.
+- **사실마다 집은 하나입니다.** 다른 페이지에는 복사본 대신 날짜가 붙은 참조 한 줄만 둡니다. 그래서 같은
+  사실이 여기저기서 어긋날 일이 없습니다.
+- **이력은 남습니다.** 바뀐 사실은 그 페이지의 update record로 옮겨지고, 길어진 기록은 그대로 archive에
+  보관되며, 지워지는 것은 없습니다.
+- **위층에는 확실한 것만 올라갑니다.** 취향이나 습관은 여러 날에 걸친 근거가 있거나 주인이 직접 말했을 때만
+  요약 페이지에 올라갑니다. 가장 최근에 나온 말이라는 이유만으로는 올라가지 않습니다.
+- **코드로 검사하는 lint가 있습니다.** 모양이 있는 규칙은 모두 검사합니다. 한 번의 실행은 자기가 만든 문제를
+  스스로 정리해야 하지만, 원래 있던 문제 때문에 막히지는 않습니다.
+- **여러 agent를 위한 구조입니다.** agent별 raw lane, 한 번에 하나뿐인 writer, 읽기 범위, 두 가지 정리
+  방식을 갖추고 있습니다.
 
-```text
-06 ISTM  원시 chronology와 provenance
-05 Daily 읽을 수 있는 최근 source 기록
-04 STM   세부 evidence와 단기 실행 맥락
-03 MTM   반복되는 branch와 중기 상태
-02 LTM   오래 유지되는 tree
-01 XLTM  forest와 장기 anchor
-00 Life Archive  재사용할 수 있는 과거 기록
+## 한눈에 보는 forest
+
+```mermaid
+flowchart TB
+    owner(["주인"]) <--> hub["Orchestrator agent"]
+    hub <--> botA["Bot A"]
+    hub <--> botB["Bot B"]
+
+    subgraph lanes ["Lane (forest 아님)"]
+        istm["06 istm<br/>agent마다 하나, 덧붙이기만 하는 원본 기록"]
+        daily["05 daily<br/>하루 한 페이지, 읽을 수 있는 기록"]
+        istm --> daily
+    end
+
+    hub -- 덧붙임 --> istm
+    botA -- 덧붙임 --> istm
+    botB -- 덧붙임 --> istm
+
+    daily -- "정리 실행<br/>한 번에 writer 하나" --> stm
+
+    subgraph forest ["Forest"]
+        xltm["01 xltm<br/>정체성 · tree 목록 · agent 목록"]
+        subgraph shared ["공유 tree"]
+            ltm["02 ltm tree 페이지"] --> mtm["03 mtm index와 board"] --> stm["04 stm leaf"]
+        end
+        subgraph own ["agent tree, agent마다 하나"]
+            altm["역할 · 지시 · 교훈"] --> amtm["board"] --> astm["실행 기록 · 방법 · 인계"]
+        end
+        xltm --> ltm
+        xltm --> altm
+    end
+
+    hub -. 전체를 읽음 .-> forest
+    botA -. 공유 tree와 자기 tree를 읽음 .-> shared
+    botB -. 공유 tree와 자기 tree를 읽음 .-> shared
 ```
 
-새 evidence는 `06 -> 05 -> 04 -> 03 -> 02 -> 01` 방향으로 정리됩니다. 검색은 structured index 전체에서 제한된 lexical match를 순위화한 다음, 선택된 후보를 `01 -> 02 -> 03 -> 04` 순서의 canonical trail로 펼칩니다. `00 life_archive`는 별도의 history archive이며 더 높은 truth 등급이 아닙니다.
+자료는 lane에서 leaf로 올라가고, leaf가 뒷받침하는 것만 board와 tree 페이지로 올라갑니다. 자리를 정할 때는
+반대로 위에서 내려옵니다. root index가 어떤 종류의 subject가 어느 tree에 속하는지 정하고, tree가 branch를,
+branch가 leaf를 정합니다. 하루 한 번 스친 이름이 자기 tree를 갖게 되기까지의 과정은
+[Concepts](docs/concepts.md)에서 한 subject를 따라가며 설명합니다.
 
-이 연결 경로는 knowledge, 날짜가 있는 decision, 명시된 responsibility, project, 시간 provenance를 서로 떼어 놓지 않게 합니다. 다만 이런 관계가 access authority가 되는 것은 아닙니다. identity와 permission policy는 연결하는 application이 별도로 적용해야 합니다.
-
-![Memory Forest graph](docs/assets/memory-forest-graph.png)
-
-![가상의 root-first retrieval 경로](docs/assets/memory-forest-retrieval.svg)
+| 폴더 | 담는 것 |
+| --- | --- |
+| `01 xltm/XLTM.md` | root index: 주인이 누구인지, tree 목록과 배치 규칙, agent 목록 |
+| `02 ltm/<tree>_LTM.md` | tree마다 한 페이지: 범위, 오래 가는 패턴과 규칙, 현재 상태, branch |
+| `03 mtm/<tree>/` | tree의 index(subject registry)와 branch마다 하나씩 있는 board |
+| `04 stm/<tree>/<branch>/` | leaf: subject 하나의 하위 주제 하나를 원문 수준으로, 본문 8 KB 이내 |
+| `05 daily/` | 하루하루의 읽을 수 있는 기록 (lane) |
+| `06 istm/` | 덧붙이기만 하는 원본 기록, agent마다 하나 (lane) |
+| `.forest/` | 컴파일된 registry, 이동 기록, archive, index, lock |
 
 ## 빠른 시작
 
-Memory Forest v0.3는 macOS와 Linux의 POSIX filesystem을 대상으로 합니다. Python 3.11 이상이 필요하고 runtime dependency는 없습니다. Windows에서는 WSL2를 사용하고 repository, forest, 파생 상태, 임시 작업을 WSL Linux filesystem에 두세요. 실제 forest를 연결하기 전에 [WSL2 guide](docs/wsl2.md)를 확인하세요.
+Python 3.11 이상과 POSIX filesystem이 필요하며, 표준 라이브러리 밖의 runtime dependency는 없습니다.
+Windows에서는 WSL2를 쓰고 forest를 Linux filesystem 안에 두세요. 먼저 [WSL2 guide](docs/wsl2.md)를 읽어
+주세요.
 
 ```sh
 git clone https://github.com/hyungchulc/memory-forest.git
@@ -51,216 +112,85 @@ python3 -m venv .venv
 python -m pip install -e .
 ```
 
-실제 기억 대신 공개 가능한 가상 fixture로 먼저 확인할 수 있습니다.
+버전 1의 명령은 [설계 문서의 package map](docs/v1-design.md#13-package-map)에 있는 `forest …` 명령들입니다.
+**아직 하나도 배포되지 않았습니다.** 아래 각 줄에는 그 명령이 들어올 milestone을 적어 두었습니다.
+milestone 1이 나오기 전까지 설치되는 명령은 0.3의 `memory-forest`이며, 그 문서는
+[`docs/archive-0.3/`](docs/archive-0.3/cli.md)에 있습니다.
 
 ```sh
-demo_parent="$(mktemp -d)"
-demo_root="$(cd "$demo_parent" && pwd -P)/forest"
-memory-forest init "$demo_root" --example
-memory-forest doctor "$demo_root"
-memory-forest validate "$demo_root"
-memory-forest audit "$demo_root"
-memory-forest index "$demo_root"
-memory-forest route "$demo_root" "instrument calibration"
-memory-forest retrieve "$demo_root" "telemetry replay"
+# Milestone 1: 뼈대와 구조 도구
+forest init my-forest                          # 설정, 계층, root index
+forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"
+forest registry build                          # 모든 ## Subjects 섹션을 컴파일
+forest levels check                            # 단계가 바뀔 때가 된 subject 목록
+forest levels apply                            # 이동 도구로 실제로 옮기고 기록
+forest check                                   # 파생 목록을 페이지에 맞춤
+forest lint                                    # 모양이 있는 모든 규칙을 code로 검사
+
+# Milestone 2: 찾기
+forest search "the big kiln"                   # registry 별칭 먼저, 그다음 단어 (설정하면 vector도)
+forest timeline query "yesterday evening"
+forest mcp                                     # 읽는 쪽의 범위 안에서 search, read, navigate, timeline
+
+# Milestone 3: 자라기
+forest stage …                                 # 원하는 model을 둘러싼 daily, 정리, 야간 관리 단계
 ```
 
-`init`은 direct parent가 실제 directory로 존재하는 새 경로만 받습니다. 기존 파일, symlink, 빈 directory, 데이터가 있는 directory 위에는 초기화하지 않습니다.
+코드가 돌기 전에 forest가 어떻게 생겼는지 보고 싶다면 가상의 [synthetic forest](examples/synthetic-forest/README.md)를
+읽어 보세요. 주인 한 명, 공유 tree 셋, orchestrator와 bot 둘, 이틀치 daily 페이지와 raw lane까지 작은 파일
+마흔 개 남짓으로 되어 있습니다.
 
-### provenance가 고정된 로컬 쓰기
+## agent를 다섯 줄로
 
-v0.3에는 network를 사용하지 않는 세 가지 쓰기 명령이 있습니다. 통합
-Structured 경로가 기준이며, `promote`는 제한된 leaf promotion을 위한
-호환 명령으로 남아 있습니다.
+1. agent(orchestrator, bot, 예약 실행 단계)는 첫날부터 tree인 subject입니다.
+2. agent의 tree 페이지에는 역할, 고정 지시, 교훈, 현재 상태, branch가 있습니다.
+3. 기본값인 `subject-first`는 사실을 그 subject의 집에 두고 `noted by <agent>`라고 표시합니다.
+   `agent-first`는 agent의 tree에 두고 `about:`으로 가리키다가, 두 agent가 같은 사실을 알게 되면 공유합니다.
+4. orchestrator는 forest 전체를 읽고, 다른 agent는 공유 tree와 자기 tree를 읽습니다.
+5. agent마다 자기 raw lane에 덧붙이기만 하고, forest에는 lock을 잡은 정리 실행 하나만 씁니다.
 
-```sh
-chmod 600 daily-plan.json structured-sweep-plan.json
-memory-forest apply-daily "$demo_root" daily-plan.json
-memory-forest apply-structured "$demo_root" structured-sweep-plan.json
-```
+자세한 내용은 [Agents](docs/agents.md)에 있습니다.
 
-`apply-daily`는 canonical Daily 파일만 씁니다. `structured-context`는 한 번의
-통합 검토에 필요한 현재 XLTM/LTM/MTM/STM 본문을 제한된 크기로 열고 각
-본문의 hash를 함께 반환합니다. `apply-structured`는 네 계층의 semantic
-target만 받아 생성 또는 전체 본문 교체를 하나의 transaction으로 적용한 뒤
-validation, audit, 파생 index를 한 번만 갱신합니다. 계층은 XLTM Forest,
-LTM Tree, MTM Branch, STM Leaf로 고정됩니다. Structured target의 `tree`는
-LTM routing key이며 별도 계층이 아닙니다.
+## 문서
 
-쓰기 명령은 같은 sibling maintenance lock을 직접 획득하고, symlink와
-case-fold 충돌을 거부하며, 처리 중 실패하면 이전 canonical 파일과 index로
-rollback합니다. Receipt는 validation, audit, index가 모두 끝난 뒤에만
-`.memory-forest/receipts/` 아래에 생성됩니다. Plan은 `init`이 만든 private
-`forest_id`에 묶이므로 같은 경로의 forest가 교체되어도 실패하도록 닫혀
-있습니다. `forest_id`가 없는 기존 schema-v1 forest는 read-only validation과
-retrieval은 계속 가능하지만, v0.3 writer는 지원되는 migration 전까지
-거부하며 기존 configuration을 자동으로 고치지 않습니다.
+| 문서 | 내용 |
+| --- | --- |
+| [Concepts](docs/concepts.md) | 처음 읽는 사람을 위한 설명: 계층, subject의 일생, 사실의 집, 위로 올라가는 것, 기록, 이동, lint |
+| [Contract](docs/contract.md) | forest가 지켜야 할 모든 규칙을 한 번씩 |
+| [Agents](docs/agents.md) | agent tree, 두 가지 정리 방식, 읽기 범위, writer 하나 원칙 |
+| [Design](docs/v1-design.md) | 패키지: 디스크 구조, 설정, package map, milestone |
+| [Comparison](docs/comparison.md) | Mem0, GBrain, LLM Wiki 아이디어, 일반 vector RAG와 무엇이 다른지 |
+| [Privacy and trust](docs/privacy-and-trust.md) | 무엇이 로컬에 남는지, 읽는 쪽이 무엇을 볼 수 있는지, 신뢰할 수 없는 데이터로서의 메모리 |
+| [Roadmap](docs/roadmap.md) | 세 milestone과 그 다음 |
+| [WSL2](docs/wsl2.md) | Windows에서 WSL2로 쓰는 법 |
+| [0.3 archive](docs/archive-0.3/) | 버전 1이 대체한 0.3 문서 |
 
-정확한 형식은 [Integrated Structured sweep](docs/integrated-structured-sweep.md),
-[Daily Plan v1](docs/daily-plan.schema.json), [Structured Sweep Plan
-v1](docs/structured-sweep-plan.schema.json), [Write Receipt
-v1](docs/write-receipt.schema.json), [CLI reference](docs/cli.md)에 있습니다.
-
-## root-first retrieve
-
-```sh
-memory-forest retrieve "$demo_root" "telemetry replay"
-```
-
-`retrieve`는 structured index 전체에서 bounded lexical match를 먼저 순위화한 뒤, 각 후보를 canonical owner 순서대로 root-first trail로 구성합니다. XLTM에서 시작해 단계별로 의미 검색을 좁히는 방식은 아닙니다. Lexical evidence가 XLTM에만 있으면 전체 forest로 무작정 펼치지 않고 depth 1의 partial trail을 냅니다.
-
-완전한 결과는 다음 순서의 metadata trail을 냅니다.
-
-```text
-01 XLTM -> 02 LTM -> 03 MTM -> 04 STM
-```
-
-각 node에는 상대 경로, 계층, title, SHA-256, size, modification time이 들어갑니다. 본문은 들어가지 않습니다. `retrieve`는 선택된 파일을 로컬에서 다시 열어 hash만 확인한 뒤 본문을 버립니다. index를 만든 뒤 해당 파일이 바뀌었다면 `index_stale`로 중단하고 재색인을 요구합니다.
-
-입력 경계부터 QueryPlan, deterministic 후보 순위, raw Daily/ISTM fallback,
-body를 여는 시점, 외부 hybrid ranker의 책임까지는
-[end-to-end retrieval guide](docs/retrieval-guide.md)에 자세히 설명되어 있습니다.
-이 문서는 portable core 계약이며, 특정 application의 alias 규칙이나 hybrid
-score를 core 동작으로 주장하지 않습니다.
-
-## 영어·한국어와 다른 Unicode query
-
-로컬 코어는 SQLite FTS5의 Unicode-aware lexical matching을 사용합니다. indexed content에 같은 표현이 있다면 영어, 한국어, Japanese, Arabic, accented Latin 등 여러 script를 직접 검색할 수 있습니다.
-
-다른 언어의 표현이나 동의어까지 연결하려면 caller가 QueryPlan을 넘길 수 있습니다.
-
-```json
-{
-  "schema_version": 1,
-  "probes": [
-    {"query": "mission recovery"},
-    {"query": "telemetry replay"}
-  ]
-}
-```
-
-```sh
-printf '%s' '{"schema_version":1,"probes":[{"query":"mission recovery"}]}' \
-  | memory-forest retrieve "$demo_root" "비상 복원" --query-plan -
-```
-
-QueryPlan은 원래 query에 검색용 표현을 더할 뿐입니다. 원래 query가 직접 맞은 trail은 plan으로만 찾은 trail보다 항상 먼저 나옵니다. 각 probe에는 `query` 하나만 허용됩니다. path, memory body, token, credential, provider 설정, instruction, authorization field가 들어오면 거부합니다.
-
-이 방식이 모든 언어를 의미적으로 이해한다는 뜻은 아닙니다. 띄어쓰기와 형태 변화, transliteration, dialect, indexed content의 범위, expansion을 만든 planner의 품질에 따라 recall이 달라집니다. 실제로 지원할 언어와 domain은 별도 fixture와 evaluation으로 확인해야 합니다.
-
-## OAuth와 API 연결
-
-Memory Forest core는 network request를 하지 않고 OAuth token도 받지 않습니다. OAuth/API gateway가 다음 경계를 소유합니다.
-
-- user와 tenant 인증
-- operation authorization
-- opaque `forest_id`를 허용된 로컬 root로 연결하는 mapping
-- OAuth token 검증, refresh, revocation, scope
-- translation 또는 model API 호출
-- rate limit, timeout, logging, retention
-- 선택된 memory body를 나중에 열지 여부
-
-gateway는 query만 외부 planner에 보내고, 돌아온 결과를 strict QueryPlan으로 검증한 뒤 로컬 `retrieve`에 전달할 수 있습니다. 자세한 계약은 [OAuth and API integration](docs/oauth-api-integration.md)과 [QueryPlan schema](docs/query-plan.schema.json)에 있습니다.
-
-## route, search, retrieve의 차이
-
-| 명령 | 결과 | 본문 |
-|---|---|---|
-| `route` | v0.1 호환 flat route candidate | 없음 |
-| `search` | full-text candidate | 기본은 없음, `--include-body`로 명시 가능 |
-| `retrieve` | 검증된 root-first structured trail | 항상 없음 |
-
-현재 v0.3는 v0.2에서 도입한 index schema `2`를 그대로 사용합니다. v0.1에서 만든 index는 canonical memory를 건드리지 않고 아래 명령으로 다시 만들면 됩니다.
-
-```sh
-memory-forest index ROOT
-```
-
-forest schema는 계속 version `1`이고, 기존 v0.1 `forest.json`, `route`, `search` 계약은 유지됩니다.
-
-## privacy와 trust boundary
-
-실제 forest와 index는 공개 Git repository 밖에 두어야 합니다. route metadata도 filename, domain, date, topic을 드러낼 수 있으므로 private context로 취급하는 편이 안전합니다.
-
-memory text와 QueryPlan은 모두 untrusted data입니다. 삭제, 공개, 구매, account access, third-party send 같은 행동을 승인하지 못합니다. body를 model prompt에 넣는 순간부터는 해당 provider와 account의 retention, regional processing, organization policy가 적용됩니다.
-
-실제 연결 전에는 [Privacy and trust](docs/privacy-and-trust.md), [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md)를 확인하세요.
-
-## 매 turn 메모리 조회를 강제하는 방법
-
-[Memory Forest Retrieve](docs/memory-forest-retrieve.md)는 비어 있지 않은
-user-authored text turn마다 메모리를 먼저 조회해야 하는 assistant를 위한
-별도 integration profile입니다.
-
-예제 gate는 route와 retrieve를 모두 실행하고, 현재 turn에 묶을 수 있는
-metadata-only receipt를 반환합니다. 검색 결과가 0개여도 조회 자체는 성공한
-것으로 처리합니다. Prompt와 companion skill만으로는 실행을 강제할 수
-없습니다. 실제 강제는 host가 response 생성 전에 gate를 등록하고, 그
-turn의 성공 receipt가 없으면 정상 완료를 막는 방식으로 구현해야 합니다.
-
-Gate는 자동 index, repair, 다른 root scan, body 반환, network 호출을 하지
-않습니다. Route와 retrieve metadata도 비공개 untrusted data로 다뤄야
-합니다.
-
-## 함께 쓰는 프로젝트
-
-Memory Forest는 canonical layer와 retrieval 계약을 맡고, source 수집과
-retrieval 평가는 목적별 저장소로 분리합니다.
-
-- [Codex Context for ISTM](https://github.com/hyungchulc/codex-context-for-istm)는
-  로컬 Codex 대화를 ISTM으로 수집하고, 크기가 제한된 Daily digest와
-  launchd 예제를 macOS에서 제공합니다.
-- [Mac Context for ISTM](https://github.com/hyungchulc/mac-context-for-istm)는
-  Apple Mail, Notification Center, Reminders, Calendar의 로컬 맥락을 별도
-  비공개 ISTM으로 macOS에서 수집합니다.
-- [Memory Retrieval Lab](https://github.com/hyungchulc/memory-retrieval-lab)은
-  가상 fixture, 반복 가능한 지표, 다국어 사례, ranker adapter로 검색
-  품질을 측정합니다.
-
-수집과 deterministic baseline 자체는 model에 의존하지 않습니다. Model이
-작성하는 summary를 추가하는 integration은 provider, retention, review,
-data-processing boundary를 별도로 문서화해야 합니다. 저장소 경계와 Daily 크기 제한 계약은
-[Daily and ISTM companion projects](docs/daily-and-istm-companions.md)에
-정리되어 있습니다.
-
-## 자동화
-
-POSIX cron, macOS LaunchAgent, Codex Scheduled Task로 검증과 비공개 파생
-index 재생성을 예약할 수 있습니다.
-
-![자동화된 Memory Forest의 목표 운영 모델](docs/assets/memory-forest-automation.svg)
-
-Core는 source system을 직접 수집하거나 semantic promotion을 판단하지
-않습니다. 공개 starter는 그래서 두 lane을 분리합니다.
-
-- 현재 구현된 deterministic maintenance는 하나의 정확한 비공개 root를
-  잠근 뒤 validate, audit, atomic index rebuild를 수행합니다.
-- integrator는 bounded source admission, conflict 처리, 계층과 구조 판단을
-  거쳐 strict plan을 만들고, 구현된 `apply-daily` 또는 `apply-structured`
-  writer가 lock, rollback, validate, audit, index, receipt를 담당합니다.
-
-저장소에는 공통 maintenance wrapper, crontab 예제, 사용자용 macOS launchd
-template, 범위를 제한한 Codex Scheduled Task prompt가 들어 있습니다.
-사람이 지켜보지 않는 상태로 실행하기 전에
-[Automation guide](docs/automation.md)를 읽으세요.
-
-cron과 launchd는 로컬에서 끝낼 수 있습니다. 반면 Codex task는 선택한
-account와 model processing boundary를 사용합니다. 외부 처리 없이 로컬에만
-남겨야 하는 자료는 이 lane으로 보내면 안 됩니다.
+문서는 영어로 쓰여 있습니다.
 
 ## 현재 상태
 
-Memory Forest는 alpha software입니다. v0.3는 strict receipt-backed Daily
-application, 제한된 현재 Forest context, 한 번의 통합 XLTM/LTM/MTM/STM
-sweep, deterministic root-first retrieval, portable contract, synthetic
-fixture를 제공합니다. unattended high-stakes decision-making 용도로 완성된
-제품은 아닙니다.
+Agent Memory Forest는 alpha 단계이며, 버전 1.0.0은 아직 배포되지 않았습니다.
 
-전체 검증은 다음 명령으로 실행합니다.
+- **작성 완료:** contract, 설계, concepts와 agents 안내서, contract를 따르는 가상의 synthetic forest.
+- **Milestone 1, 뼈대:** 구조 도구(registry, move, levels, collections, record, archive, 파생 목록, lint)와
+  가상 forest로 하는 테스트, 그리고 lint를 통과하는 synthetic forest.
+- **Milestone 2, 찾기:** 시간 index, 읽기 범위가 적용되는 검색, MCP server.
+- **Milestone 3, 자라기:** 단계별 프로그램과 prompt, 야간 관리.
+
+0.3 코드(`memory-forest`)는 버전 1 명령이 대신할 때까지 저장소에 남아 있습니다. 평가하고 응용해 보기에는
+알맞지만, 사람이 지켜보지 않는 중요한 결정에 쓸 수준은 아닙니다.
+
+## 기여
+
+[CONTRIBUTING.md](CONTRIBUTING.md)를 읽어 주세요. fixture는 지어낸 내용으로만 만들고, 실제 forest는 Git 밖에
+두고, pull request 전에 전체 검사를 돌려 주세요.
 
 ```sh
 make check
 ```
+
+보안 문제는 [SECURITY.md](SECURITY.md)를, 커뮤니티 참여는 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)를
+따릅니다.
 
 ## License
 
