@@ -86,7 +86,8 @@ and `archive/` can be deleted and rebuilt.
   `superseded_by`. Body: free sections, then `## Timeline` (one line per dated activity; the time index
   reads them), `## Links` (one `up:` link) and `## Update record`.
 - The **cap** is 8 KB of a leaf's content. Over it the leaf splits by sub-topic; a pure event list may
-  split by period (year, quarter, month). A file name carries no date except that period.
+  split by period (year, quarter, month, and a month still over the cap into runs of whole days). A file
+  name carries no date except that period.
 - A **board** (`03 mtm/<tree>/<branch>.md`) says what its subject is, its current state by kind, its
   rules, its leaves (`## Leaves`, derived from the folder) and its pointers (`## Pointers`, derived from
   the `about:` of leaves elsewhere); `forest check --sync` brings the derived lists up to the pages

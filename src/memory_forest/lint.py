@@ -220,11 +220,12 @@ def leaf_too_large(forest: ForestView) -> list[Hit]:
 
 def leaf_dated_name(forest: ForestView) -> list[Hit]:
     found = []
+    stems = layout.folder_stems(forest.paths)
     for path in forest.leaves:
         name = PurePosixPath(path).name
         if not layout.is_slug(name[:-3]):
             continue  # leaf_path_shape's
-        problem = layout.name_problem(name, config=forest.config)
+        problem = layout.name_problem(name, config=forest.config, siblings=stems[str(PurePosixPath(path).parent)])
         if problem:
             found.append(_hit("leaf_dated_name", path, None, problem))
     return found

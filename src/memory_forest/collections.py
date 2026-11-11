@@ -52,6 +52,7 @@ from .plan import (
     Plan,
     SubjectRef,
     body_lines,
+    day_runs,
     encode,
     field_of,
     refuse,
@@ -471,35 +472,13 @@ def cut(plan: Plan, path: str, *, why: str) -> list[str]:
         days: dict[str, list[Entry]] = {}
         for day, _number, entry in keyed:
             days.setdefault(day, []).append(entry)
-        current: tuple[str, list[Entry]] | None = (path, [])
 
-        def fits(name: str, entries: list[Entry], first: bool) -> bool:
-            trial = _page_for(plan, parts, name, entries, first)
+        def fits(name: str, entries: list[Entry]) -> bool:
+            trial = _page_for(plan, parts, name, entries, name == path)
             return page_bytes(trial.render(plan)) <= _cap(plan)
 
-        for day, entries in sorted(days.items()):
-            if current is None:
-                current = (f"{folder}/seen-once-{day}.md", [])
-            if fits(current[0], [*current[1], *entries], current[0] == path):
-                current[1].extend(entries)
-                continue
-            if current[1]:
-                groups.append(current)
-                current = (f"{folder}/seen-once-{day}.md", [])
-                if fits(current[0], entries, False):
-                    current[1].extend(entries)
-                    continue
-            number = 1
-            for entry in entries:
-                if current[1] and not fits(current[0], [*current[1], entry], current[0] == path):
-                    groups.append(current)
-                    number += 1
-                    current = (f"{folder}/seen-once-{day}-{number}.md", [])
-                current[1].append(entry)
-            groups.append(current)
-            current = None
-        if current is not None and (current[1] or current[0] == path):
-            groups.append(current)
+        groups = day_runs(path, sorted(days.items()),
+                          lambda day, number: f"{folder}/seen-once-{day}{'' if number == 1 else f'-{number}'}.md", fits)
         for name, _entries in groups:
             if name != path and plan.exists(name):
                 refuse("collection_page_taken", "A page the cut would make already exists.", path=name)

@@ -92,6 +92,12 @@ class LintCodeTests(CheckForestTestCase):
         self.assert_hits("leaf_dated_name", {"04 stm/workshop/truing-stand/repairs-2051-q1.md": leaf("truing-stand", STAND_UP)},
                          [])
 
+    def test_a_day_suffix_is_a_period_only_beside_its_streams_other_period_pages(self) -> None:
+        month, day = "04 stm/workshop/truing-stand/repairs-2051-03.md", "04 stm/workshop/truing-stand/repairs-2051-03-14.md"
+        page = leaf("truing-stand", STAND_UP)
+        self.assert_hits("leaf_dated_name", {month: page, day: page, day.replace(".md", "-2.md"): page}, [])
+        self.assert_hits("leaf_dated_name", {day: page}, [day])
+
     def test_leaf_recorder_dump(self) -> None:
         body = "- seen 10:01:02, 10:01:09, 10:01:15, 10:01:21 on the stand camera"
         self.assert_hits("leaf_recorder_dump", {STAND: leaf("truing-stand", STAND_UP, body=body)}, [STAND])

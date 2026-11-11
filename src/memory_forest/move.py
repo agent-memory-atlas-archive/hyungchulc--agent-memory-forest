@@ -47,6 +47,7 @@ from .plan import (
     SubjectRef,
     add_items,
     body_lines,
+    day_runs,
     edit_items,
     encode,
     field_of,
@@ -561,7 +562,8 @@ def _promote_to_tree(plan: Plan, ref: SubjectRef, why: str) -> None:
                paths=strangers)
     groups: dict[str, list[str]] = {}
     for path in leaves:
-        subtopic = field_of(plan.read(path), "subtopic") or layout.split_period(PurePosixPath(path).stem)[0]
+        subtopic = field_of(plan.read(path), "subtopic") or layout.split_period(
+            PurePosixPath(path).stem, plan.folder_pages(str(PurePosixPath(path).parent)))[0]
         if not layout.is_slug(subtopic) or layout.name_problem(subtopic, config=plan.config, period_allowed=False):
             refuse("subtopic_invalid", "A leaf's sub-topic cannot name a branch.", path=path, subtopic=subtopic)
         groups.setdefault(subtopic, []).append(path)
@@ -1289,7 +1291,7 @@ def recut_stream(plan: Plan, subject_id: str, leaves: list[str]) -> list[str]:
         text = plan.read(path)
         if field_of(text, "entity") != subject_id:
             refuse("stream_other_subject", "The page is not a leaf of this subject.", path=path)
-        stems.add(layout.split_period(PurePosixPath(path).stem)[0])
+        stems.add(layout.split_period(PurePosixPath(path).stem, [*paths, *plan.folder_pages(folder)])[0])
         kinds.add(field_of(text, "kind"))
         sources[path] = text
     if len(stems) != 1:
@@ -1318,6 +1320,14 @@ def recut_stream(plan: Plan, subject_id: str, leaves: list[str]) -> list[str]:
     cap = plan.config.limits.leaf_cap_bytes
     subtopic = first.field("subtopic") or stem
     why = plan.reason("a pure event list over the cap splits by period, the period the last part of its name")
+    cut_months: set[str] = set()
+
+    def label(period: str, members: list[tuple[tuple[str, str], int, list[str], str]]) -> str:
+        """The period a title names, or on a page of a month cut by days the days it holds."""
+        if period[:7] not in cut_months or len(period) < 7 or "-q" in period:
+            return period
+        days = sorted({member[0][0] for member in members})
+        return days[0] if len(days) == 1 else f"{days[0]} to {days[-1]}"
 
     def render(period: str, members: list[tuple[tuple[str, str], int, list[str], str]]) -> str:
         owners = list(dict.fromkeys(member[3] for member in members))
@@ -1334,9 +1344,11 @@ def recut_stream(plan: Plan, subject_id: str, leaves: list[str]) -> list[str]:
         head.append(f"updated_at: {max(dates)}")
         head.append("---")
         records = list(dict.fromkeys(line for owner in owners for line in parsed[owner][2]))
+        span = label(period, members)
         body = [
-            "", f"# {ref.name}: {_words(stem)} ({period})", "",
-            f"The {_words(stem)} of {ref.name} in {period}, one line each.", "",
+            "", f"# {ref.name}: {_words(stem)} ({span})", "",
+            f"The {_words(stem)} of {ref.name} {'from' if ' to ' in span else 'on' if len(span) == 10 else 'in'} "
+            f"{span}, one line each.", "",
             "## Timeline", "", *(line for member in members for line in member[2]), "",
             "## Links", "", *_parent_link(f"{folder}/{stem}-{period}.md"), *links, "",
         ]
@@ -1362,8 +1374,22 @@ def recut_stream(plan: Plan, subject_id: str, leaves: list[str]) -> list[str]:
             if fits(quarter, quarter_members):
                 pages[quarter] = quarter_members
                 continue
+            months: dict[str, list[Any]] = {}
             for member in quarter_members:
-                pages.setdefault(_period(member[0][0], "month"), []).append(member)
+                months.setdefault(_period(member[0][0], "month"), []).append(member)
+            for month, month_members in months.items():
+                if fits(month, month_members):
+                    pages[month] = month_members
+                    continue
+                # A month past the cap is cut into runs of whole days (the first keeping the month's name).
+                cut_months.add(month)
+                days: dict[str, list[Any]] = {}
+                for member in month_members:
+                    days.setdefault(member[0][0], []).append(member)
+                runs = day_runs(month, list(days.items()),
+                                lambda day, number: day if number == 1 else f"{day}-{number}", fits)
+                for period, run_members in runs:
+                    pages[period] = run_members
     targets = {period: f"{folder}/{stem}-{period}.md" for period in pages}
     for path in targets.values():
         if plan.exists(path) and path not in sources:
@@ -1390,7 +1416,7 @@ def recut_stream(plan: Plan, subject_id: str, leaves: list[str]) -> list[str]:
         plan.hints[target] = f"{ref.name}: {_words(stem)}, {period}"
         size = len(encode(parse_page(text).content_text()))
         if size > cap:
-            plan.note(f"needs_subtopic_split: {target} holds {size} bytes of content, one month over the cap")
+            plan.note(f"needs_subtopic_split: {target} holds {size} bytes of content in one Timeline item over the cap")
     for path in sources:
         if path not in targets.values():
             plan.map(path, first_page[path])

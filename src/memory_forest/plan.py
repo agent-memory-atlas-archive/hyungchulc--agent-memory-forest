@@ -259,6 +259,49 @@ def body_lines(text: str) -> list[str]:
     return [split_line_ending(line)[0] for line in lines if line.strip()]
 
 
+def day_runs(
+    first: str,
+    days: Iterable[tuple[str, list[Any]]],
+    name: Callable[[str, int], str],
+    fits: Callable[[str, list[Any]], bool],
+) -> list[tuple[str, list[Any]]]:
+    """A month's items cut into runs of whole days (contract, sections 3 and 4): the pages and what each holds.
+
+    ``days`` gives each day's items in order, the days in order. The first run
+    keeps the name ``first``; each later run is the page ``name(day, 1)`` of
+    its first day, filled while ``fits`` holds; a day whose items alone do not
+    fit takes further pages ``name(day, 2)``, ``name(day, 3)``, … in item
+    order. An item is never divided, and each is on exactly one page: an item
+    that alone does not fit has a page to itself.
+    """
+    groups: list[tuple[str, list[Any]]] = []
+    current: tuple[str, list[Any]] | None = (first, [])
+    for day, items in days:
+        if current is None:
+            current = (name(day, 1), [])
+        if fits(current[0], [*current[1], *items]):
+            current[1].extend(items)
+            continue
+        if current[1]:
+            groups.append(current)
+            current = (name(day, 1), [])
+            if fits(current[0], items):
+                current[1].extend(items)
+                continue
+        number = 1
+        for item in items:
+            if current[1] and not fits(current[0], [*current[1], item]):
+                groups.append(current)
+                number += 1
+                current = (name(day, number), [])
+            current[1].append(item)
+        groups.append(current)
+        current = None
+    if current is not None and (current[1] or current[0] == first):
+        groups.append(current)
+    return groups
+
+
 def script_of(text: str) -> str | None:
     """The script of a name's letters (``LATIN``, ``CYRILLIC``, …), or None when it mixes scripts or has none."""
     scripts = set()
@@ -903,7 +946,8 @@ class Plan:
                 problems.append(f"path_shape: {path}: {info.problem or 'not a forest page'}")
                 continue
             if self.before.get(path) is None and info.role is layout.PageRole.LEAF:
-                trouble = layout.name_problem(PurePosixPath(path).name, config=self.config)
+                trouble = layout.name_problem(PurePosixPath(path).name, config=self.config,
+                                              siblings=self.folder_pages(str(PurePosixPath(path).parent)))
                 if trouble is not None:
                     problems.append(f"leaf_dated_name: {path}: {trouble}")
             parent = layout.parent_page(path)

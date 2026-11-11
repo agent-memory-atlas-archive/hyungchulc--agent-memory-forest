@@ -195,7 +195,8 @@ def measure(plan: Plan, ref: SubjectRef, counter: DayCounter | None = None) -> M
         leaf_days = counter.leaf_days(text)
         days |= leaf_days
         standing = standing or bool(page.field("standing"))
-        subtopic = page.field("subtopic") or layout.split_period(PurePosixPath(path).stem)[0]
+        subtopic = page.field("subtopic") or layout.split_period(
+            PurePosixPath(path).stem, plan.folder_pages(str(PurePosixPath(path).parent)))[0]
         group = subtopics.setdefault(subtopic, Subtopic())
         group.leaves.append(path)
         group.days |= leaf_days

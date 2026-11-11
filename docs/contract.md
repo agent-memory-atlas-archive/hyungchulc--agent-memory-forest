@@ -480,8 +480,8 @@ application, a stay, a trip.
 
 - A leaf is a living page: it is updated in place and split by sub-topic (section 3).
 - **File names carry no date or period** in any form: no `2042-05-14`, no year or month, no month or
-  season words (`-may`, `-spring`). The exceptions are the period suffix of an event list (below) and the
-  period of a collection page (section 3).
+  season words (`-may`, `-spring`). The exceptions are the period suffix of an event list, the day of a
+  page of a month cut by days among them (below), and the period of a collection page (section 3).
 - **A leaf is named by its sub-topic**: `<id>-<subtopic>.md` beside a leaf subject's leaf, `<subtopic>.md`
   in a subject's own folder, and, in a branch of a tree that grew from a subject or of an agent's tree,
   by what it holds within the branch. Never a name that ends in a counter (`notes-7`, `plan-2`); a number
@@ -496,9 +496,19 @@ application, a stay, a trip.
      within the episode.
   2. A pure event list with no sub-topic left (firings, a series' sessions, an episode list) may split by
      period, the period being the last part of the name: a year `<stem>-2041.md`, a quarter
-     `<stem>-2042-q2.md`, or a month `<stem>-2042-05.md` when a quarter passes the cap. Every page of a
-     series split this way carries a period of this form. When such a page later splits by sub-topic,
-     each new leaf keeps the page's period as the last part of its name.
+     `<stem>-2042-q2.md`, or a month `<stem>-2042-05.md` when a quarter passes the cap. A month that
+     still passes the cap is cut by time, never left for a reading of its lines: into runs of whole days,
+     each filled up to the cap, the first run keeping the month's name and each later run named by its
+     first day (`<stem>-2042-05-14.md`); a day whose lines alone pass the cap takes further pages of that
+     day in line order (`<stem>-2042-05-14-2.md`, `-3`, …). The lines stay as written and in time order,
+     each line, with the lines indented under it, on exactly one page, and each page of a month cut this
+     way has a title that gives the days it holds (`(2042-05-01 to 2042-05-13)`). Every page of a series
+     split this way carries a period of this form. When such a page later splits by sub-topic, each new
+     leaf keeps the page's period as the last part of its name.
+     A day is a period only on a page of a month cut by days: a `-YYYY-MM-DD` or `-YYYY-MM-DD-N` suffix
+     counts as one where a page of the same stream with a year, quarter or month period stands in the
+     folder. A lone day-named leaf carries a date in its name (`leaf_dated_name`). The lint, the level
+     rule and the tools read one definition of the period suffix.
   3. A collection page splits as section 3 says, and counts as the whole page.
   4. A run that pushes a leaf's content over the cap, or adds to a leaf that is already over it, splits it
      in the same run. A record never makes a leaf split.
@@ -856,7 +866,8 @@ below may still change while the code is ported; the design's milestones say whe
      description `The <stream words> of <Name> in <period>, one line each.`, the stream words being the
      pages' shared name without its period, its hyphens as spaces. For each year it takes the coarsest
      period whose page keeps within the cap: the year, else its quarters, else a passing quarter's
-     months.
+     months, else a passing month's runs of whole days (section 4, Names, size and shape), whose titles
+     and descriptions give the days each holds (`(<first day> to <last day>)`, or the one day).
   5. **All or nothing.** An operation, or a plan of many, is written whole or not at all, also when its
      process is killed: before its first write it keeps an undo journal (`.forest/journal/commit.json`)
      of every page's text before and the move log's length, and removes it only once the pages and the

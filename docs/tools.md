@@ -79,7 +79,7 @@ A refused command exits 2 and prints its error code (for example `target_exists`
 | `move fold-tree <id> --into <tree> [--as NAME] [--type TYPE]` | folds a tree back into a branch of another tree; its old branches become its leaves' `subtopic:`; an agent takes `--type` (default `agents.folded_type`) and leaves `## Agents` |
 | `move set-type <id> <type>` | retypes a subject; writes the change on its index and nothing in the move log |
 | `move set <leaf> [--kind K] [--about IDS] [--standing "…"]` | sets one leaf's frontmatter; writes each change on the leaf and nothing in the move log |
-| `move recut-stream <id> <leaf> …` | cuts a stream of event pages of one subject again by period |
+| `move recut-stream <id> <leaf> …` | cuts a stream of event pages of one subject again by period: a year, its quarters, a quarter's months, and a month still past the cap into runs of whole days |
 | `move plan <file.json>` | runs many operations as one plan: all are written, or none |
 | `move resolve <old path>` | follows the move log from an old path to the present page or the archive |
 
@@ -125,6 +125,11 @@ forest move set "04 stm/bakery/deck-oven/fixes.md" --kind plan --about millstone
 # Two month pages of repairs join into one year page while it stays under the cap.
 forest move recut-stream deck-oven "04 stm/bakery/deck-oven/repairs-2051-01.md" \
     "04 stm/bakery/deck-oven/repairs-2051-02.md"
+
+# A month of repairs still past the cap: runs of whole days, the first keeping the month's name.
+forest move recut-stream deck-oven "04 stm/bakery/deck-oven/repairs-2051-02.md"
+#   created: 04 stm/bakery/deck-oven/repairs-2051-02-11.md
+#   changed: 04 stm/bakery/deck-oven/repairs-2051-02.md
 
 # Where did an old path go?
 forest move resolve "04 stm/bakery/deck-oven/repairs.md"

@@ -38,6 +38,11 @@ the tree until the version 1 commands replace it.
   `forest archive check` verifies copies and blocks against the manifest
 - `forest move set-type` and `forest move set` write change lines; `retire-tree`, `fold-tree` and
   `recut-stream` write provenance lines
+- `forest move recut-stream` cuts a month that still passes the cap by time, into runs of whole days (the
+  first keeping the month's name, each later run named by its first day, a day past the cap into numbered
+  pages of that day), each line on exactly one page and each title giving the days it holds; a
+  `-YYYY-MM-DD[-N]` suffix is a period only beside its stream's other period pages, and the lint, the level
+  rule and the tools read that one definition, which collection pages share
 
 - `docs/contract.md`: the version 1 forest contract, every rule stated once: the lanes and the four forest
   layers; the subject as the unit with one registry line per subject; levels set by code from distinct

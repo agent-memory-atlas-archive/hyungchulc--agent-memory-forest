@@ -88,6 +88,14 @@ class NameTests(unittest.TestCase):
         self.assertEqual(layout.split_period("sessions-2051-04"), ("sessions", "2051-04"))
         self.assertEqual(layout.split_period("ledger-2050"), ("ledger", "2050"))
         self.assertEqual(layout.split_period("repairs"), ("repairs", None))
+        # A day is a period only on a page of a month cut by days, beside its stream's other period pages.
+        self.assertEqual(layout.split_period("firings-2051-04-09"), ("firings-2051-04-09", None))
+        cut = ["firings-2051-04", "firings-2051-04-09", "firings-2051-04-09-2"]
+        self.assertEqual(layout.split_period("firings-2051-04-09", cut), ("firings", "2051-04-09"))
+        self.assertEqual(layout.split_period("firings-2051-04-09-2", cut), ("firings", "2051-04-09-2"))
+        self.assertEqual(layout.split_period("glazes-2051-04-09", cut), ("glazes-2051-04-09", None))
+        self.assertEqual(layout.period_grain("2051-04-09-2"), "day")
+        self.assertIsNone(layout.period_grain("2051-04-09-1"))
         self.assertEqual(layout.collection_period("seen-once-2051-q1"), "2051-q1")
         self.assertEqual(layout.collection_period("seen-once-2051-03"), "2051-03")
         self.assertEqual(layout.collection_period("seen-once-2051-03-14"), "2051-03-14")
@@ -110,6 +118,8 @@ class NameTests(unittest.TestCase):
                 self.assertIsNotNone(problem)
                 self.assertIn(word, problem)
         self.assertIsNotNone(layout.name_problem("firings-2051-q2.md", period_allowed=False))
+        self.assertIsNone(layout.name_problem("firings-2051-04-09.md", siblings=["firings-2051-04.md"]))
+        self.assertIn("date", layout.name_problem("firings-2051-04-09.md", siblings=["glazes-2051-04.md"]) or "")
 
     def test_date_words_are_a_setting(self) -> None:
         config = parse_config('[names]\ndate_words = ["lente"]\n')

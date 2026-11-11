@@ -50,16 +50,15 @@ KEPT_STATE: Final[tuple[str, ...]] = (MOVES_FILE, ARCHIVE_DIR)
 SLUG_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9][a-z0-9-]*")
 COLLECTION_PREFIX: Final[str] = "seen-once-"
 
-# A period at the end of a name: a year, a quarter or a month (contract, section 4).
-PERIOD_RE: Final[re.Pattern[str]] = re.compile(r"(?P<year>\d{4})(?:-(?:q(?P<quarter>[1-4])|(?P<month>0[1-9]|1[0-2])))?")
-_PERIOD_SUFFIX_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(?P<stem>[a-z0-9][a-z0-9-]*?)-(?P<period>\d{4}(?:-q[1-4]|-(?:0[1-9]|1[0-2]))?)$"
+# A period at the end of a name (contract, section 4): a year, a quarter or a month, or, on a page of a
+# month cut by days, the first day of its run, with `-2`, `-3`, … for the further pages of one day. This
+# is the one definition of a period suffix; collection pages, streams, the lint and the level rule read it.
+PERIOD_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?P<year>\d{4})(?:-(?:q(?P<quarter>[1-4])|(?P<month>0[1-9]|1[0-2])"
+    r"(?:-(?P<day>0[1-9]|[12]\d|3[01])(?:-(?P<page>[2-9]|[1-9]\d+))?)?))?"
 )
-# A collection page: `seen-once-<period>`, or a month cut by days, `seen-once-<YYYY-MM-DD>`
-# with `-2`, `-3`, … for the further pages of one day (contract, section 3, Collections).
-_COLLECTION_RE: Final[re.Pattern[str]] = re.compile(
-    r"^seen-once-(?P<period>\d{4}-(?:q[1-4]|(?:0[1-9]|1[0-2])))$"
-    r"|^seen-once-(?P<day>\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))(?:-(?P<page>[2-9]|[1-9]\d+))?$"
+_PERIOD_SUFFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<stem>[a-z0-9][a-z0-9-]*?)-(?P<period>" + PERIOD_RE.pattern + r")$"
 )
 _NUMBERED_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|-)(\d+)$")
 _YEAR_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|-)(?:19|20|21)\d{2}(?=-|$)")
@@ -268,41 +267,81 @@ def slugify(name: str) -> str:
     return slug
 
 
-def split_period(stem: str) -> tuple[str, str | None]:
-    """A name's stem and its period suffix (``firings-2042-q2`` → ``firings``, ``2042-q2``)."""
+def period_grain(period: str) -> str | None:
+    """``year``, ``quarter``, ``month`` or ``day`` (a day's further pages included), or None for no period."""
+    match = PERIOD_RE.fullmatch(period)
+    if match is None:
+        return None
+    if match["day"]:
+        return "day"
+    if match["month"]:
+        return "month"
+    return "quarter" if match["quarter"] else "year"
+
+
+def split_period(stem: str, siblings: Iterable[str] = ()) -> tuple[str, str | None]:
+    """A name's stem and its period suffix (``firings-2042-q2`` → ``firings``, ``2042-q2``).
+
+    A year, a quarter or a month is a period wherever it stands. A day
+    (``-2042-05-14``, ``-2042-05-14-2``) is a period only on a page of a month
+    cut by days: where ``siblings`` (the other page stems of the folder) hold a
+    page of the same stream with a year, quarter or month period. A lone
+    day-named page keeps its date in its stem, which the name rules refuse.
+    """
     match = _PERIOD_SUFFIX_RE.fullmatch(stem)
     if match is None:
         return stem, None
-    return match["stem"], match["period"]
+    base, period = match["stem"], match["period"]
+    if period_grain(period) != "day":
+        return base, period
+    for other in siblings:
+        other_match = _PERIOD_SUFFIX_RE.fullmatch(PurePosixPath(other).name.removesuffix(".md"))
+        if (other_match is not None and other_match["stem"] == base
+                and period_grain(other_match["period"]) in ("year", "quarter", "month")):
+            return base, period
+    return stem, None
 
 
 def collection_period(stem: str) -> str | None:
-    """The period a collection page's name carries, or None when it is no collection page name."""
-    match = _COLLECTION_RE.fullmatch(stem)
-    if match is None:
+    """The period a collection page's name carries, or None when it is no collection page name.
+
+    A collection page carries a quarter, a month or a day of a month cut by
+    days (contract, section 3, Collections), never a whole year.
+    """
+    if not stem.startswith(COLLECTION_PREFIX):
         return None
-    if match["period"]:
-        return match["period"]
-    return match["day"] + (f"-{match['page']}" if match["page"] else "")
+    period = stem[len(COLLECTION_PREFIX):]
+    return period if period_grain(period) in ("quarter", "month", "day") else None
 
 
 def is_collection_name(name: str) -> bool:
-    return collection_period(PurePosixPath(name).stem) is not None
+    return collection_period(PurePosixPath(name).name.removesuffix(".md")) is not None
 
 
-def name_problem(name: str, *, config: Config = DEFAULT_CONFIG, period_allowed: bool = True) -> str | None:
+def folder_stems(paths: Iterable[str]) -> dict[str, list[str]]:
+    """The page stems of each folder of ``paths`` (the ``siblings`` a period suffix is read against)."""
+    found: dict[str, list[str]] = {}
+    for path in paths:
+        pure = PurePosixPath(path)
+        found.setdefault(str(pure.parent), []).append(pure.name.removesuffix(".md"))
+    return found
+
+
+def name_problem(name: str, *, config: Config = DEFAULT_CONFIG, period_allowed: bool = True,
+                 siblings: Iterable[str] = ()) -> str | None:
     """Why a file or folder name breaks the name rules (contract, sections 1 and 4), or None.
 
     A name is a slug with no date, year, month or season word and no number,
-    apart from a period suffix (allowed unless ``period_allowed`` is false)
-    and the period of a collection page.
+    apart from a period suffix (allowed unless ``period_allowed`` is false;
+    a day only beside its stream's other period pages, ``siblings``) and the
+    period of a collection page.
     """
     stem = name.removesuffix(".md")
     if not is_slug(stem):
         return f"`{name}` is not a slug ([a-z0-9][a-z0-9-]*)"
     if is_collection_name(stem):
         return None
-    base, period = split_period(stem)
+    base, period = split_period(stem, siblings)
     if period is not None and not period_allowed:
         return f"`{name}` carries the period `{period}` where none is allowed"
     if _YEAR_RE.search(base) or PERIOD_RE.fullmatch(base):

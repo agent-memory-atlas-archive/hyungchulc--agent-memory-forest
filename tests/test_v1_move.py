@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from v1_support import ForestTestCase, leaf_text  # noqa: E402
 
-from memory_forest import maps, move, movelog, registry  # noqa: E402
+from memory_forest import lint, maps, move, movelog, registry  # noqa: E402
 from memory_forest.errors import MemoryForestError  # noqa: E402
 
 TODAY = "2051-03-05"
@@ -380,6 +380,65 @@ class RecutStreamTests(MoveTestCase):
         joined = "".join(self.text(root, path) for path in made + [p for p in pages if (root / p).exists()])
         for line in self.JANUARY + self.FEBRUARY:
             self.assertEqual(joined.count(line), 1, line)
+
+    def test_a_month_over_the_cap_is_cut_into_runs_of_whole_days(self) -> None:
+        root = self.forest()
+        settings = root / "forest.toml"
+        settings.write_text(settings.read_text(encoding="utf-8")
+                            + "\n[limits]\nleaf_cap_bytes = 520\nentry_admit_margin_bytes = 100\n", encoding="utf-8")
+        lines = [f"- 2051-01-{day:02d} 0{hour}:00 Pacific/Auckland — The oven door was checked, round {number}."
+                 for number, (day, hour) in enumerate([(4, 7), (4, 8), (9, 7), (15, 7), (15, 8), (15, 9),
+                                                       (22, 7)], start=1)]
+        page = "04 stm/bakery/deck-oven/repairs-2051-01.md"
+        (root / page).write_text(stream_page("2051-01", lines), encoding="utf-8")
+        maps.apply(root)
+        _, changed = self.run_move(root, "recut-stream", subject="deck-oven", leaves=[page])
+        folder = "04 stm/bakery/deck-oven/"
+        made = sorted(path for path in (root / folder).iterdir() if path.name.startswith("repairs-"))
+        names = [path.name for path in made]
+        self.assertIn("repairs-2051-01.md", names)  # the first run keeps the month's name
+        self.assertTrue(all(name == "repairs-2051-01.md" or name.startswith("repairs-2051-01-") for name in names),
+                        names)
+        self.assertGreater(len(names), 2)
+        held: list[str] = []
+        for path in made:
+            text = path.read_text(encoding="utf-8")
+            self.assertLessEqual(len(text.split("## Update record")[0].encode("utf-8")), 520 + 200)
+            timeline = [line for line in text.split("## Timeline", 1)[1].split("## Links", 1)[0].splitlines()
+                        if line.strip()]
+            days = sorted(line[2:12] for line in timeline)
+            span = days[0] if days[0] == days[-1] else f"{days[0]} to {days[-1]}"
+            self.assertIn(f"({span})", text.splitlines()[text.splitlines().index("---", 1) + 2])
+            if path.name != "repairs-2051-01.md":
+                first = path.stem.removeprefix("repairs-")[:10]
+                self.assertEqual(days[0], first)  # a later run is named by its first day
+            held.extend(timeline)
+        self.assertEqual(sorted(held), sorted(lines))  # each line on exactly one page
+        self.assertEqual(len(held), len(set(held)))
+        report = lint.lint(root, codes=["leaf_dated_name"])
+        self.assertEqual([hit.render() for hit in report.hits], [])
+
+    def test_a_day_past_the_cap_takes_numbered_pages_in_line_order(self) -> None:
+        root = self.forest()
+        settings = root / "forest.toml"
+        settings.write_text(settings.read_text(encoding="utf-8")
+                            + "\n[limits]\nleaf_cap_bytes = 470\nentry_admit_margin_bytes = 100\n", encoding="utf-8")
+        lines = ["- 2051-01-03 07:00 Pacific/Auckland — The flue was swept before the first bake."]
+        lines += [f"- 2051-01-15 0{hour}:00 Pacific/Auckland — The left burner was relit, try {hour}." for hour in range(1, 8)]
+        page = "04 stm/bakery/deck-oven/repairs-2051-01.md"
+        (root / page).write_text(stream_page("2051-01", lines), encoding="utf-8")
+        maps.apply(root)
+        self.run_move(root, "recut-stream", subject="deck-oven", leaves=[page])
+        folder = root / "04 stm/bakery/deck-oven"
+        numbered = sorted((path.name for path in folder.glob("repairs-2051-01-15-*.md")),
+                          key=lambda name: int(name[:-3].rsplit("-", 1)[1]))
+        self.assertTrue(numbered and numbered[0] == "repairs-2051-01-15-2.md", numbered)
+        order = ["repairs-2051-01.md", "repairs-2051-01-15.md", *numbered]
+        order = [name for name in order if (folder / name).exists()]
+        held = [line for name in order
+                for line in (folder / name).read_text(encoding="utf-8").split("## Timeline", 1)[1]
+                .split("## Links", 1)[0].splitlines() if line.strip()]
+        self.assertEqual(held, lines)  # in line order, each once
 
     def test_a_stream_page_with_free_sections_is_refused(self) -> None:
         root = self.forest()
