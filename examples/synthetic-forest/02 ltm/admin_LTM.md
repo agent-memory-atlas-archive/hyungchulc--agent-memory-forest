@@ -6,7 +6,7 @@ Juno herself, her accounts and money, her calendars and to-dos, and the shops sh
 
 ## Patterns and rules
 
-- Studio purchases are paid with the studio card (as of 2042-05-13; source `04 stm/admin/shops/cinderwell-supply.md`).
+- Studio purchases are paid with the studio card (as of 2042-05-13; source `04 stm/admin/shops/cinderwell-supply.md`)
 
 ## Current state
 

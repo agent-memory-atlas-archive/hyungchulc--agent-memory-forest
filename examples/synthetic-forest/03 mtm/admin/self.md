@@ -6,7 +6,7 @@ Juno Hale, the owner of this forest.
 
 ## Current state
 
-- Studio: runs Brindlemoor Clayworks in the old net loft on Quay Row since 2041-09-15 (as of 2041-09-15; source `04 stm/admin/self/juno-hale.md`).
+- Studio: runs Brindlemoor Clayworks in the old net loft on Quay Row since 2041-09-15 (as of 2041-09-15; source `04 stm/admin/self/juno-hale.md`)
 
 ## Leaves
 

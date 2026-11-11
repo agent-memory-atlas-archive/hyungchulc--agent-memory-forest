@@ -16,11 +16,11 @@ approves it through Studio Hub.
 
 ## Lessons
 
-- A customer order that is fired in two loads is invoiced once, after the second load (as of 2042-05-13; source `04 stm/ledger-bot/methods/bookkeeping-rules.md`).
+- A customer order that is fired in two loads is invoiced once, after the second load (as of 2042-05-13; source `04 stm/ledger-bot/methods/bookkeeping-rules.md`)
 
 ## Current state
 
-- Waiting: the invoice for the Lowtide café order is drafted and waits for Juno's approval (as of 2042-05-13; source `04 stm/ledger-bot/invoice-runs/monthly-invoicing.md`).
+- Waiting: the invoice for the Lowtide café order is drafted and waits for Juno's approval (as of 2042-05-13; source `04 stm/ledger-bot/invoice-runs/monthly-invoicing.md`)
 
 ## Branches
 

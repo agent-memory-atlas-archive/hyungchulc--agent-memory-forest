@@ -94,12 +94,14 @@ and `archive/` can be deleted and rebuilt.
   current state, and one line per branch.
 - Above the leaves a line is carried up only when it is established: repeated evidence, or the owner's own
   statement. Current-state lines carry `(as of DATE; source PATH)` and are stale when their source changed.
-- An `## Update record` holds what a fact of the page was before it changed (`was "…", now "…"`), what
-  was taken out at the owner's word, and where the page's own lines came from or went. It is bounded on
-  every page: the change lines stay (the subject timeline shows them), the owner's own words stay, the
-  newest other lines that fit a small budget stay, and the rest move verbatim to the page's archive copy.
-  A pass's own note of how many lines it touched is never written on a page: it goes with the run's
-  receipts.
+- An `## Update record` holds only the page's own history, in three kinds of line: what a statement of
+  the page was before it changed (`was "…", now "…"`), what was taken out or corrected at the owner's word
+  about the page, and where the page's own lines came from or went. It is bounded on every page, a leaf
+  or above: the newest lines that fit a small budget stay with the owner's removals and corrections, and
+  older lines move verbatim to the page's archive copy, where the subject timeline still reads the
+  changes. A run's note about its own work (how many lines it touched, that it rechecked and changed
+  nothing, that it rewrote a page's form) is never written on a page: it goes with the run's receipts,
+  and a run that changes no statement writes no record line.
 
 ## 6. Agents
 
@@ -140,8 +142,9 @@ A helper started for one task works as the agent that started it.
   stream of event pages by period, and sets frontmatter. Each operation rewrites every link, list line,
   registry line and code-span path that named the old place and appends one line per path to
   `.forest/moves.jsonl`. `forest move resolve <old path>` follows the log to the present place.
-- `.forest/archive/` holds one compressed copy per archived page with a manifest line (old path, hash,
-  size, reason, the leaf it was folded into). Nothing is deleted. `forest archive show <old path>` prints one.
+- `.forest/archive/` holds one compressed copy per archived version of a page, under the date it was
+  archived, with a manifest line (old path, hash, size, reason, the leaf it was folded into). Nothing is
+  deleted. `forest archive show <old path>` prints the latest copy and `forest archive list` every copy.
 - Machine output (hash tables, run receipts, recorder rows, derived views) never becomes a forest page.
 
 ## 8. The lint
@@ -195,7 +198,13 @@ entry_admit_margin_bytes = 1024 # room a collection page keeps when it admits a 
 repeat_min_lines = 3            # the same lines on two leaves of one subject: counted from this many
 repeat_min_chars = 40           # ... each at least this long
 [numbers]
-identity_formats = []           # national identity number shapes to mask, e.g. ["NNNNNN-NNNNNNN:after-hyphen"]
+identity_formats = []           # national identity number shapes to mask, "<shape>:<hide>": N a digit,
+                                # A a letter; hide = after-hyphen | last-<n>, e.g. ["NNNNNN-NNNNNNN:after-hyphen"]
+[subjects]
+types = [...]                   # the subject types (section 4); `agent` and `collection` are always in it
+system_id = ""                  # the id of the system's own subject, when the forest keeps one
+[names]
+date_words = [...]              # month and season words a file name must not carry
 [levels]
 leaf_days = 2
 branch_days = 5
@@ -203,6 +212,14 @@ tree_subtopics = 3
 tree_subtopic_days = 5
 tree_subtopic_leaves = 3
 tree_types = ["project", "topic", "product", "device", "title", "agent"]
+stream_kinds = ["received", "notice", "brief"]  # sub-topics made only of these do not count toward a tree
+stream_subtopic_words = [...]   # sub-topic names that mark such a stream
+stage_names = [...]             # a Timeline line that only records the system's own work
+work_verbs = [...]              #   (a stage or tool name followed by one of these verbs)
+tool_names = [...]              #   does not count as a day of its subject
+[lint]
+channel_words = [...]           # channel words a leaf's file name must not carry
+remark_phrases = [...]          # phrases that mark a writer's remark left on a page
 [agents]
 policy = "subject-first"        # or "agent-first"
 orchestrators = []

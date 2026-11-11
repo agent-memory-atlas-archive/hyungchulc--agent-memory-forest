@@ -16,11 +16,11 @@ bookkeeping to Ledger Bot, checks what they return before it tells Juno, and rea
 
 ## Lessons
 
-- A firing that ends sooner than usual is worth a line to Juno before she unloads (as of 2042-05-13; source `04 stm/studio-hub/routing/routing-lessons.md`).
+- A firing that ends sooner than usual is worth a line to Juno before she unloads (as of 2042-05-13; source `04 stm/studio-hub/routing/routing-lessons.md`)
 
 ## Current state
 
-- Open hand-offs: Ledger Bot to send the invoice for the Lowtide café order once Juno approves it (as of 2042-05-14; source `04 stm/studio-hub/hand-offs/open-hand-offs.md`).
+- Open hand-offs: Ledger Bot to send the invoice for the Lowtide café order once Juno approves it (as of 2042-05-14; source `04 stm/studio-hub/hand-offs/open-hand-offs.md`)
 
 ## Branches
 

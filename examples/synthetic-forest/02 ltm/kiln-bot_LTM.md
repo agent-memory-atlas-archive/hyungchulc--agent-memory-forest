@@ -17,11 +17,11 @@ the kiln's own home with `noted by kiln-bot`; this tree holds its runs and its m
 
 ## Lessons
 
-- After new elements are fitted, a firing climbs faster; watch the last hour closely (as of 2042-05-13; source `04 stm/kiln-bot/methods/cooling-curves.md`).
+- After new elements are fitted, a firing climbs faster; watch the last hour closely (as of 2042-05-13; source `04 stm/kiln-bot/methods/cooling-curves.md`)
 
 ## Current state
 
-- Last run: the glaze firing of 2042-05-13, ended normally (as of 2042-05-13; source `04 stm/kiln-bot/firing-runs/glaze-firing-runs.md`).
+- Last run: the glaze firing of 2042-05-13, ended normally (as of 2042-05-13; source `04 stm/kiln-bot/firing-runs/glaze-firing-runs.md`)
 
 ## Branches
 

@@ -93,6 +93,9 @@ number, the setting that holds it is given with its default.
   `about:`. The pages are the source; the JSON is derived.
 - One id names one subject, and an alias belongs to one subject. When two ids turn out to be one subject,
   the move tool merges them (section 9).
+- Names and aliases are compared after NFKC normalisation, case folding and collapsing white space: two
+  that are equal after that are one name. Two that differ only in punctuation or spacing are reported by
+  `forest registry check` as likely the same and are never merged by a tool on that ground alone.
 
 ## 3. Where a subject and its material live
 
@@ -158,7 +161,10 @@ The levels, with the defaults of the `[levels]` settings:
 
 - A category branch keeps the subjects seen on one day in its **collection**: one subject of type
   `collection`, with the id `<category>-seen-once`, level `leaf`, the name `<Category words> seen once`,
-  its first page as its home, and a registry line in its tree's `## Subjects` like any other subject.
+  its first page as its home, and a registry line in its tree's `## Subjects` like any other subject. When
+  another tree already has a category of that name, the new collection's id is
+  `<tree>-<category>-seen-once`. An id is fixed when its collection is created and does not change when
+  another tree later gains the same category.
 - Its pages are `04 stm/<tree>/<category>/seen-once-<period>.md`. An entry goes on the page of the quarter
   of its first day (`seen-once-2042-q2.md`), or of its month (`seen-once-2042-05.md`) when the quarter's
   page would pass the leaf cap. An entry with no dated line goes by the `updated_at` of the page it came
@@ -174,7 +180,7 @@ The levels, with the defaults of the `[levels]` settings:
      numbered page. A page it pushes over the cap is cut again the same way.
   4. Each entry that moves takes its Timeline and record lines with it, and the move log sends its old
      addresses (`<page>#<id>`) to its new page. `forest collections recut` does the cut.
-- **Page shape.** Frontmatter: `entity: <category>-seen-once`, `subtopic: seen-once`, `kind: collection`,
+- **Page shape.** Frontmatter: `entity: <the collection's id>`, `subtopic: seen-once`, `kind: collection`,
   `timezone` and `updated_at`. Body: the title `# <Category words> seen once (<period>)`, or on a page of a
   month cut by days `# <Category words> seen once (<first day> to <last day>)` with the span of first days
   it holds, a one-line description, then one section per entry:
@@ -197,7 +203,8 @@ The levels, with the defaults of the `[levels]` settings:
   follows section 5.
 - **Admission.** An entry that reaches `levels.leaf_days` days, gets a `standing` line, or is too large as
   above, is admitted: its section becomes the leaf `04 stm/<tree>/<category>/<id>.md` with its Timeline
-  lines, it gets its own registry line, and the collection page keeps one reference line for it.
+  lines, it gets its own registry line, and the collection page keeps one reference line for it, in the
+  list directly under the page's description and before its first entry.
 - **Standing.** A `standing` line, in a leaf's frontmatter or on an entry, makes its subject a leaf subject
   at once, whatever its days. It records one of two things, with the words that support it:
   1. the owner's own statement of a lasting tie: `standing: said — "<the owner's words>" (YYYY-MM-DD)`;
@@ -451,8 +458,9 @@ application, a stay, a trip.
   period of a collection page (section 3).
 - **A leaf is named by its sub-topic**: `<id>-<subtopic>.md` beside a leaf subject's leaf, `<subtopic>.md`
   in a subject's own folder, and, in a branch of a tree that grew from a subject or of an agent's tree,
-  by what it holds within the branch. Never a numbered name (`notes-7`). Its board's `## Leaves` line says
-  what it holds.
+  by what it holds within the branch. Never a name that ends in a counter (`notes-7`, `plan-2`); a number
+  that belongs to what the page is about stays (`cone-6-limits`). Its board's `## Leaves` line says what
+  it holds.
 - **The cap.** `limits.leaf_cap_bytes` (8,192) bytes of a leaf's **content**: the page without its
   `## Update record`. The cap keeps every leaf readable whole and lets several leaves fit one read; a read
   names the record instead of showing it, and `forest record size PATH` prints a page's content size, its
@@ -469,20 +477,32 @@ application, a stay, a trip.
   4. A run that pushes a leaf's content over the cap, or adds to a leaf that is already over it, splits it
      in the same run. A record never makes a leaf split.
   5. A leaf page over `limits.leaf_max_bytes` (20,480) bytes, record included, is a violation (section 8).
-- **Record trim.** When a page passes the cap with its record while its content is within it, the record
-  is trimmed:
-  1. it keeps the newest lines that fit in `limits.record_keep_bytes` (2,048) bytes, and, whatever their
-     age, every line that quotes the owner's own words (a removal the owner asked for carries them, so a
-     later run does not add back what the owner took out), one copy of each, oldest first by their leading
-     date;
+- **What a record line is.** A line stands in a page's `## Update record` only when it is one of three
+  kinds, each about that page:
+  1. a change: what a statement of the page was and what it became (`was "…", now "…"`), quoting the
+     statement that changed and not the section around it;
+  2. a removal or a correction made at the owner's word about what the page holds, with the words;
+  3. where the page's own lines came from or went: another page of the forest or an archive copy, named
+     by its path.
+
+  Anything else a run could note about its own work (how many lines it touched, that it rechecked a page
+  and changed nothing, that it rewrote a page's form or set a frontmatter key) is the run's receipt and
+  stays in the run's directory. A run that changes no statement of a page writes no record line on it.
+  This holds for every page alike: a leaf, a board, an index, a tree page.
+- **Record trim.** A record is bounded on every page. When it holds more than
+  `limits.record_keep_bytes` (2,048) bytes:
+  1. it keeps the newest lines that fit in that budget, and, whatever their age, every removal or
+     correction at the owner's word (so that a later run does not add back what the owner took out), one
+     copy of each, oldest first by their leading date;
   2. a pointer line on top of the record names the archive copy:
      ``- Earlier record lines (<first date> – <last date>, <n> lines) are kept in `<archive path>`.``;
-  3. every other line, exact duplicates included, moves verbatim to the page's archive copy.
+  3. every other line, exact duplicates included, moves verbatim to the page's archive copy. A line that
+     is none of the three kinds moves there whatever the record's size.
 
   `forest record trim` does this and proves that every moved line is in the copy before it writes the
-  page. A later trim adds its own pointer line under the earlier ones. A page that still passes the cap
-  with the lines a trim keeps is in order, because the cap counts the content. A count of the lines a
-  pass touched is never written on a page.
+  page. A later trim adds its own pointer line under the earlier ones. `forest timeline subject <id>`
+  reads the changes in a page's archive copies as well as those on the page, so a subject's history
+  stays whole after a trim.
 - **Shape**, in this order:
   1. Frontmatter:
      - `entity: <id>` (required);
@@ -538,7 +558,7 @@ A leaf's `kind:` names what its material is. It is one of this fixed list:
 ### Changes
 
 - When a fact changes, the page states the current fact and the old statement moves whole into
-  `## Update record`.
+  `## Update record`, as a change line that quotes that statement and what replaced it.
 - A superseded Timeline line keeps its text, with the prefix `[superseded YYYY-MM-DD]`.
 - Every `## Update record` runs oldest first: a new line goes at the end.
 
@@ -575,7 +595,9 @@ When the owner says that something is not to be remembered:
 3. A national identity number loses its last digits. Which formats the forest knows, how each is
    recognised (a birth date with a check digit that holds, or an identity word before it) and how many
    trailing characters each hides are settings (`identity_formats`); the contract names no country's
-   format as fact.
+   format as fact. One format is written `"<shape>:<hide>"`: in the shape `N` is a digit, `A` a Latin
+   letter, and a space, `-`, `.` or `/` stands for itself; `<hide>` is `after-hyphen` (every character
+   after the first hyphen) or `last-<n>` (the last n letters and digits).
 4. Every page a stage writes is starred this way, and the tools star what they show. The raw lane
    `06 istm` keeps its bytes.
 
@@ -588,6 +610,9 @@ When the owner says that something is not to be remembered:
      rules (section 3, Home trees). It is the one list of trees.
   3. `## Agents`: every agent, one line each, `` - `<id>` — <name> · <role> ``, with `· ended` for a
      retired agent. It is the one list of agents.
+
+  `forest init` writes these three. Like every page, the root index gains an `## Update record` at its
+  end when its first record line is written.
 - **A tree page** (`02 ltm/<tree>_LTM.md`) holds `## Scope`, `## Patterns and rules`, `## Current state`
   and `## Branches`, then `## Links` and `## Update record`. `## Branches` has one line per branch,
   `` - `<branch>` — who or what it is at its core, and what it holds ``, the core being its identity,
@@ -611,7 +636,8 @@ When the owner says that something is not to be remembered:
      whom, makes, has or bought, likes, what helps it, its people and places), one line per kind naming
      each item with its date.
 - **Current-state lines** on tree pages and boards carry their date and source:
-  ``- <statement> (as of YYYY-MM-DD; source `<path>`)``.
+  ``- <statement> (as of YYYY-MM-DD; source `<path>`)``. The line ends with the closing parenthesis; a
+  tool that reads a line with a full stop after it reads the same line.
   1. `as of` is the date of the evidence, the day the source recorded it, never the day a run wrote the
      line.
   2. A line about a value the subject holds (a balance, a count, a goal and the progress toward it)
@@ -660,9 +686,10 @@ owner someone who likes that sport.
   and revision tables; notification decisions without the message text; automation receipts and repeated
   runner prompts; views that code regenerates; merged originals and dumps of retired roots.
 - They live in the lanes, in run directories, or in the archive `.forest/archive/`: one compressed copy
-  per archived page under its old path, listed in the archive manifest with its old path, hash, size,
-  reason and, if any, the leaf it was folded into. Nothing is deleted. `forest archive show <old path>`
-  prints an archived page.
+  per archived version of a page, under the date it was archived and its old path (a page whose record is
+  trimmed twice has two copies), each listed in the archive manifest with its old path, hash, size, reason
+  and, if any, the leaf it was folded into. Nothing is deleted. `forest archive show <old path>` prints
+  the latest copy of a page, and `forest archive list <old path>` every copy.
 - What a machine repeats becomes facts in the subject's leaf:
   - a stay or a visit is one Timeline line per stay, with the place, the arrival, the departure or the last
     time seen, and the longest dwell;

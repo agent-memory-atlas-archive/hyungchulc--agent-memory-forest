@@ -11,13 +11,13 @@ firings; Juno loads, unloads and checks every load herself.
 
 ## Current state
 
-- State: back in service; the May element fault was repaired by Juno on 2042-05-09 (as of 2042-05-09; source `04 stm/studio/kiln-two/repairs.md`).
-- Firings: the latest glaze firing, on 2042-05-13, came out slightly over-fired (as of 2042-05-13; source `04 stm/studio/kiln-two/firings-2042-q2.md`).
-- Parts bought: two replacement elements from Cinderwell Supply, delivered 2042-05-09 (as of 2042-05-13; source `04 stm/admin/shops/cinderwell-supply.md`).
+- State: back in service; the May element fault was repaired by Juno on 2042-05-09 (as of 2042-05-09; source `04 stm/studio/kiln-two/repairs.md`)
+- Firings: the latest glaze firing, on 2042-05-13, came out slightly over-fired (as of 2042-05-13; source `04 stm/studio/kiln-two/firings-2042-q2.md`)
+- Parts bought: two replacement elements from Cinderwell Supply, delivered 2042-05-09 (as of 2042-05-13; source `04 stm/admin/shops/cinderwell-supply.md`)
 
 ## Rules
 
-- Glaze loads fire to cone 5 until the new elements have run ten firings; Juno's decision of 2042-05-14 (as of 2042-05-14; source `04 stm/studio/kiln-two/settings.md`).
+- Glaze loads fire to cone 5 until the new elements have run ten firings; Juno's decision of 2042-05-14 (as of 2042-05-14; source `04 stm/studio/kiln-two/settings.md`)
 
 ## Leaves
 
