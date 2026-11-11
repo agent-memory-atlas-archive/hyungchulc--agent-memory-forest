@@ -232,6 +232,17 @@ class ArchiveAndBranchTests(MoveTestCase):
         self.assertResolves(root, REPAIRS, "04 stm/people/deck-oven/repairs.md")
         self.assertResolves(root, "03 mtm/bakery/bakery_MTM.md#deck-oven", "03 mtm/people/people_MTM.md#deck-oven")
 
+    def test_resolve_follows_a_folder_that_moved_whole_twice(self) -> None:
+        root = self.forest()
+        self.run_move(root, "move-branch", branch="bakery/deck-oven", tree="people")
+        self.run_move(root, "new-tree", tree="garden", description="the herb garden.")
+        self.run_move(root, "move-branch", branch="people/deck-oven", tree="garden")
+        for old in ("04 stm/bakery/deck-oven", "04 stm/bakery/deck-oven/", "04 stm/people/deck-oven"):
+            self.assertResolves(root, old, "04 stm/garden/deck-oven")
+        found = movelog.resolve(root, "04 stm/bakery/deck-oven")
+        self.assertEqual([item.to_path for item in found.chain], ["04 stm/people/deck-oven", "04 stm/garden/deck-oven"])
+        self.assertResolves(root, REPAIRS, "04 stm/garden/deck-oven/repairs.md")
+
     def test_move_branch_under_another_name_renames_the_branch_subject_with_it(self) -> None:
         root = self.forest()
         _, changed = self.run_move(root, "move-branch", branch="bakery/deck-oven", tree="people", name="oven")
