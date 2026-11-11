@@ -1047,6 +1047,8 @@ _RECORD_RE: Final[re.Pattern[str]] = re.compile(r"- (?P<date>" + _DATE + r") —
 _QUOTE_END = r'(?=\.?(?: Why:| Source:|\s*$))'
 _WAS_NOW_RE: Final[re.Pattern[str]] = re.compile(r'was "(?P<was>.*?)", now "(?P<now>.*?)"' + _QUOTE_END)
 _REMOVED_RE: Final[re.Pattern[str]] = re.compile(r'removed "(?P<removed>.*?)"' + _QUOTE_END)
+# An exclusion says what was not kept without quoting it; the description runs to the `Why:`.
+_NOT_KEPT_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|: )not kept: (?P<not_kept>.+?)(?=\. Why:|\. Source:|\.?\s*$)")
 _WHY_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|\. )Why: (?P<why>.*?)(?=\. Source:|\.?\s*$)")
 _SOURCE_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|\. )Source: (?P<source>.*?)\.?\s*$")
 
@@ -1083,15 +1085,21 @@ class RecordLine:
         why: str | None = None,
         sources: Iterable[str] = (),
         removed: str | None = None,
+        not_kept: str | None = None,
     ) -> RecordLine:
-        """A record line; ``was``/``now`` write a change, ``removed`` a removal (``removed "…"``), never both."""
+        """A record line. ``was``/``now`` write a change, ``removed`` a removal (``removed "…"``) and
+        ``not_kept`` an exclusion (``not kept: …``, which describes what was not kept without restating
+        it); a line is at most one of the three."""
         text = what
-        if removed is not None and (was is not None or now is not None):
-            raise LineShapeError("a record line is a change or a removal, not both")
+        forms = [was is not None or now is not None, removed is not None, not_kept is not None]
+        if sum(forms) > 1:
+            raise LineShapeError("a record line is a change, a removal or an exclusion, only one of them")
         if was is not None or now is not None:
             text += f': was "{was or ""}", now "{now or ""}"'
         if removed is not None:
             text += f': removed "{removed}"'
+        if not_kept is not None:
+            text += f": not kept: {not_kept.rstrip('.')}"
         if why:
             text += f". Why: {why.rstrip('.')}"
         listed = [f"`{source}`" for source in sources]
@@ -1101,7 +1109,7 @@ class RecordLine:
 
     @property
     def what(self) -> str:
-        for marker in (": was ", ": removed ", ". Why: ", ". Source: "):
+        for marker in (": was ", ": removed ", ": not kept: ", ". Why: ", ". Source: "):
             if marker in self.text:
                 return self.text.split(marker, 1)[0]
         return self.text.rstrip(".")
@@ -1115,6 +1123,12 @@ class RecordLine:
     def now(self) -> str | None:
         found = _WAS_NOW_RE.search(self.text)
         return found["now"] if found else None
+
+    @property
+    def not_kept(self) -> str | None:
+        """What an exclusion line says was not kept (``not kept: …`` before its ``Why:``), or None."""
+        found = _NOT_KEPT_RE.search(self.text)
+        return found["not_kept"] if found else None
 
     @property
     def removed(self) -> str | None:

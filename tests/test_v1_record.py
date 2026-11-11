@@ -65,6 +65,17 @@ class ClassifyTests(unittest.TestCase):
         reason_only = '- 2051-03-04 — the old rim taken out. Why: Tobin said "removed \"x\"".'
         self.assertIsNone(classify(reason_only, config=CONFIG))
 
+    def test_an_exclusion_is_the_owner_s_only_with_the_owner_s_words(self) -> None:
+        exclusion = RecordLine.make("2051-03-04", "the shop chat", not_kept="a family matter",
+                                    why='Tobin said "do not keep that"').render()
+        self.assertIs(classify(exclusion, config=CONFIG), Kind.OWNER_WORDS)
+        without = '- 2051-03-04 — the shop chat: not kept: a family matter. Why: privacy.'
+        self.assertIsNone(classify(without, config=CONFIG))
+        with_path = '- 2051-03-04 — `04 stm/workshop/people/tobin-reel.md`: not kept: a family matter.'
+        self.assertIsNone(classify(with_path, config=CONFIG))
+        in_why = '- 2051-03-04 — tidied the page. Why: Tobin said "not kept: anything old".'
+        self.assertIsNone(classify(in_why, config=CONFIG))
+
     def test_quotes_of_the_page_s_own_statements_are_not_the_owner_s_words(self) -> None:
         line = '- 2051-03-04 — Tobin\'s clamp: was "loose", now "tight".'
         self.assertIs(classify(line, config=CONFIG), Kind.CHANGE)
@@ -158,6 +169,20 @@ class TrimTests(CheckForestTestCase):
         kept = self.record_of(root)
         self.assertEqual([line for line in kept if line in (removal, correction)], [removal, correction])
         self.assertNotIn(change("2051-02-01"), kept)
+
+    def test_the_owner_s_exclusion_stays_through_two_trims(self) -> None:
+        exclusion = RecordLine.make("2051-01-01", "the shop chat", not_kept="a family matter",
+                                    why='Tobin said "do not keep that"').render()
+        root = self.page_with([exclusion, *(change(f"2051-01-{day:02d}") for day in range(2, 29))])
+        self.assertTrue(record.trim_page(root, STAND).written)
+        self.assertIn(exclusion, self.record_of(root))
+        text = (root / STAND).read_text(encoding="utf-8")
+        more = "\n".join(change(f"2051-02-{day:02d}") for day in range(1, 29))
+        (root / STAND).write_text(text.rstrip("\n") + "\n" + more + "\n", encoding="utf-8")
+        self.assertTrue(record.trim_page(root, STAND).written)
+        kept = self.record_of(root)
+        self.assertEqual(kept.count(exclusion), 1)
+        self.assertNotIn(change("2051-01-02"), kept)
 
     def test_under_the_budget_only_run_notes_move(self) -> None:
         lines = [change("2051-03-01", 10), "- 2051-03-02 — rechecked, unchanged.", change("2051-03-03", 10)]

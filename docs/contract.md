@@ -481,9 +481,10 @@ application, a stay, a trip.
   kinds, each about that page:
   1. a change: what a statement of the page was and what it became (`was "…", now "…"`), quoting the
      statement that changed and not the section around it;
-  2. a removal or a correction made at the owner's word about what the page holds: the line quotes what
-     was removed (`removed "…"`) or what the statement was and became, and gives the owner's words
-     (marked as `record.owner_word_names` and `record.quote_marks` say);
+  2. a removal, a correction or an exclusion made at the owner's word about what the page holds: the line
+     quotes what was removed (`removed "…"`) or what the statement was and became, or says what was not
+     kept without restating it (`not kept: …`), and gives the owner's words (marked as
+     `record.owner_word_names` and `record.quote_marks` say);
   3. where the page's own lines came from or went: another page of the forest or its lanes, or an archive
      copy, named by its path in what the line says happened, not only in its `Source:`.
 
@@ -585,7 +586,8 @@ When the owner says that something is not to be remembered:
 2. Nothing of the excluded content is written as a fact in any leaf, board or tree page.
 3. Lines already filed from it are taken out. Each page's earlier version goes to the archive first
    (`forest archive put PATH --keep --reason owner-exclusion`), and its `## Update record` says what was
-   taken out and why, without restating it.
+   taken out and why, without restating it, in a line of the `not kept: …` form (section 4, What a
+   record line is) that gives the owner's words.
 
 ### Account and identity numbers
 

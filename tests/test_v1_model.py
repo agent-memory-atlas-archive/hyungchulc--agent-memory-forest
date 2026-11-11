@@ -220,6 +220,16 @@ class LineShapeTests(unittest.TestCase):
         self.assertEqual((parsed.what, parsed.removed, parsed.was), ("the rye note", "Rye on Fridays.", None))
         with self.assertRaises(LineShapeError):
             RecordLine.make("2051-03-02", "x", was="a", now="b", removed="c")
+        exclusion = RecordLine.make("2051-03-02", "the shop chat", not_kept="a family matter",
+                                    why='Ilse said "do not keep that"')
+        self.assertEqual(exclusion.render(),
+                         '- 2051-03-02 — the shop chat: not kept: a family matter. Why: Ilse said "do not keep that".')
+        parsed = RecordLine.parse(exclusion.render())
+        self.assertEqual((parsed.what, parsed.not_kept, parsed.removed), ("the shop chat", "a family matter", None))
+        self.assertIsNone(RecordLine.parse('- 2051-03-02 — tidied. Why: the note said not kept: x.').not_kept)
+        for forms in ({"removed": "c", "not_kept": "d"}, {"was": "a", "now": "b", "not_kept": "d"}):
+            with self.assertRaises(LineShapeError):
+                RecordLine.make("2051-03-02", "x", **forms)
         pointer = RecordPointerLine(
             "2050-01-02", "2050-12-30", 14, ".forest/archive/2051-03-02/04 stm/bakery/deck-oven/repairs.md.gz"
         )

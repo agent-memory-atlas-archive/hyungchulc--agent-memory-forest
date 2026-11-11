@@ -139,22 +139,25 @@ def classify(line: str, *, config: Config) -> Kind | None:
     1. ``Kind.CHANGE``: a dated line that quotes what a statement of the page
        was and what it became, ``was "…", now "…"``, without the owner's
        words. It is bounded like any other line.
-    2. ``Kind.OWNER_WORDS``: a removal or a correction made at the owner's
-       word. The line quotes what was taken out (``removed "…"`` in what it
-       says happened) or what the statement was and became (``was "…", now
-       "…"``), AND gives the owner's own words: one of the name forms of
+    2. ``Kind.OWNER_WORDS``: a removal, a correction or an exclusion made at
+       the owner's word. In what it says happened the line quotes what was
+       taken out (``removed "…"``) or what the statement was and became
+       (``was "…", now "…"``), or says what was not kept without restating
+       it (``not kept: …``, running to its ``Why:``), AND gives the owner's
+       own words: one of the name forms of
        ``record.owner_word_names`` (by default the owner's ``name`` and
        ``aliases``) followed, in the same clause, by a quotation between one
        of the ``record.quote_marks`` pairs, usually in its ``Why:``. A trim
        keeps it whatever its age, so a later run does not add back what the
-       owner took out or undo what the owner corrected.
+       owner took out or excluded, or undo what the owner corrected. A
+       ``not kept:`` line without the owner's words is a run's note.
     3. ``Kind.PROVENANCE``: the ``Earlier record lines (…)`` pointer line, or
        a dated line that names, in a code span in what it says happened
        (before its ``Why:`` and ``Source:``), the page or archive copy the
        page's lines came from or went to (a path of the forest or its lanes,
        or of ``.forest/archive/``).
 
-    The owner's words on a line that quotes neither a removal nor a change
+    The owner's words on a line that has none of those three forms
     make nothing of it: such a line is kind 3 when it names where lines went,
     else a run's note, like every other line that is none of these (a count
     of what a run touched, a note that a page was rechecked, an undated line).
@@ -168,8 +171,11 @@ def classify(line: str, *, config: Config) -> Kind | None:
     statement = _statement_part(record.text)
     change = record.was is not None and record.now is not None
     removal = record.removed is not None and f'removed "{record.removed}"' in statement
-    if (change or removal) and carries_owner_words(record.text, config=config):
+    exclusion = record.not_kept is not None and f"not kept: {record.not_kept}" in statement
+    if (change or removal or exclusion) and carries_owner_words(record.text, config=config):
         return Kind.OWNER_WORDS
+    if exclusion:
+        return None  # an exclusion is only ever at the owner's word
     if change:
         return Kind.CHANGE
     if _names_place(statement):
