@@ -207,3 +207,19 @@ class CiteEntriesTests(CollectionTestCase):
         self.assertFalse(again["written"])
         self.assertEqual((root / BOARD).read_bytes(), after)
         self.assertEqual(again["references_rewritten"], 0)
+
+
+class ArchivedEntrySourceTests(CollectionTestCase):
+    def test_a_line_citing_an_entry_of_an_archived_page_is_marked_archived(self) -> None:
+        root = self.forest()
+        with_state(root, f"- Tamsin Orrow wants rye on Fridays (as of 2051-03-02; source `{TAMSIN}`)")
+        index = root / "03 mtm/people/people_MTM.md"
+        text = index.read_text(encoding="utf-8")
+        index.write_text(text.replace("`04 stm/people/regulars/seen-once-2051-q1.md`",
+                                      "`04 stm/people/regulars/tamsin-orrow.md`"), encoding="utf-8")
+        leaf = root / "04 stm/people/regulars/tamsin-orrow.md"
+        leaf.write_text("---\nentity: regulars-seen-once\nsubtopic: profile\nkind: profile\nabout: none\n"
+                        "updated_at: 2051-03-02\n---\n\n# Regulars\n\nA stand-in home.\n\n## Links\n\n"
+                        "- up: [[03 mtm/people/regulars|regulars MTM]]\n", encoding="utf-8")
+        move.execute(root, "archive", today=TODAY, path=COLLECTION, reason="test")
+        self.assertIn(f"source `{TAMSIN}` (archived)", self.text(root, BOARD))

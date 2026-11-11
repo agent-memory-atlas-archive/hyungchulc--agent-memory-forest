@@ -239,12 +239,12 @@ COMMANDS: list[ForestCommand] = [
                   "file and archive copies keep, oldest first.", (arg("path", metavar="PATH"),)),
     ForestCommand(("numbers", "check"), cmd_numbers_check, "List the pages that write a number in full (lines and "
                   "kinds, never digits); exit 1 when there is one.", (_PATHS, _ALL)),
-    ForestCommand(("numbers", "star"), cmd_numbers_star, "Star the numbers written in full, archiving each page "
-                  "first.", (_PATHS, _ALL, _DRY, _LOCK)),
+    ForestCommand(("numbers", "star"), cmd_numbers_star, "Star the numbers written in full on the named pages, "
+                  "or on every page with --all (one of the two is required), archiving each page first.", (_PATHS, _ALL, _DRY, _LOCK)),
     ForestCommand(("credentials", "check"), cmd_credentials_check, "List the pages that hold a value sent to sign in "
                   "or to pay (line numbers, never the value); exit 1 when there is one.", (_PATHS, _ALL)),
-    ForestCommand(("credentials", "fix"), cmd_credentials_fix, "Replace each sign-in value with [REDACTED], archiving "
-                  "each page first.", (_PATHS, _ALL, _DRY, _LOCK)),
+    ForestCommand(("credentials", "fix"), cmd_credentials_fix, "Replace each sign-in value with [REDACTED] on the "
+                  "named pages, or on every page with --all (one of the two is required), archiving each page first.", (_PATHS, _ALL, _DRY, _LOCK)),
     ForestCommand(("credentials", "candidates"), cmd_credentials_candidates, "List the codes in quoted turns that "
                   "no reader has judged, as PATH:LINE:PLACE (never the value); exit 1 when there is one."),
     ForestCommand(("credentials", "judge"), cmd_credentials_judge, "Record a reader's judgement of candidates: "

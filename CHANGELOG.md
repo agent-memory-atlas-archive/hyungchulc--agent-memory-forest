@@ -55,6 +55,12 @@ the tree until the version 1 commands replace it.
   lists the unjudged ones by page, line and place (the lint counts `credential_candidate_unjudged`), and
   `forest credentials judge … --sign-in | --not-sign-in` keeps an HMAC-SHA256 digest of the value under a
   key of mode 0600 in `.forest/credentials/`; a value judged a sign-in value is masked wherever it appears
+  (the key's mode is checked on every read of the ledger, also after a change of mode alone)
+- every `forest` command prints page text with numbers starred and sign-in values masked (registry and
+  lint messages that quote a line and `collections list` printed them whole), and the 0.3 `search
+  --include-body`, `route`, `retrieve` and `structured-context` star numbers as well as mask sign-in values
+- a code-span address `<page>#<id>` on a page that is archived is marked ` (archived)` like a bare path
+- `numbers star` and `credentials fix` say in their help that they take named pages or `--all`
 - the contract states two rules for writing with a model: a line that states what quoted turns say is
   filed only after a second reading of the same turns judged it; a subject is never merged into another on
   what its own material claims, and subjects that would share a name each carry a distinguishing word

@@ -7,15 +7,15 @@ import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Final, NoReturn
 
 from . import __version__
 from . import archive as forest_archive
 from . import layout as forest_layout
-from . import movelog as forest_movelog
 from . import credentials as forest_credentials
+from . import movelog as forest_movelog
 from . import registry as forest_registry
-from .config import find_root, load_config
+from .config import DEFAULT_CONFIG, Config, find_root, load_config
 from .core import audit_forest, doctor_forest, initialize_forest, validate_forest
 from .errors import MemoryForestError
 from .index import index_forest, route_index, search_index
@@ -230,6 +230,9 @@ def run_command(arguments: argparse.Namespace) -> tuple[dict[str, object], int]:
     return result, 0 if result.get("ok") else 1
 
 
+_READ_COMMANDS: Final = frozenset({"route", "search", "retrieve", "structured-context"})
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
     compact_json = "--json" in raw_arguments
@@ -240,6 +243,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         arguments = parser.parse_args(raw_arguments)
         arguments.json = compact_json
         result, exit_code = run_command(arguments)
+        if arguments.command in _READ_COMMANDS:
+            # What a read shows masks sign-in values and stars numbers (contract, section 4).
+            result = forest_credentials.shown(result, config=load_config(arguments.root))
     except MemoryForestError as exc:
         result = {
             "error": exc.as_dict(),
@@ -334,13 +340,22 @@ def forest_root(arguments: argparse.Namespace) -> Path:
     return require_real_root(found if found is not None else os.getcwd())
 
 
+# The settings of the forest a `forest` command works on, so that everything it prints shows a sign-in
+# value masked and a number starred, as the write door would have written them (contract, section 4).
+_SHOWN_CONFIG: Config | None = None
+
+
+def _shown(value: Any) -> Any:
+    return forest_credentials.shown(value, config=_SHOWN_CONFIG) if _SHOWN_CONFIG is not None else value
+
+
 def _print_json(value: Any) -> None:
-    sys.stdout.write(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    sys.stdout.write(json.dumps(_shown(value), ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
 
 def _print_lines(lines: Iterable[str]) -> None:
     for line in lines:
-        sys.stdout.write(line + "\n")
+        sys.stdout.write(_shown(line) + "\n")
 
 
 def cmd_init(arguments: argparse.Namespace) -> int:
@@ -574,18 +589,28 @@ def build_forest_parser(commands: Sequence[ForestCommand] | None = None) -> argp
     return parser
 
 
+def _config_for_output(arguments: argparse.Namespace) -> Config:
+    """The settings of the forest the command names, or the defaults when it names none that can be read."""
+    try:
+        return load_config(forest_root(arguments))
+    except (MemoryForestError, OSError):
+        return DEFAULT_CONFIG
+
+
 def forest_main(argv: Sequence[str] | None = None) -> int:
     parser = build_forest_parser()
     arguments = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    global _SHOWN_CONFIG
+    _SHOWN_CONFIG = _config_for_output(arguments)
     try:
         return arguments._run(arguments)
     except MemoryForestError as exc:
         if arguments.json:
             _print_json({"error": exc.as_dict(), "ok": False})
         else:
-            sys.stderr.write(f"forest: {exc.code}: {exc.message}\n")
+            sys.stderr.write(_shown(f"forest: {exc.code}: {exc.message}\n"))
             for key, value in sorted(exc.details.items()):
-                sys.stderr.write(f"  {key}: {value}\n")
+                sys.stderr.write(_shown(f"  {key}: {value}\n"))
         return 2
     except OSError as exc:
         sys.stderr.write(f"forest: filesystem_error: {exc.__class__.__name__}\n")

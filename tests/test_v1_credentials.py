@@ -10,7 +10,7 @@ import json
 import random
 import sys
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -171,6 +171,19 @@ class DoorAndFixTests(ForestTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PagesOrAllTests(ForestTestCase):
+    def test_star_and_fix_refuse_without_named_pages_or_all(self) -> None:
+        root = self.make_forest()
+        page = root / LEAF
+        page.write_text(page.read_text(encoding="utf-8").replace("Something happened.", "PIN: 4821x9"),
+                        encoding="utf-8")
+        before = page.read_bytes()
+        for argv in (["numbers", "star"], ["credentials", "fix"]):
+            with self.subTest(command=argv), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(forest_main([*argv, "--root", str(root)]), 2)
+        self.assertEqual(page.read_bytes(), before)
 
 
 class LedgerTests(ForestTestCase):

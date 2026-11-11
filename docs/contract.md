@@ -706,9 +706,10 @@ When the owner says that something is not to be remembered:
    and that no word of `credentials.count_words` follows ("a password of 12 characters" is a rule, not a
    value).
 3. Every record line a tool writes is masked this way (section 4, What a record line is), the writer of the
-   daily record and the version 0.3 writer mask the text a model hands them, and the tools mask what they
-   show: a page, an archive copy, record lines read back from a history file, example lines, registry
-   entries and search bodies. The archive and the raw lane `06 istm` keep the bytes they were given. A page
+   daily record and the version 0.3 writer mask the text a model hands them, and everything a tool prints
+   is masked and its numbers starred: a page, an archive copy, record lines read back from a history file,
+   example lines, registry entries, check and lint messages that quote a line, entry names, and search
+   bodies and context. The archive and the raw lane `06 istm` keep the bytes they were given. A page
    line that holds such a value is the violation `credential_in_full` (section 8), and `forest credentials
    fix` masks it, archiving the page first.
 4. A code with no label word before it (a bare number in a quoted turn that only a reader can tell is a

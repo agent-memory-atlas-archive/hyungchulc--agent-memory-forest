@@ -338,14 +338,17 @@ forest archive list --path "04 stm/bakery/ovens/deck-oven.md"
 
 ## `forest numbers`
 
-What a tool shows is starred the same way: `forest archive show`, `forest record history`, `forest record
-kinds --examples` and `forest registry show` print a person's number, an account, a card or an identity
-number only starred, while the archive copy and the history file keep their bytes.
+What a tool shows is starred the same way: every `forest` command prints a person's number, an account, a
+card or an identity number only starred and a sign-in value only as `[REDACTED]` (`archive show`, `record
+history`, `record kinds --examples`, `registry show`, `registry check`, `check`, `lint`, `collections list`
+and the rest), and so do the 0.3 reads `search`, `route`, `retrieve` and `structured-context`, while the
+archive copy and the history file keep their bytes.
 
 `numbers check PATH … | --all` names the pages that write an account, card, identity or person's phone
 number in full, by line and kind and never by digits, and exits 1 when there is one; `numbers star PATH …
 | --all [--dry-run]` stars them, keeping a whole-page copy in the archive first (contract, section 4,
-Account and identity numbers).
+Account and identity numbers). `numbers star` changes only the pages it is given: name them, or pass
+`--all` for every page; with neither it refuses and writes nothing.
 
 ```sh
 forest numbers check --all
@@ -368,11 +371,12 @@ label_words = ["password", "passcode", "pin", "one-time code", "door code", "mot
 joining_words = ["is", "was", "est"]
 ```
 
-Every record line a tool writes is masked as it is written, and the tools that show text (`archive show`,
-`record history`, `record kinds --examples`, `registry show`, `search --include-body`) mask what they show.
+Every record line a tool writes is masked as it is written, and everything a command prints is masked
+(see `forest numbers` above for the reads).
 `credentials check PATH … | --all` names the pages that hold such a value, by line and never by value, and
 exits 1 when there is one; `credentials fix PATH … | --all [--dry-run]` masks them, keeping a whole-page copy
-in the archive first and writing the page only after that copy reads back as the page's bytes.
+in the archive first and writing the page only after that copy reads back as the page's bytes. Like
+`numbers star`, `credentials fix` takes the pages it names or `--all` for every page, and refuses with neither.
 
 ```sh
 forest credentials check --all

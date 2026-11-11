@@ -20,7 +20,7 @@ from .core import (
     load_retrieval_config,
     structured_forest_snapshot_sha256,
 )
-from .credentials import mask
+from .credentials import shown
 from .errors import MemoryForestError
 from .index import (
     INDEX_SCHEMA_VERSION,
@@ -533,8 +533,8 @@ def structured_context_index(
             "route_key": route["route_key"],
             "tree": route["domain"] if layer_name != "xltm" else None,
         }
-        # What is shown masks the sign-in values a page still holds (contract, section 4).
-        documents.append({**metadata, "route": semantic_route, "body": mask(body, config=shown_config)})
+        # Shown text: sign-in values masked, numbers starred (contract, section 4).
+        documents.append({**metadata, "route": semantic_route, "body": shown(body, config=shown_config)})
 
     canonical_documents = json.dumps(
         documents,

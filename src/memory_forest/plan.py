@@ -346,7 +346,8 @@ def _mapped_once(value: str, mapping: Mapping[str, str]) -> str | None:
 
 
 def _archived(path: str, archived: Iterable[str]) -> bool:
-    value = path.strip()
+    """Whether a reference names an archived page or folder, or an address ``<page>#<id>`` on such a page."""
+    value = path.strip().partition("#")[0]
     for item in archived:
         if value == item or (not item.endswith(".md") and value.startswith(item.rstrip("/") + "/")):
             return True

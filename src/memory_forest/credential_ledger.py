@@ -176,7 +176,7 @@ def _stamp(*paths: Path) -> tuple[Any, ...]:
     for path in paths:
         try:
             info = path.stat()
-            stamp.append((info.st_mtime_ns, info.st_size))
+            stamp.append((info.st_mtime_ns, info.st_size, info.st_mode, info.st_ino))
         except FileNotFoundError:
             stamp.append(None)
     return tuple(stamp)
