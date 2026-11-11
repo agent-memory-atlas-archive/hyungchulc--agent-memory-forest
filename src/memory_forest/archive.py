@@ -455,6 +455,10 @@ def history_file_for(root: str | os.PathLike[str], page: str, page_sha256: str, 
         data = read_history(safe_root, name)
         if not data and not _history_target(safe_root, name).exists():
             return name
+        opening = b"<!-- record lines moved "
+        torn = data.startswith(opening) or opening.startswith(data)
+        if torn and whole_end(data) == 0 and not any(item.history_file == name for item in blocks(safe_root)):
+            return name  # only the torn first append of an interrupted trim: the append cuts it
         if name in own or any(match["page_sha"] == page_sha256 for _o, _l, match in file_blocks(data)):
             return name
         number += 1
@@ -463,6 +467,23 @@ def history_file_for(root: str | os.PathLike[str], page: str, page_sha256: str, 
 def block_lines(block: bytes) -> list[str]:
     """The record lines of one block (its header line aside), in their order."""
     return block.decode("utf-8", "surrogateescape").split("\n")[1:-1]
+
+
+def whole_end(data: bytes) -> int:
+    """Where a history file's whole blocks end: past the last block whose header and every line its header
+    counts are there, each ending in a newline. Bytes after that are a torn tail an interrupted append left."""
+    found = file_blocks(data)
+    if not found:
+        return 0
+    offset, length, header = found[-1]
+    wanted = int(header["lines"]) + 1
+    cursor = offset
+    for _ in range(wanted):
+        newline = data.find(b"\n", cursor, offset + length)
+        if newline < 0:
+            return offset
+        cursor = newline + 1
+    return cursor
 
 
 def prove_block(before: bytes, after: bytes, lines: Iterable[str]) -> None:
@@ -541,7 +562,10 @@ def append_block(
 
     A block cut from the same page text is there already when a trim was
     interrupted after its append: it is not appended again (its manifest row
-    is added if it is missing).
+    is added if it is missing). A torn tail, what an append interrupted inside
+    its write left (a part of a header, or a header with fewer lines than it
+    counts), is cut off first and the block appended whole; a tail that a
+    manifest row lists is damage, not a torn append, and stops the trim.
     """
     safe_root = require_real_root(root)
     moment = when or _now()
@@ -549,6 +573,20 @@ def append_block(
         _archive_folder(safe_root)
         target = _history_target(safe_root, history_file)
         before = read_history(safe_root, history_file)
+        end = whole_end(before)
+        if end < len(before):
+            tail = before[end:]
+            opening = b"<!-- record lines moved "
+            looks_torn = end > 0 or tail.startswith(opening) or opening.startswith(tail)
+            if not looks_torn or any(item.history_file == history_file and item.offset + item.length > end
+                                     for item in blocks(safe_root)):
+                raise ArchiveProofError("archive_damaged", "A listed record history block is cut short; nothing was "
+                                        "written.", details={"history_file": history_file})
+            with open(target, "r+b") as handle:
+                handle.truncate(end)
+                handle.flush()
+                os.fsync(handle.fileno())
+            before = before[:end]
         existing = [(offset, length) for offset, length, match in file_blocks(before)
                     if match["page_sha"] == page_sha256]
         if existing:

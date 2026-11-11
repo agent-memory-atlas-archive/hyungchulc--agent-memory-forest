@@ -68,6 +68,48 @@ class RecordHistoryTests(CheckForestTestCase):
         self.assertEqual(len(archive.blocks(root, STAND)), 1)
         self.assertEqual(root / result.archive_path, history)
 
+    def torn_append(self, root: Path, keep: int) -> None:
+        """A trim killed inside its append: only the first ``keep`` bytes of the block reach the file."""
+        original = archive.os.write
+
+        def cut(descriptor, data):
+            original(descriptor, data[:keep])
+            raise KeyboardInterrupt
+
+        before = (root / STAND).read_bytes()
+        with mock.patch.object(archive.os, "write", cut), self.assertRaises(KeyboardInterrupt):
+            record.trim_page(root, STAND)
+        self.assertEqual((root / STAND).read_bytes(), before)
+
+    def assertWholeAfterTheNextTrim(self, root: Path, blocks: int) -> None:
+        result = record.trim_page(root, STAND)
+        self.assertTrue(result.written)
+        history = (root / result.archive_path).read_bytes()
+        self.assertEqual(archive.whole_end(history), len(history))
+        listed = archive.blocks(root, STAND)
+        self.assertEqual(len(listed), blocks)
+        self.assertEqual(listed[-1].offset + listed[-1].length, len(history))
+        self.assertEqual(archive.verify(root), [])
+        self.assertEqual(len(list((root / ".forest/archive/record-history").rglob("*.md"))), 1)
+
+    def test_a_trim_killed_inside_its_first_append_leaves_no_stray_block(self) -> None:
+        for keep in (20, 300):  # inside the header line, and inside the moved lines
+            with self.subTest(keep=keep):
+                root = self.page_with([change(f"2051-01-{day:02d}") for day in range(1, 29)])
+                self.torn_append(root, keep)
+                self.assertWholeAfterTheNextTrim(root, 1)
+
+    def test_a_trim_killed_inside_a_later_append_cuts_the_torn_tail_and_appends_whole(self) -> None:
+        root = self.page_with([change(f"2051-01-{day:02d}") for day in range(1, 29)])
+        first = record.trim_page(root, STAND)
+        whole = (root / first.archive_path).read_bytes()
+        for day in range(1, 29):
+            self.add_line(root, change(f"2051-02-{day:02d}"))
+        self.torn_append(root, 150)
+        self.assertGreater(len((root / first.archive_path).read_bytes()), len(whole))
+        self.assertWholeAfterTheNextTrim(root, 2)
+        self.assertTrue((root / first.archive_path).read_bytes().startswith(whole))
+
     def test_thirty_days_of_one_line_and_one_trim_a_day(self) -> None:
         root = self.page_with([change(f"2051-01-{day:02d}") for day in range(1, 29)])
         record.trim_page(root, STAND)

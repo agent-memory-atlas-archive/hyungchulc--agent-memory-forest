@@ -569,7 +569,9 @@ application, a stay, a trip.
   trim` writes the page only after it has proved that the file begins with its bytes before the append,
   that every moved line stands in the block byte for byte and in order, and that nothing outside the
   record changed; a trim interrupted before its page write is completed by the next, which finds the
-  block cut from the same page text and does not append it again. A page that moves, is renamed or is
+  block cut from the same page text and does not append it again, and a trim interrupted inside its append
+  leaves a torn tail (a part of a block) that the next trim cuts off before it appends the block whole, so
+  a killed trim leaves no half page and no stray block. A page that moves, is renamed or is
   re-cut keeps its pointer line and so its file; a page merged into another brings its pointer line to
   the merged page as a line of where its lines came from, and a trim there appends to the file the first
   such pointer names. `forest timeline subject <id>` reads the changes in a page's history file (and in

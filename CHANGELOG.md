@@ -38,6 +38,8 @@ the tree until the version 1 commands replace it.
   `forest archive check` verifies copies and blocks against the manifest
 - `forest move set-type` and `forest move set` write change lines; `retire-tree`, `fold-tree` and
   `recut-stream` write provenance lines
+- a record trim killed inside its append leaves a torn tail that the next trim cuts off before appending
+  its block whole (a torn first append is the page's own file, not a reason to take the next name)
 - the read path stars what it shows: `forest archive show`, the record lines `forest record history` reads
   back from a history file, `forest record kinds --examples` and `forest registry show`
 - every record line a writer adds goes through the number starring, and a merge of a subject saved under
