@@ -28,7 +28,7 @@ and when. The forest is where you go to find out what is known.
 
 A **tree** is an area the owner works or lives in. Juno's forest has three shared trees: `studio` (the
 pottery business), `people` (the people she knows for themselves) and `admin` (her own accounts, money and
-shopping). Each agent also has a tree of its own (below, and in [the agents guide](agents.md)).
+shopping). Each agent also has a tree of its own (below, and in [the agents guide](multi-agent.md)).
 
 ## Subjects
 
@@ -157,6 +157,6 @@ until every old page complies.
 ## Where to go next
 
 - [The contract](contract.md): every rule, stated once.
-- [Agents](agents.md): how several agents share one forest.
+- [Agents](multi-agent.md): how several agents share one forest.
 - [The design](v1-design.md): the package, its settings and its milestones.
 - [Comparison](comparison.md): how this differs from other open memory systems.

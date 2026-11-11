@@ -23,7 +23,7 @@ account, retention and regional rules, so review those before connecting private
 Every reader of a forest has an id, taken from its connection and never from the text of its question. An
 orchestrator reads the whole forest; any other agent reads the shared trees and its own tree, and another
 agent's tree only when the forest's settings or its task allow it. Each tool call records which trees
-answered. See [the contract](contract.md), section 3, "Agent trees", and [Agents](agents.md). Reader scopes
+answered. See [the contract](contract.md), section 3, "Agent trees", and [Agents](multi-agent.md). Reader scopes
 arrive with milestone 2.
 
 ## What the forest keeps out

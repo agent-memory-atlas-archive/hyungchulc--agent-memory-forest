@@ -21,7 +21,7 @@ released yet. The 0.3 `memory-forest` command stays in the tree until they repla
   codes with baselines; the tools; who does what
 - `docs/concepts.md`: the forest explained for a new reader, following one invented subject from a one-day
   entry to a tree of its own
-- `docs/agents.md`: agent trees, the `subject-first` and `agent-first` filing policies with worked
+- `docs/multi-agent.md`: agent trees, the `subject-first` and `agent-first` filing policies with worked
   examples, reader scopes, raw lanes and the single writer, sharing a lesson, retiring an agent
 - `docs/comparison.md`: how the design differs from Mem0, GBrain, the LLM Wiki idea and plain vector-store
   RAG, citing only those projects' own pages with the date they were read

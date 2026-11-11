@@ -150,7 +150,7 @@ two bots, two days of daily pages and a raw lane, about forty small files.
 4. An orchestrator reads the whole forest; other agents read shared trees and their own.
 5. Each agent appends to its own raw lane, and one filing run at a time writes the forest under a lock.
 
-Details: [Agents](docs/agents.md).
+Details: [Agents](docs/multi-agent.md).
 
 ## Documentation
 
@@ -158,7 +158,7 @@ Details: [Agents](docs/agents.md).
 | --- | --- |
 | [Concepts](docs/concepts.md) | the forest for a new reader: layers, a subject's life, one home, what goes up, records, moves, the lint |
 | [Contract](docs/contract.md) | every rule a forest keeps, stated once |
-| [Agents](docs/agents.md) | agent trees, the two filing policies, reader scopes, the single writer |
+| [Agents](docs/multi-agent.md) | agent trees, the two filing policies, reader scopes, the single writer |
 | [Design](docs/v1-design.md) | the package: on-disk layout, settings, package map, milestones |
 | [Comparison](docs/comparison.md) | how this differs from Mem0, GBrain, the LLM Wiki idea and plain vector RAG |
 | [Privacy and trust](docs/privacy-and-trust.md) | what stays local, what a reader can see, memory as untrusted data |

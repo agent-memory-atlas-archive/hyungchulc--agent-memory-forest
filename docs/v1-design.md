@@ -69,7 +69,8 @@ and `archive/` can be deleted and rebuilt.
   - from 2 days, or at once with a `standing:` line: one **leaf** in a category branch;
   - from 5 days: its own **branch** (a board and a folder of leaves, one per sub-topic);
   - a **tree** when 3 of its sub-topics each span 5 days and hold 3 leaves, for the types allowed to be
-    trees. An **agent** is a tree from its first day (section 6).
+    trees. A sub-topic made only of `received`, `notice` or `brief` leaves does not count: what a subject
+    was sent is not a part of it. An **agent** is a tree from its first day (section 6).
   The thresholds are settings. A level never goes down by count.
 - `forest levels check` lists each subject whose level is due; `forest levels apply` carries every change
   out through the move tool and logs it. No model judges a level and nothing waits for a later run.
@@ -80,8 +81,10 @@ and `archive/` can be deleted and rebuilt.
   `subtopic`, `kind` (one of a fixed list: `conversation`, `event`, `visit`, `trip`, `plan`, `application`,
   `purchase`, `received`, `notice`, `brief`, `watched`, `read`, `link`, `rule`, `profile`, `work`,
   `collection`), `about` (the other subjects it holds something about, or `none`), `timezone`,
-  `updated_at`. Body: free sections, then `## Timeline` (one line per dated activity; the time index reads
-  them), `## Links` (one `up:` link) and `## Update record` (what a fact was before it changed).
+  `updated_at`, and where they apply `standing` (the owner's standing statement that keeps a subject a
+  leaf from its first day), `date` (a page about one dated event) and `status: superseded` with
+  `superseded_by`. Body: free sections, then `## Timeline` (one line per dated activity; the time index
+  reads them), `## Links` (one `up:` link) and `## Update record`.
 - The **cap** is 8 KB of a leaf's content. Over it the leaf splits by sub-topic; a pure event list may
   split by period (year, quarter, month). A file name carries no date except that period.
 - A **board** (`03 mtm/<tree>/<branch>.md`) says what its subject is, its current state by kind, its
@@ -91,9 +94,12 @@ and `archive/` can be deleted and rebuilt.
   current state, and one line per branch.
 - Above the leaves a line is carried up only when it is established: repeated evidence, or the owner's own
   statement. Current-state lines carry `(as of DATE; source PATH)` and are stale when their source changed.
-- An `## Update record` is trimmed on every page: the newest lines that fit a small budget stay, the
-  owner's own words stay, and the rest move verbatim to the page's archive copy. A pass's own note of how
-  many lines it touched is never written on a page.
+- An `## Update record` holds what a fact of the page was before it changed (`was "…", now "…"`), what
+  was taken out at the owner's word, and where the page's own lines came from or went. It is bounded on
+  every page: the change lines stay (the subject timeline shows them), the owner's own words stay, the
+  newest other lines that fit a small budget stay, and the rest move verbatim to the page's archive copy.
+  A pass's own note of how many lines it touched is never written on a page: it goes with the run's
+  receipts.
 
 ## 6. Agents
 
@@ -184,6 +190,12 @@ leaf_cap_bytes = 8192
 leaf_max_bytes = 20480
 record_keep_bytes = 2048
 category_max_leaves = 100
+about_max_ids = 8               # the most subjects one leaf names in `about:`
+entry_admit_margin_bytes = 1024 # room a collection page keeps when it admits a large entry
+repeat_min_lines = 3            # the same lines on two leaves of one subject: counted from this many
+repeat_min_chars = 40           # ... each at least this long
+[numbers]
+identity_formats = []           # national identity number shapes to mask, e.g. ["NNNNNN-NNNNNNN:after-hyphen"]
 [levels]
 leaf_days = 2
 branch_days = 5

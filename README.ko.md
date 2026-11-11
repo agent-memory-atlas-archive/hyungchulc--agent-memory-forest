@@ -149,7 +149,7 @@ forest stage …                                 # 원하는 model을 둘러싼 
 4. orchestrator는 forest 전체를 읽고, 다른 agent는 공유 tree와 자기 tree를 읽습니다.
 5. agent마다 자기 raw lane에 덧붙이기만 하고, forest에는 lock을 잡은 정리 실행 하나만 씁니다.
 
-자세한 내용은 [Agents](docs/agents.md)에 있습니다.
+자세한 내용은 [Agents](docs/multi-agent.md)에 있습니다.
 
 ## 문서
 
@@ -157,7 +157,7 @@ forest stage …                                 # 원하는 model을 둘러싼 
 | --- | --- |
 | [Concepts](docs/concepts.md) | 처음 읽는 사람을 위한 설명: 계층, subject의 일생, 사실의 집, 위로 올라가는 것, 기록, 이동, lint |
 | [Contract](docs/contract.md) | forest가 지켜야 할 모든 규칙을 한 번씩 |
-| [Agents](docs/agents.md) | agent tree, 두 가지 정리 방식, 읽기 범위, writer 하나 원칙 |
+| [Agents](docs/multi-agent.md) | agent tree, 두 가지 정리 방식, 읽기 범위, writer 하나 원칙 |
 | [Design](docs/v1-design.md) | 패키지: 디스크 구조, 설정, package map, milestone |
 | [Comparison](docs/comparison.md) | Mem0, GBrain, LLM Wiki 아이디어, 일반 vector RAG와 무엇이 다른지 |
 | [Privacy and trust](docs/privacy-and-trust.md) | 무엇이 로컬에 남는지, 읽는 쪽이 무엇을 볼 수 있는지, 신뢰할 수 없는 데이터로서의 메모리 |
