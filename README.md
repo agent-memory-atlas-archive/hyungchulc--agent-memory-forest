@@ -9,12 +9,22 @@
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
 
-Agent Memory Forest keeps what an agent learns as plain Markdown pages in a few numbered folders. Every fact
-has one home, decided by rules rather than by the chat or the agent that brought it in; a changed fact keeps
-what it was before; a moved page is still found under its old path; and code, not a model, decides where a
-page belongs and when a subject has grown enough to get pages of its own. Several agents can share one
-forest: shared trees for what everyone needs, a tree per agent for what is its own, and an orchestrator that
-reads all of it.
+Agent Memory Forest is a Python package and a `forest` command that keep what agents learn as plain
+Markdown pages in a few numbered folders on your own disk. Every fact has one home, decided by rules rather
+than by the chat or the agent that brought it in, and code, not a model, decides where a page belongs and
+when a subject has grown enough to get pages of its own. Several agents share one forest: shared trees for
+what everyone needs, a tree per agent for what is its own, and an orchestrator that reads all of it. An
+agent's tree comes by itself: when an agent writes the first line to its raw lane, the next upkeep step
+makes its tree.
+
+```sh
+ls "my-forest/06 istm/post-bot"            # the agent wrote its first line here
+# 2042-05-15.jsonl
+forest levels apply --root my-forest       # one command, the same upkeep step that settles every level
+# post-bot: none -> tree (an agent is a tree from its first day (its raw lane holds a file))
+ls my-forest/"02 ltm"
+# post-bot_LTM.md   studio_LTM.md          # its tree page: role, instructions, lessons, current state, branches
+```
 
 Version 1 is a new generation of the 0.3 Memory Forest. Its rules are written down in full; its code is
 being ported in three milestones (see [Status](#status)).
@@ -114,26 +124,28 @@ python -m pip install -e .
 ```
 
 The version 1 commands are the `forest …` commands of the [design's package map](docs/v1-design.md#13-package-map).
-**None of them is released yet.** Each line below is marked with the milestone that brings it; until
-milestone 1 lands, the installed command is still the 0.3 `memory-forest` (documented in
-[`docs/archive-0.3/`](docs/archive-0.3/cli.md)).
+**Version 1.0.0 is not released.** The milestone 1 commands below are in this tree and installed with it;
+the milestone 2 and 3 commands do not exist yet. The 0.3 `memory-forest` command (documented in
+[`docs/archive-0.3/`](docs/archive-0.3/cli.md)) stays installed beside them.
 
 ```sh
 # Milestone 1: skeleton and structure tools
 forest init my-forest                          # settings, layers, root index
-forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"
+forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"   # or let its lane make it
 forest registry build                          # compile every ## Subjects section
-forest levels check                            # which subjects are due a new level
+forest levels check                            # which subjects and agents are due a new level
 forest levels apply                            # carry them out through the move tool, logged
-forest check                                   # bring derived lists up to the pages
+forest check --sync                            # bring derived lists up to the pages, then every check
 forest lint                                    # every rule with a shape, by code
+forest record kinds                            # the update records' lines by kind
+forest numbers check --all                     # account, card, identity and phone numbers in full
 
-# Milestone 2: finding
+# Milestone 2: finding (not built yet)
 forest search "the big kiln"                   # registry aliases first, then words (and vectors if set)
 forest timeline query "yesterday evening"
 forest mcp                                     # search, read, navigate, timeline with the reader's scope
 
-# Milestone 3: growing
+# Milestone 3: growing (not built yet)
 forest stage …                                 # the daily, filing and upkeep stages around your model
 ```
 
@@ -143,7 +155,8 @@ two bots, two days of daily pages and a raw lane, about forty small files.
 
 ## Agents in five lines
 
-1. An agent (an orchestrator, a bot, a scheduled stage) is a subject that is a tree from its first day.
+1. An agent (an orchestrator, a bot, a scheduled stage) is a subject that is a tree from its first day:
+   its settings entry or the first file in its raw lane is enough, and `forest levels apply` makes the tree.
 2. Its tree page holds its role, standing instructions, lessons, current state and branches.
 3. `subject-first` (default) files facts in the subject's home tagged `noted by <agent>`; `agent-first`
    files them in the agent's tree with `about:` pointers, and shares a fact once two agents hold it.
@@ -160,7 +173,7 @@ Details: [Agents](docs/multi-agent.md).
 | [Contract](docs/contract.md) | every rule a forest keeps, stated once |
 | [Agents](docs/multi-agent.md) | agent trees, the two filing policies, reader scopes, the single writer |
 | [Design](docs/v1-design.md) | the package: on-disk layout, settings, package map, milestones |
-| [Structure tools](docs/tools.md) | `forest move`, `levels`, `collections` and `check`, each with an example |
+| [Structure tools](docs/tools.md) | `forest move`, `levels`, `collections`, `check`, `lint`, `record` and `numbers`, each with an example |
 | [Comparison](docs/comparison.md) | how this differs from Mem0, GBrain, the LLM Wiki idea and plain vector RAG |
 | [Privacy and trust](docs/privacy-and-trust.md) | what stays local, what a reader can see, memory as untrusted data |
 | [Roadmap](docs/roadmap.md) | the three milestones and what comes after |
@@ -173,10 +186,12 @@ Agent Memory Forest is alpha software. Version 1.0.0 is unreleased.
 
 - **Written:** the contract, the design, the concepts and agents guides, and an invented synthetic forest
   that follows the contract.
-- **Milestone 1, skeleton:** the structure tools (registry, move, levels, collections, record, archive,
-  derived lists, lint) with tests on made-up forests, and the synthetic forest passing the lint.
-- **Milestone 2, finding:** the time index, search with reader scopes, the MCP server.
-- **Milestone 3, growing:** the stage programs and their prompts, the nightly upkeep.
+- **Milestone 1, skeleton (in this tree, unreleased):** the structure tools (registry, move, levels,
+  collections, record, archive, derived lists, checks, lint, number starring, agents' trees made from
+  their lanes or settings) with tests on made-up forests, and the synthetic forest passing every check.
+- **Milestone 2, finding (not built yet):** the time index, search with reader scopes, the MCP server. The
+  reader-scope rule itself (`agents.readable_trees`) is in milestone 1.
+- **Milestone 3, growing (not built yet):** the stage programs and their prompts, the nightly upkeep.
 
 The 0.3 code (`memory-forest`) stays in this tree until the version 1 commands replace it. It is suitable
 for evaluation and adaptation, not for unattended high-stakes decisions.

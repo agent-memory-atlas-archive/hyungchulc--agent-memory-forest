@@ -169,6 +169,9 @@ The levels, with the defaults of the `[levels]` settings:
   of its first day (`seen-once-2042-q2.md`), or of its month (`seen-once-2042-05.md`) when the quarter's
   page would pass the leaf cap. An entry with no dated line goes by the `updated_at` of the page it came
   from.
+- **Cutting a full quarter.** A quarter page that passes the cap is cut into month pages, each entry going
+  to the month of its first day; the quarter page goes to the archive and the move log sends its old
+  addresses to the month pages.
 - **Cutting a full month.** A month page that passes the cap is cut by its entries' first days into runs
   of consecutive days, each run filled up to the cap.
   1. The first run keeps the month page's name, so references to it stay valid. Each later run is a page
@@ -355,9 +358,24 @@ orchestrator, a bot that owns one kind of work, a scheduled stage, the sessions 
 engine or model it runs on is a tag on the lines it touches; when the engine changes, the agent stays. A
 helper started for one task works as the agent that started it.
 
-- **A tree per agent, made by code.** `forest move new-agent <id> --name … --role …` writes the agent's
-  registry line (type `agent`, level `tree`), its tree page, its index and its line under `## Agents` on
-  the root index. A subject that was filed as a branch and turns out to be an agent is retyped
+- **A tree per agent, made by code.** An agent exists for the forest from either of two facts, and no
+  command has to be run for it:
+  1. its entry in the settings, `[agents.known.<id>]`, with a `name` and a `role`, each optional; the id is
+     any slug the people running the forest choose, and the name is free text in any script;
+  2. the first file in its raw lane, `06 istm/<id>/`, unless `agents.auto_create` is `false`.
+
+  An agent is a tree from its first day and for as long as it is an agent. `forest levels check` reports
+  each agent without a tree as due one, and `forest levels apply` makes it: the registry line (type
+  `agent`, level `tree`), the tree page, its index and its line under `## Agents` on the root index.
+  `forest move new-agent <id> [--name …] [--role …]` makes the same tree at once. A name not given is the
+  id; a role not given leaves `## Role` with the one line `(not set)`. A tree once made is left as it is:
+  a later name in the settings is carried out by `forest move rename`, and the lint reports the difference
+  (`agent_settings_differ`). With `agents.auto_create` set to `false`, a lane whose agent is neither
+  declared nor registered is the upkeep hit `agent_lane_without_tree`. A lane folder or a declared id that
+  is not a slug, that is a shared tree's id, or that is a reserved name (`owner.id`, `subjects.system_id`,
+  `none`, a collection's id) never becomes a tree: `forest check` reports it as `agent_id_invalid`.
+
+  A subject that was filed as a branch and turns out to be an agent is retyped
   (`forest move set-type <id> agent`) and promoted with its leaves by `forest levels apply`. Inside its
   tree the same rules hold as anywhere: sub-topics are branches, leaves follow section 4, levels follow
   days.
@@ -377,14 +395,19 @@ helper started for one task works as the agent that started it.
   - An orchestrator (listed in `agents.orchestrators`) reads the whole forest.
   - Any other agent reads the shared trees and its own tree, and reads another agent's tree only when
     `agents.default_scope` is `all` or its task names that agent. The default scope is `own+shared`.
+  - A reader that is no agent of the forest reads the shared trees only.
   - Each tool call records which trees answered it.
 - **Who writes.** Agents never edit forest pages at the same time.
   1. Each agent appends to its own raw lane, `06 istm/<agent>/`.
   2. The daily record is written from the lanes.
   3. One filing run at a time, holding the forest writer lock, files into the forest.
   4. A direct edit of a forest page goes through the same lock.
-- **Ending.** A retired agent keeps its tree with the status `ended`. `forest move fold-tree` turns an
-  agent's tree back into a branch of another tree; nothing is lost, and old paths resolve.
+- **Ending.** `forest move retire-tree <id>` ends an agent: its registry line gets the status `ended`, its
+  line under `## Agents` says `· ended`, its pages stay where they are and the orchestrator still reads
+  them. `forest move fold-tree <id> --into <tree>` ends the tree itself: the subject becomes a branch of
+  the other tree, of the type named with `--type` (by default `agents.folded_type`, `component`), its old
+  branches become its leaves' `subtopic:`, and it leaves `## Agents`; nothing is lost, and old paths
+  resolve.
 
 ## 4. Leaves
 
@@ -479,8 +502,8 @@ application, a stay, a trip.
   5. A leaf page over `limits.leaf_max_bytes` (20,480) bytes, record included, is a violation (section 8).
 - **What a record line is.** A line stands in a page's `## Update record` only when it is one of three
   kinds, each about that page:
-  1. a change: what a statement of the page was and what it became (`was "…", now "…"`), quoting the
-     statement that changed and not the section around it;
+  1. a change: what a statement or a frontmatter value of the page was and what it became
+     (`was "…", now "…"`), quoting the statement or value that changed and not the section around it;
   2. a removal, a correction or an exclusion made at the owner's word about what the page holds: the line
      quotes what was removed (`removed "…"`) or what the statement was and became, or says what was not
      kept without restating it (`not kept: …`), and gives the owner's words (marked as
@@ -489,14 +512,17 @@ application, a stay, a trip.
      copy, named by its path in what the line says happened, not only in its `Source:`.
 
   Anything else a run could note about its own work (how many lines it touched, that it rechecked a page
-  and changed nothing, that it rewrote a page's form or set a frontmatter key) is the run's receipt and
+  and changed nothing, that it rewrote a page's form) is the run's receipt and
   stays in the run's directory. A run that changes no statement of a page writes no record line on it.
-  This holds for every page alike: a leaf, a board, an index, a tree page.
+  This holds for every page alike: a leaf, a board, an index, a tree page. A page whose links, list lines,
+  registry lines or `about:` ids a tool rewrote because another page or subject moved gets no record
+  line: the move log is the record of that change. A derived-list sync writes no record line.
 - **Record trim.** A record is bounded on every page. When its lines, pointer lines included, hold more
   than `limits.record_keep_bytes` (2,048) bytes (each line counted with its newline; the pointer lines
   stay on top and do not count against the budget of item 1):
   1. it keeps the newest lines that fit in that budget, and, whatever their age, every removal or
-     correction at the owner's word (so that a later run does not add back what the owner took out), one
+     correction or exclusion at the owner's word (so that a later run does not add back what the owner took
+     out or excluded), one
      copy of each, oldest first by their leading date;
   2. a pointer line on top of the record names the archive copy:
      ``- Earlier record lines (<first date> – <last date>, <n> lines) are kept in `<archive path>`.``;
@@ -629,7 +655,8 @@ When the owner says that something is not to be remembered:
   the first record line. `## Branches` has one line per branch,
   `` - `<branch>` — who or what it is at its core, and what it holds ``, the core being its identity,
   roles, lasting traits and ties in one or two sentences.
-- **An agent's tree page** has frontmatter `entity: <agent id>` and holds `## Role`, `## Standing
+- **An agent's tree page** has frontmatter `entity: <agent id>` and holds `## Role` (the line `(not set)`
+  while no role is given), `## Standing
   instructions`, `## Lessons`, `## Current state` and `## Branches`, then `## Links` and `## Update
   record`, each present; `## Update record` comes with the first record line.
 - **A tree's index** (`03 mtm/<tree>/<tree>_MTM.md`) holds the tree's registry in `## Subjects`
@@ -785,7 +812,7 @@ How the lint holds a run:
   holds a run.
 - A `level_due` is carried out by the run that sees it (section 10).
 - Derived lists (a board's `## Leaves` with their dates, its `## Pointers`, a tree page's and an index's
-  `## Branches`) are brought up to the pages on disk by `forest check` before the lint runs.
+  `## Branches`) are brought up to the pages on disk by `forest check --sync` before the lint runs.
 
 ## 9. Tools
 
@@ -794,12 +821,25 @@ below may still change while the code is ported; the design's milestones say whe
 
 - **`forest move`** moves a leaf; promotes a subject to a branch or a tree; merges two subjects; renames a
   branch or a subject; archives a page; moves a branch with its board, folder and registry lines to
-  another tree; creates a tree (`new-tree`) or an agent's tree (`new-agent`); retires an emptied tree into
-  the page that took its rules; folds a tree into a branch of another (`fold-tree`, its old branches
+  another tree; creates a tree (`new-tree`) or an agent's tree (`new-agent`, section 3, Agent trees);
+  retires a tree (`retire-tree`); folds a tree into a branch of another (`fold-tree`, its old branches
   becoming its leaves' `subtopic:`); retypes a subject (`set-type`); sets a leaf's frontmatter (`kind`,
-  `about`, `standing`); re-cuts a stream of event pages by period; and runs many operations from one plan
-  with one verification. Each operation rewrites every up-link, list line, registry line and code-span
-  path that named the old place, and appends one line per path to `.forest/moves.jsonl`.
+  `about`, `standing`); re-cuts a stream of event pages by period (`recut-stream`); and runs many
+  operations from one plan with one verification.
+  1. Each operation that moves something rewrites every up-link, list line, registry line and code-span
+     path that named the old place, and appends to `.forest/moves.jsonl` one line per path that moves:
+     each page, each collection entry and registry line (`<page>#<id>`), and each folder that moves whole.
+     A moved page gets the record line `Path changed: was "…", now "…"`.
+  2. `set-type` and `set` move nothing: each writes the change line of what it changed on the page it
+     changed (the registry line's index, the leaf) and nothing in the move log.
+  3. `retire-tree` on an agent's tree ends the agent (section 3, Agent trees: Ending). On any other tree it
+     archives the emptied tree into the page that took its rules (`--into`), which gets the record line
+     of where those rules came from.
+  4. `recut-stream` writes each period page with the title `# <Name>: <stream words> (<period>)` and the
+     description `The <stream words> of <Name> in <period>, one line each.`, the stream words being the
+     pages' shared name without its period, its hyphens as spaces. For each year it takes the coarsest
+     period whose page keeps within the cap: the year, else its quarters, else a passing quarter's
+     months.
   `forest move resolve <old path>` follows the log through every operation to the present place, or to
   the archive entry and the leaf it was folded into, so evaluations and archives that hold old paths still
   find the page.
@@ -815,9 +855,12 @@ below may still change while the code is ported; the design's milestones say whe
   archive (section 4).
 - **`forest registry build | find`** compiles the registry and finds a subject or a collection entry by any
   name or spelling.
-- **`forest check`** brings the derived lists up to the pages and checks structure: it runs each registered
-  check, or the one named by its option; **`forest lint`**
-  checks the rules (section 8).
+- **`forest check [NAME …]`** runs every registered check, or the ones it names: the structure of the
+  pages, the derived lists against the pages, the pointers, the agents' lanes and ids, the levels due and
+  the categories over their limit. It prints one line per problem with its code and its path and exits 1
+  when there is one. `forest check --sync` first brings the derived lists up to the pages under the writer
+  lock, then runs the same checks. A forest that `forest check` calls clean has no lint hit of the codes
+  the two share. **`forest lint`** checks the rules (section 8).
 - **`forest timeline`**, **`forest search`**, **`forest read`** and **`forest mcp`** find things (design,
   sections 9 and 10).
 - **`forest stage`** supplies the stages' input, cursors, receipts and commit steps (design, section 11).

@@ -94,8 +94,8 @@ and `archive/` can be deleted and rebuilt.
   current state, and one line per branch.
 - Above the leaves a line is carried up only when it is established: repeated evidence, or the owner's own
   statement. Current-state lines carry `(as of DATE; source PATH)` and are stale when their source changed.
-- An `## Update record` holds only the page's own history, in three kinds of line: what a statement of
-  the page was before it changed (`was "…", now "…"`), what was taken out or corrected at the owner's word
+- An `## Update record` holds only the page's own history, in three kinds of line: what a statement or a
+  frontmatter value of the page was before it changed (`was "…", now "…"`), what was taken out or corrected at the owner's word
   about the page, and where the page's own lines came from or went. It is bounded on every page, a leaf
   or above: the newest lines that fit a small budget stay with the owner's removals and corrections, and
   older lines move verbatim to the page's archive copy, where the subject timeline still reads the
@@ -110,11 +110,18 @@ orchestrator, a bot that owns a kind of work, a scheduled stage, the sessions of
 engine or model it runs on is a tag on the lines it touches; when the engine changes, the agent stays.
 A helper started for one task works as the agent that started it.
 
-- **A tree per agent, made by code.** `forest move new-agent <id> --name … --role …` creates the agent's
-  registry line (type `agent`, level `tree`), its tree page, its index and its line under `## Agents` on
-  the root index. A subject that was filed as a branch and turns out to be an agent is retyped
-  (`set-type <id> agent`) and promoted by `forest levels apply` with its leaves. Inside its tree the same
-  rules hold as anywhere: sub-topics are branches, leaves follow the leaf rules, levels follow days.
+- **A tree per agent, made by code, with no command to run.** An agent exists for the forest from its
+  entry in the settings (`[agents.known.<id>]`, `name` and `role` optional) or from the first file in its
+  raw lane `06 istm/<id>/` (unless `agents.auto_create` is false). `forest levels check` reports every such
+  agent without a tree as due one from its first day, and `forest levels apply` makes it through
+  `move.ensure_agent`, the operation `forest move new-agent <id> [--name …] [--role …]` also uses: the
+  registry line (type `agent`, level `tree`), the tree page, the index and the line under `## Agents`. A
+  name not given is the id and a role not given is the line `(not set)`; a tree once made is left as it
+  is (a rename is `rename`'s, and the lint says when the settings name another). A lane folder that is
+  not a slug, a shared tree's id or a reserved name never becomes a tree (`agent_id_invalid`). A subject
+  that was filed as a branch and turns out to be an agent is retyped (`set-type <id> agent`) and promoted
+  by `forest levels apply` with its leaves. Inside its tree the same rules hold as anywhere: sub-topics
+  are branches, leaves follow the leaf rules, levels follow days.
 - **Its tree page is what the agent reads first**: `## Role`, `## Standing instructions`, `## Lessons`,
   `## Current state`, `## Branches`.
 - **What is filed there** follows the forest's `agents.policy`:
@@ -129,19 +136,24 @@ A helper started for one task works as the agent that started it.
 - **Who reads what.** Every reader has an id, taken from its connection and never from the question. An
   orchestrator (`agents.orchestrators`) reads the whole forest. Any other agent reads the shared trees and
   its own tree, and another agent's tree only when `agents.default_scope` allows it or its task names that
-  agent. Each tool call records which trees answered.
+  agent; a reader that is no agent reads the shared trees. `agents.readable_trees(config, registry,
+  reader_id)` is that rule as one function. Each tool call records which trees answered.
 - **Who writes.** Agents do not edit forest pages at the same time. Each appends to its own raw lane
   (`06 istm/<agent>/`), the daily record is written from the lanes, and one filing run at a time, holding
   the forest writer lock, files into the forest. Direct edits go through the same lock.
-- **Ending.** A retired agent keeps its tree with status `ended`. `fold-tree` turns an agent's tree back
-  into a branch of another tree; nothing is lost and old paths resolve.
+- **Ending.** `retire-tree` gives a retired agent's registry line the status `ended` and its line under
+  `## Agents` `· ended`; its pages stay and the orchestrator still reads them. `fold-tree` turns an
+  agent's tree into a branch of another tree, of the type `--type` names (by default
+  `agents.folded_type`), and the agent leaves `## Agents`; nothing is lost and old paths resolve.
 
 ## 7. Moves, archive, records
 
 - `forest move` moves a leaf, promotes or merges subjects, renames, creates and folds trees, re-cuts a
   stream of event pages by period, and sets frontmatter. Each operation rewrites every link, list line,
-  registry line and code-span path that named the old place and appends one line per path to
-  `.forest/moves.jsonl`. `forest move resolve <old path>` follows the log to the present place.
+  registry line and code-span path that named the old place and appends one line per path that moves
+  (a page, a collection entry or registry line as `<page>#<id>`, a folder moved whole) to
+  `.forest/moves.jsonl`. `set-type` and `set` move nothing and log nothing; they write the change line on
+  the page they change. A page rewritten only because another moved gets no record line. `forest move resolve <old path>` follows the log to the present place.
 - `.forest/archive/` holds one compressed copy per archived version of a page, under the date it was
   archived, with a manifest line (old path, hash, size, reason, the leaf it was folded into). Nothing is
   deleted. `forest archive show <old path>` prints the latest copy and `forest archive list` every copy.
@@ -220,6 +232,9 @@ tree_subtopic_leaves = 3
 tree_types = ["project", "topic", "product", "device", "title", "agent"]
 stream_kinds = ["received", "notice", "brief"]  # sub-topics made only of these do not count toward a tree
 stream_subtopic_words = [...]   # sub-topic names that mark such a stream
+shared_branch = "shared"        # the branch that takes a category's other leaves when a promoted
+                                #   subject takes over the category's board
+default_subtopic = "profile"    # the sub-topic of a leaf subject's only leaf when it names none
 stage_names = [...]             # a Timeline line that only records the system's own work
 work_verbs = [...]              #   (a stage or tool name followed by one of these verbs)
 tool_names = [...]              #   does not count as a day of its subject
@@ -234,6 +249,11 @@ quote_marks = ['""', "“”", "«»", "„“"]  # the quote-mark pairs (openin
 policy = "subject-first"        # or "agent-first"
 orchestrators = []
 default_scope = "own+shared"    # or "all"
+auto_create = true              # the first file in a raw lane 06 istm/<id>/ makes that agent's tree
+folded_type = "component"       # the type an agent's subject takes when fold-tree makes it a branch
+[agents.known.<id>]             # an agent declared by the people running the forest (any slug as id)
+name = "…"                      # optional, free text in any script; default: the id
+role = "…"                      # optional; default: `## Role` holds `(not set)`
 [embeddings]
 provider = "none"               # none | openai-compatible
 ```
@@ -251,9 +271,11 @@ provider = "none"               # none | openai-compatible
 | `collections` | collection pages: demote, admit, recut | `forest collections` |
 | `record`, `archive` | record trim, the compressed archive | `forest record`, `forest archive` |
 | `maps`, `validate`, `audit` | derived lists (Leaves, Pointers, Branches), structure checks | `forest check` |
+| `checks` | the one table of `forest check`'s checks | `forest check` |
+| `agents` | agents from the settings and the raw lanes, their problems, `readable_trees` | `forest levels` |
 | `lint` | the codes, baselines | `forest lint` |
 | `view` | a read-only view of one forest that the checks share: settings, registry, pages read once | |
-| `cli_upkeep` | the record, numbers, check and lint commands; the table of `forest check`'s checks | `forest record`, `forest numbers`, `forest check`, `forest lint` |
+| `cli_upkeep` | the record, numbers, check and lint commands | `forest record`, `forest numbers`, `forest check`, `forest lint` |
 | `timeline` | the time index and time phrases | `forest timeline` |
 | `search`, `scope` | the search index, coarse-to-fine retrieval, reader scopes | `forest search`, `forest read` |
 | `mcp` | the MCP server | `forest mcp` |

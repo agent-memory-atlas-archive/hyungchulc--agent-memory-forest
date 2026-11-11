@@ -23,14 +23,30 @@ started for a single task is not an agent of its own; it works as the agent that
 
 ## How an agent's tree appears
 
-An agent is a subject of type `agent`, and it is a **tree from its first day**. One command creates
-everything it needs:
+An agent is a subject of type `agent`, and it is a **tree from its first day**. Nothing has to be run to
+make one: the forest knows an agent from either of two facts.
+
+- **Its raw lane.** The moment Post Bot appends its first line to `06 istm/post-bot/`, the place every
+  agent writes to, it is an agent of the forest.
+- **Its settings entry.** The people running the forest can declare it, with a name in any script and a
+  role, both optional:
+
+  ```toml
+  [agents.known.post-bot]
+  name = "Post Bot"
+  role = "packs and ships orders"
+  ```
+
+The upkeep step that settles levels makes the tree:
 
 ```sh
-forest move new-agent post-bot --name "Post Bot" --role "packs and ships orders"   # milestone 1
+forest levels check
+# 06 istm/post-bot/: level_due: post-bot none -> tree: an agent is a tree from its first day (its raw lane holds a file)
+forest levels apply
+# post-bot: none -> tree (an agent is a tree from its first day (its raw lane holds a file))
 ```
 
-That writes:
+With the settings entry above, that writes:
 
 - the registry line, in `03 mtm/post-bot/post-bot_MTM.md`:
   ``- `post-bot` — Post Bot · agent · tree · `02 ltm/post-bot_LTM.md` ``
@@ -38,6 +54,17 @@ That writes:
   `## Role`, `## Standing instructions`, `## Lessons`, `## Current state` and `## Branches`;
 - its index `03 mtm/post-bot/post-bot_MTM.md`;
 - its line under `## Agents` on the root index: `` - `post-bot` — Post Bot · packs and ships orders ``.
+
+A name not given is the id (`post-bot`); a role not given leaves `## Role` with the line `(not set)`.
+`forest move new-agent post-bot --name "Post Bot" --role "packs and ships orders"` makes the same tree at
+once, through the same operation. A tree once made is left as it is: if the settings later give another
+name, `forest move rename post-bot --name …` carries it out, and until then the lint reports the
+difference (`agent_settings_differ`).
+
+A forest that wants every agent declared sets `agents.auto_create = false`: a lane then makes no tree,
+and a lane whose agent is not declared is the lint's upkeep hit `agent_lane_without_tree`. A lane folder
+whose name is not a slug, is the id of a shared tree, or is a reserved name (the owner's id, the system's
+id, `none`) never becomes a tree; `forest check` reports it as `agent_id_invalid`.
 
 Inside its tree the ordinary rules hold: its sub-topics are branches (`shipping-runs`, `methods`), its
 leaves follow the leaf rules, and they grow by distinct days like anything else.
@@ -111,9 +138,11 @@ never from the text of the question, so an agent cannot widen its view by asking
 - Any **other agent** reads the shared trees and its own tree. It reads another agent's tree only when
   `agents.default_scope` is `all`, or when its task names that agent ("Ledger Bot, check what Post Bot
   charged for shipping"). The default is `own+shared`.
+- A reader that is no agent of the forest reads the shared trees only.
 - Each tool call records which trees answered it, so a wrong answer can be traced to the page that gave it.
 
-Reader scopes arrive with the search tools and the MCP server in milestone 2.
+The rule is one function, `memory_forest.agents.readable_trees(config, registry, reader_id)` (with
+`named=` for the agents a task names), which the search tools and the MCP server of milestone 2 call.
 
 ## One writer at a time, and raw lanes
 
@@ -147,10 +176,13 @@ one agent stays in that agent's `## Standing instructions`.
 
 ## Retiring an agent
 
-When Juno stops shipping by courier and Post Bot is retired:
+When Juno stops shipping by courier and Post Bot is retired (`forest move retire-tree post-bot`):
 
-- Its registry line gets the status `ended`, and its line under `## Agents` gets `· ended`. Its tree stays,
-  so every past shipment and lesson can still be found and cited.
+- Its registry line gets the status `ended`, and its line under `## Agents` gets `· ended`. Its pages stay
+  where they are and Studio Hub still reads them, so every past shipment and lesson can still be found and
+  cited. An agent's tree is never emptied by retiring.
 - If the tree is better kept as part of another, `forest move fold-tree post-bot --into studio-hub` turns it
-  into a branch of Studio Hub's tree. Its old branches become the `subtopic:` of its leaves, nothing is
-  lost, and `forest move resolve` sends every old path to the new place.
+  into a branch of Studio Hub's tree. That ends it as an agent: the subject takes the type `--type` names
+  (by default `agents.folded_type`, `component`) and leaves `## Agents`. Its old branches become the
+  `subtopic:` of its leaves, nothing is lost, and `forest move resolve` sends every old path to the new
+  place. Its raw lane makes no new tree: the id now names the folded subject.
