@@ -283,6 +283,11 @@ DASH: Final[str] = " — "
 DOT: Final[str] = " · "
 CODE_SPAN_RE: Final[re.Pattern[str]] = re.compile(r"`(?P<text>[^`\n]+)`")
 WIKILINK_RE: Final[re.Pattern[str]] = re.compile(r"\[\[(?P<target>[^\]|\n]+)(?:\|(?P<label>[^\]\n]*))?\]\]")
+# What masking leaves of a value that stood in square brackets (`[4821]` becomes `[[REDACTED]]`), and the
+# marks other tools leave (`[[REDACTED_TOKEN]]`, `[[redacted phone]]`): quoted text, never a link.
+_REDACTION_MARK_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:[a-z]+[ _-]+)*redacted(?:[ _-]+[a-z]+)*", re.IGNORECASE
+)
 _PAGE_PATH_PREFIXES: Final[tuple[str, ...]] = ("01 xltm", "02 ltm", "03 mtm", "04 stm", "05 daily", "06 istm")
 RECORD_SECTION: Final[str] = "Update record"
 
@@ -671,10 +676,17 @@ def code_span_paths(line: str) -> list[CodeSpan]:
     return [span for span in code_spans(line) if looks_like_forest_path(span.text)]
 
 
+def is_redaction_mark(target: str, label: str | None = None) -> bool:
+    """Whether ``[[target]]`` is a redaction mark in brackets (``[[REDACTED]]``): quoted text and no link."""
+    return not label and _REDACTION_MARK_RE.fullmatch(target.strip()) is not None
+
+
 def wikilinks(line: str) -> list[Wikilink]:
+    """The wikilinks of a line. A redaction mark in doubled brackets is none."""
     return [
         Wikilink(match.start(), match.end(), match["target"].strip(), match["label"])
         for match in WIKILINK_RE.finditer(line)
+        if not is_redaction_mark(match["target"], match["label"])
     ]
 
 

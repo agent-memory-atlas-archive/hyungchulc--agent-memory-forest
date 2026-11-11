@@ -74,6 +74,7 @@ LEAF_KINDS: Final[tuple[str, ...]] = (
 
 CODES: Final[tuple[str, ...]] = (
     "registry_line_invalid",
+    "registry_name_masked",
     "registry_duplicate_id",
     "registry_duplicate_alias",
     "registry_home_missing",
@@ -316,6 +317,13 @@ def _line_problem(line: RegistryLine, config: Config) -> str | None:
     return None
 
 
+def masked_name_problem(names: Iterable[str], config: Config) -> str | None:
+    """Why one of a subject's or an entry's names reads as a sign-in value or holds a masked one, or None."""
+    from . import credentials  # credentials reads pages through view, which reads the registry
+
+    return credentials.name_problem(names, config=config)
+
+
 # ─────────────────────────────── build ───────────────────────────────
 
 
@@ -413,6 +421,9 @@ def build(root: str | os.PathLike[str], *, config: Config | None = None) -> Regi
         elif not layout.resolve(safe_root, line.home).is_file():
             problems.append(Problem("registry_home_missing", index, number, f"the home `{line.home}` is not there"))
         entities[line.id] = subject
+        reason = masked_name_problem((line.id, line.name, *line.aliases), settings)
+        if reason is not None:
+            problems.append(Problem("registry_name_masked", index, number, f"`{line.id}`: {reason}"))
         own_names = [line.id, line.name, *line.aliases]
         if line.id == settings.owner.id:
             own_names.extend(settings.owner.names)
@@ -473,6 +484,9 @@ def build(root: str | os.PathLike[str], *, config: Config | None = None) -> Regi
                         Problem("collection_entry_malformed", page_path, entry.line, f"the entry id `{entry.id}` is not a slug")
                     )
                     continue
+                reason = masked_name_problem((entry.id, entry.name, *entry.aliases), settings)
+                if reason is not None:
+                    problems.append(Problem("registry_name_masked", page_path, entry.line, f"entry `{entry.id}`: {reason}"))
                 claimed: set[str] = set()
                 for name in (entry.id, entry.name, *entry.aliases):
                     key = normalize_name(name)

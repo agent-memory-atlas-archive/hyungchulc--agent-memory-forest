@@ -20,6 +20,7 @@ from .model import (
     SCHEMA_VERSION,
     Route,
     immediate_parent_path,
+    is_redaction_mark,
     layers_are_adjacent,
     parse_relative_route,
 )
@@ -899,6 +900,7 @@ def _wikilinks(body: str) -> list[tuple[str, int]]:
     return [
         (match.group(1).strip(), searchable.count("\n", 0, match.start()) + 1)
         for match in WIKILINK_RE.finditer(searchable)
+        if not is_redaction_mark(match.group(1))
     ]
 
 

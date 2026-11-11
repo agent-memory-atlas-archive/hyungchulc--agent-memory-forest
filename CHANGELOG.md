@@ -61,6 +61,14 @@ the tree until the version 1 commands replace it.
   --include-body`, `route`, `retrieve` and `structured-context` star numbers as well as mask sign-in values
 - a code-span address `<page>#<id>` on a page that is archived is marked ` (archived)` like a bare path
 - `numbers star` and `credentials fix` say in their help that they take named pages or `--all`
+- a redaction mark in doubled brackets (`[[REDACTED]]`, what masking leaves of a value that stood in square
+  brackets) is quoted text and no link: the structure check and the route audit read it as none, where a
+  masked `[4821]` made its page fail `wikilink_not_up`
+- a name says who or what a subject is: an id, name or alias of a subject or a collection entry that reads
+  as a sign-in value (`Lowtide verification code 4821`) or holds `[REDACTED]` is the violation
+  `registry_name_masked`, and a plan that would add one is refused; before, every line carrying such a name
+  was a `credential_in_full` line and `credentials fix` took the name off the subject's own pages
+- after a label word and a colon, a dash or a row of dots (`PIN: -`) is no value and stays
 - the contract states two rules for writing with a model: a line that states what quoted turns say is
   filed only after a second reading of the same turns judged it; a subject is never merged into another on
   what its own material claims, and subjects that would share a name each carry a distinguishing word

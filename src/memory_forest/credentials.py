@@ -9,7 +9,7 @@ A value is recognised by the word before it, one of ``credentials.label_words``
 (English by default; a forest adds the words of its other languages):
 
 - after a colon or an equals sign (``PIN: 4821``, ``password = tulip``), any
-  value;
+  value that holds a letter or a digit (``PIN: -`` says there is none);
 - without one (``door code 4821``, ``the password is tulip7``), a run of 3 to 64
   characters that holds a digit and is no date, time, path, address or mail
   address, and is not followed by one of ``credentials.count_words``
@@ -147,7 +147,7 @@ def _step(rules: _Rules, text: str, after: re.Pattern[str], accept: Callable[[st
 
 
 def _assigned(core: str) -> bool:
-    return REDACTED not in core
+    return REDACTED not in core and any(character.isalnum() for character in core)
 
 
 def _bare(core: str) -> bool:
@@ -194,6 +194,27 @@ def shown(value: Any, *, config: Config) -> Any:
     if isinstance(value, (list, tuple)):
         return [shown(item, config=config) for item in value]
     return value
+
+
+def name_problem(names: Iterable[str], *, config: Config) -> str | None:
+    """Why one of ``names`` cannot stand as a name (contract, section 2), or None.
+
+    A name says who or what a subject is. One built from the words of what was sent before digits
+    (``Courier verification code 4821``) reads as a sign-in value: every line that carries it is a
+    ``credential_in_full`` line, every read shows it masked, and ``fix`` would take the name off the subject's
+    own pages. A name that already holds the mark has lost that part. The reason shows the masked form, never
+    the name.
+    """
+    for name in names:
+        text = str(name or "")
+        if REDACTED in text:
+            return (f"the name `{text}` holds a masked value, which names nothing; "
+                    "name it by who sends or what it is")
+        masked = mask(text, config=config) if text else text
+        if masked != text:
+            return (f"the name `{masked}` reads as a sign-in value, which every read masks; "
+                    "name it by who sends or what it is, not by the words of what was sent")
+    return None
 
 
 def changed_lines(text: str, *, config: Config) -> list[int]:

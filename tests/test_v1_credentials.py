@@ -51,6 +51,32 @@ class MaskTests(unittest.TestCase):
         self.assertEqual(masked("password: tulip"), f"password: {R}")
         self.assertEqual(masked("password tulip"), "password tulip")
 
+    def test_a_dash_or_a_row_of_dots_after_a_label_is_no_value(self) -> None:
+        for text in ("PIN: -", "PIN: —", "password: ...", "door code = ***", "passcode: (—)"):
+            with self.subTest(text=text):
+                self.assertEqual(masked(text), text)
+
+    def test_a_value_in_square_brackets_leaves_a_mark_that_is_no_link(self) -> None:
+        from memory_forest import model
+
+        line = masked("the shed's door code: [4821]")
+        self.assertEqual(line, f"the shed's door code: [{R}]")
+        self.assertEqual(model.wikilinks(line), [])
+        self.assertEqual([link.target for link in model.wikilinks("see [[03 mtm/bakery/deck-oven|the oven]]")],
+                         ["03 mtm/bakery/deck-oven"])
+
+    def test_a_name_that_reads_as_a_sign_in_value_or_holds_a_masked_one_is_no_name(self) -> None:
+        def problem(*names: str) -> str | None:
+            return credentials.name_problem(names, config=DEFAULT_CONFIG)
+
+        self.assertIsNone(problem("lowtide-parcel-sender", "Lowtide parcel sender", "Lowtide"))
+        self.assertIsNone(problem("lowtide-verification-code-4821"))  # an id is a slug: no value follows a label
+        reads_as = problem("lowtide-sender", "Lowtide verification code 4821")
+        self.assertIn("reads as a sign-in value", reads_as)
+        self.assertNotIn("4821", reads_as)
+        self.assertIn("holds a masked value", problem("lowtide-sender", f"Lowtide verification code {R}"))
+        self.assertIn("reads as a sign-in value", problem("lowtide-sender", "Lowtide sender", "door code 7395"))
+
     def test_ordinary_prose_with_a_label_word_and_no_value_is_left_alone(self) -> None:
         for text in (
             "Ilse changed her password on 2051-03-02.",

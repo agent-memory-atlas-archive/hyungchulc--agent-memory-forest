@@ -83,6 +83,11 @@ number, the setting that holds it is given with its default.
      the person uses (an invented example: "Θάλεια Ρόδου" → `thaleia-rodou`).
   2. The aliases keep every script and every display-name spelling seen.
   3. A contact with no name gets a descriptive id (`unnamed-kiln-repair-contact`), never a phone number.
+  4. A name says who or what the subject is, never the words of what it sent set before digits: a sender
+     is `Lowtide parcel sender`, not `Lowtide verification code 4821`. A name, id or alias that reads as a
+     sign-in value (section 4) would be shown masked by every read, and `forest credentials fix` would
+     take it off the subject's own pages. Such a name, and one that holds `[REDACTED]`, is the violation
+     `registry_name_masked` (section 8), and no plan may add one.
 - **The owner.** The owner of the forest is a subject like any other, with the id `owner.id`. The setting
   `owner.name` is how memory text names the owner, and `owner.aliases` are the owner's other names.
   1. In memory text, the bare `owner.name` always means the owner.
@@ -701,10 +706,10 @@ When the owner says that something is not to be remembered:
    that a value was sent, who sent it, to whom and for which account, and `[REDACTED]` in the value's place:
    `- 2042-05-13 16:40 America/Halifax — Idris Mallow: gave Juno the yard gate code [REDACTED].`
 2. A value is recognised by the word before it, one of `credentials.label_words` (English words by default;
-   a forest adds the words of its other languages there). After a colon or an equals sign any value counts;
-   without one, a run of 3 to 64 characters that holds a digit and is no date, time, path or mail address,
-   and that no word of `credentials.count_words` follows ("a password of 12 characters" is a rule, not a
-   value).
+   a forest adds the words of its other languages there). After a colon or an equals sign any value that
+   holds a letter or a digit counts (`PIN: -` says there is none); without one, a run of 3 to 64
+   characters that holds a digit and is no date, time, path or mail address, and that no word of
+   `credentials.count_words` follows ("a password of 12 characters" is a rule, not a value).
 3. Every record line a tool writes is masked this way (section 4, What a record line is), the writer of the
    daily record and the version 0.3 writer mask the text a model hands them, and everything a tool prints
    is masked and its numbers starred: a page, an archive copy, record lines read back from a history file,
@@ -809,6 +814,8 @@ owner someone who likes that sport.
   board, a board and a tree's index to the tree page, a tree page to the root index. Leaves never link to
   each other.
 - Every other reference is a path in a code span, such as `` `04 stm/people/acquaintances/odile-brask.md` ``.
+- A redaction mark in doubled brackets is quoted text and no link: masking leaves `[[REDACTED]]` where a
+  value stood in square brackets, and text from elsewhere may carry `[[REDACTED_TOKEN]]`.
 - When a page moves, the move tool rewrites, in the same run, every up-link, list line, registry line and
   code-span path that named it. When it archives a page, each code-span path to the page stays and is
   marked `` (archived)``.
@@ -867,6 +874,7 @@ owner someone who likes that sport.
 | `machine_page` | a machine record as a forest page (section 7): `status: merged`, a fenced JSON block or JSON object lines, or a table whose rows are mostly ids or hashes |
 | `registry_line_invalid`, `registry_duplicate_id`, `registry_duplicate_alias`, `registry_home_missing` | a registry line out of shape, an id or alias used twice, a home that is not there |
 | `registry_entry_is_subject` | a collection entry's name that a subject also holds |
+| `registry_name_masked` | a subject's or a collection entry's id, name or alias that reads as a sign-in value or holds `[REDACTED]` (section 2) |
 | `board_leaves_stale`, `branch_list_stale` | a `## Leaves` or `## Branches` list that misses or names a page |
 | `current_state_untagged`, `current_state_stale` | a current-state line without its date and source, or with a source changed since, gone, or (an entry source) moved to another place (section 5) |
 | `reference_stale` | a code-span path to a forest page or folder that is not there and is not marked `` (archived)`` |

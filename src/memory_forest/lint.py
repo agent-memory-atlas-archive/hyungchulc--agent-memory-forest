@@ -646,6 +646,8 @@ _TABLE: Final[tuple[LintCode, ...]] = (
              machine_page, False),
     LintCode("registry_line_invalid", VIOLATION, "a registry line keeps the shape of section 2",
              _registry_code("registry_line_invalid"), False),
+    LintCode("registry_name_masked", VIOLATION, "a name says who or what; one that reads as a sign-in value or "
+             "holds a masked one is no name", _registry_code("registry_name_masked"), False),
     LintCode("registry_duplicate_id", VIOLATION, "one id names one subject", _registry_code("registry_duplicate_id"),
              False),
     LintCode("registry_duplicate_alias", VIOLATION, "an alias belongs to one subject",

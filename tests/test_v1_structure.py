@@ -136,6 +136,15 @@ class StructureTests(CheckForestTestCase):
             ("up_link_missing", OWNER_LEAF),
         ])
 
+    def test_a_redaction_mark_in_doubled_brackets_is_no_link(self) -> None:
+        root = self.workshop()
+        self.edit(root, TREE_PAGE, "The bicycle workshop.",
+                  "The bicycle workshop. The shed's door code: [[REDACTED]], the till's [[REDACTED_TOKEN]] "
+                  "and a [[redacted phone]].")
+        self.assertEqual(self.problems(root), [])
+        self.edit(root, TREE_PAGE, "door code: [[REDACTED]]", "door code: [[REDACTED|the code]]")
+        self.assertEqual(self.problems(root), [("wikilink_not_up", TREE_PAGE)])
+
 
 class CheckCommandTests(CheckForestTestCase):
     def test_the_synthetic_forest_passes_forest_check(self) -> None:

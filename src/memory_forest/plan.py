@@ -952,6 +952,9 @@ class Plan:
                     problems.add(("registry_duplicate_id", index, f"`{line.id}`"))
                     continue
                 seen[line.id] = index
+                reason = registry.masked_name_problem((line.id, line.name, *line.aliases), self.config)
+                if reason is not None:
+                    problems.add(("registry_name_masked", index, f"`{line.id}`: {reason}"))
                 subject = {"id": line.id, "type": line.type, "level": line.level, "home": line.home, "tree": tree}
                 reason = registry.home_problem(subject)
                 if reason is not None:
@@ -962,6 +965,9 @@ class Plan:
                     if name and names.setdefault(name, line.id) != line.id:
                         problems.add(("registry_duplicate_alias", index, f"`{name}` of `{line.id}` and `{names[name]}`"))
         for page, entry in self.entries():
+            reason = registry.masked_name_problem((entry.id, entry.name, *entry.aliases), self.config)
+            if reason is not None:
+                problems.add(("registry_name_masked", page, f"entry `{entry.id}`: {reason}"))
             for name in {registry.normalize_name(item) for item in (entry.id, entry.name, *entry.aliases)}:
                 holder = names.get(name)
                 if holder is not None and holder != entry.id:

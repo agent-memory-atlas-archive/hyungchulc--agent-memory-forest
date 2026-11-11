@@ -163,6 +163,12 @@ class ProblemTests(ForestTestCase):
             ("- `till-bot` — Till Bot · agent · branch · `03 mtm/bakery/till-bot.md`", "registry_line_invalid"),
             ("- `rye-starter` — Rye Starter · topic · tree · `02 ltm/rye-starter_LTM.md`", "registry_line_invalid"),
             ("- rye starter, a sourdough culture", "registry_line_invalid"),
+            ("- `rye-starter` — Rye verification code 4821 · topic · leaf · `04 stm/bakery/recipes/rye-starter.md`",
+             "registry_name_masked"),
+            ("- `rye-starter` — Rye Starter · topic · leaf · `04 stm/bakery/recipes/rye-starter.md` · "
+             "aliases: door code 7395", "registry_name_masked"),
+            ("- `rye-starter` — Rye verification code [REDACTED] · topic · leaf · "
+             "`04 stm/bakery/recipes/rye-starter.md`", "registry_name_masked"),
         ]
         for number, (line, code) in enumerate(cases):
             with self.subTest(line=line):
@@ -181,6 +187,24 @@ class ProblemTests(ForestTestCase):
         built = registry.build(self.base / "forest")
         self.assertEqual(built.lookup("Millstone")["id"], "millstone-flour")
         self.assertEqual(built.lookup("Tam")["id"], "tamsin-orrow")
+
+    def test_a_name_that_reads_as_a_sign_in_value_is_reported_and_stays_registered(self) -> None:
+        files = self.with_bakery_subjects(
+            ["- `rye-starter` — Rye verification code 4821 · topic · leaf · `04 stm/bakery/recipes/rye-starter.md`"],
+            leaves=("rye-starter",),
+        )
+        page = files["04 stm/people/regulars/seen-once-2051-q1.md"]
+        files["04 stm/people/regulars/seen-once-2051-q1.md"] = page.replace("## Bram Eskell", "## Bram passcode 7395")
+        found = self.problems(files)
+        self.assertEqual([code for code, _detail in found], ["registry_name_masked", "registry_name_masked"])
+        for _code, detail in found:  # the reason shows the masked form, never the name
+            self.assertNotIn("4821", detail)
+            self.assertNotIn("7395", detail)
+            self.assertIn("[REDACTED]", detail)
+        built = registry.build(self.base / "forest")
+        self.assertEqual(built.subject("rye-starter")["home"], "04 stm/bakery/recipes/rye-starter.md")
+        entries = [entry["id"] for entry in built.subject("regulars-seen-once")["entries"]]
+        self.assertIn("bram-eskell", entries)
 
     def test_a_malformed_entry_is_reported(self) -> None:
         files = dict(BAKERY_FILES)

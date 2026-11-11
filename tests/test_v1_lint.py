@@ -145,6 +145,9 @@ class LintCodeTests(CheckForestTestCase):
         self.assertEqual(self.hit_paths(root, "registry_line_invalid"), [INDEX])
         self.assertEqual(self.hit_paths(root, "registry_home_missing"), [INDEX])
         self.assertEqual(self.hit_paths(root, "registry_entry_is_subject"), [COLLECTION])
+        self.assertEqual(self.hit_paths(root, "registry_name_masked"), [])
+        self.edit(root, INDEX, "— Stand Two · device", "— Stand passcode 7395 · device")
+        self.assertEqual(self.hit_paths(root, "registry_name_masked"), [INDEX])
 
     def test_current_state_untagged(self) -> None:
         root = self.workshop()

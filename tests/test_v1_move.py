@@ -140,6 +140,18 @@ class LeafAndRenameTests(MoveTestCase):
         self.assertEqual((changed["created"], changed["removed"]), ([], []))
         self.assertIn("— Millstone Mill · organization · leaf", self.text(root, "03 mtm/bakery/bakery_MTM.md"))
 
+    def test_a_rename_to_a_name_that_reads_as_a_sign_in_value_is_refused(self) -> None:
+        root = self.forest()
+        before = snapshot(root)
+        with self.assertRaises(MemoryForestError) as raised:
+            move.execute(root, "rename", target="millstone-flour", name="Millstone verification code 4821", today=TODAY)
+        self.assertEqual(raised.exception.code, "plan_check_failed")
+        problems = raised.exception.details["problems"]
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("registry_name_masked: 03 mtm/bakery/bakery_MTM.md: "), problems)
+        self.assertNotIn("4821", problems[0])  # the reason shows the masked form
+        self.assertEqual(snapshot(root), before)
+
 
 class LevelTests(MoveTestCase):
     def test_promote_a_leaf_subject_to_a_branch(self) -> None:
