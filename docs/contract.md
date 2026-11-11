@@ -829,8 +829,7 @@ How the lint holds a run:
   run's work and never blocks the run. `daily_section_unfiled` is measured on the daily record and never
   holds a run.
 - A `level_due` is carried out by the run that sees it (section 10).
-- Derived lists (a board's `## Leaves` with their dates, its `## Pointers`, a tree page's and an index's
-  `## Branches`) are brought up to the pages on disk by `forest check --sync` before the lint runs.
+- The derived lists are brought up to the pages before the lint runs (section 9, `forest check --sync`).
 
 ## 9. Tools
 
@@ -883,8 +882,12 @@ below may still change while the code is ported; the design's milestones say whe
 - **`forest check [NAME …]`** runs every registered check, or the ones it names: the structure of the
   pages, the derived lists against the pages, the pointers, the agents' lanes and ids, the levels due and
   the categories over their limit. It prints one line per problem with its code and its path and exits 1
-  when there is one. `forest check --sync` first brings the derived lists up to the pages under the writer
-  lock, then runs the same checks. A forest that `forest check` calls clean has no lint hit of the codes
+  when there is one. `forest check --sync` first brings the derived lists up to the pages on disk under
+  the writer lock, then runs the same checks. The derived lists are a board's `## Leaves` with their dates
+  and its `## Pointers`, a tree page's and an index's `## Branches`, and the root index's `## Trees` and
+  `## Agents`. A sync keeps a line's hand-written description, makes its `(updated …)` date follow the
+  page, drops a line whose page is gone and a second line for the same page, and adds a missing line with
+  a description taken from the page. A forest that `forest check` calls clean has no lint hit of the codes
   the two share. **`forest lint`** checks the rules (section 8).
 - **`forest timeline`**, **`forest search`**, **`forest read`** and **`forest mcp`** find things (design,
   sections 9 and 10).

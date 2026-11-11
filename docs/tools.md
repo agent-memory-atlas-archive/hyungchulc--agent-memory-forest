@@ -215,11 +215,9 @@ path and its code; it exits 1 when there is one.
 | `levels` | `level_due`: what `forest levels apply` would carry out |
 | `categories` | `category_too_large`: a category branch over `limits.category_max_leaves` |
 
-The derived lists are the `## Leaves` and `## Pointers` of each board, the `## Branches` of each tree page
-and tree index, and the `## Trees` and `## Agents` of the root index. `forest check --sync` first brings
-them up to the pages under the writer lock, then runs the same checks. A line's hand-written description
-is kept, its `(updated …)` date follows the page, a line whose page is gone is dropped, a second line for
-the same page is dropped, and a missing line is added with a description taken from the page.
+`forest check --sync` first brings the derived lists (each board's `## Leaves` and `## Pointers`, the
+`## Branches` of tree pages and indexes, the root index's `## Trees` and `## Agents`) up to the pages, then
+runs the same checks; what a sync keeps, drops and adds is in the [contract](contract.md), section 9.
 
 ```sh
 forest check

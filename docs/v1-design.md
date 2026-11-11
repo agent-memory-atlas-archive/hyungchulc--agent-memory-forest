@@ -89,7 +89,8 @@ and `archive/` can be deleted and rebuilt.
   split by period (year, quarter, month). A file name carries no date except that period.
 - A **board** (`03 mtm/<tree>/<branch>.md`) says what its subject is, its current state by kind, its
   rules, its leaves (`## Leaves`, derived from the folder) and its pointers (`## Pointers`, derived from
-  the `about:` of leaves elsewhere).
+  the `about:` of leaves elsewhere); `forest check --sync` brings the derived lists up to the pages
+  (contract, section 9).
 - A **tree page** (`02 ltm/<tree>_LTM.md`) holds the tree's scope, its durable patterns and rules, its
   current state, and one line per branch.
 - Above the leaves a line is carried up only when it is established: repeated evidence, or the owner's own
