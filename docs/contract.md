@@ -729,7 +729,8 @@ owner someone who likes that sport.
 - They live in the lanes, in run directories, or in the archive `.forest/archive/`: one compressed copy
   per archived version of a page, under the date it was archived and its old path (a page whose record is
   trimmed twice has two copies), each listed in the archive manifest with its old path, hash, size, reason
-  and, if any, the leaf it was folded into. Nothing is deleted. `forest archive show <old path>` prints
+  and, if any, the leaf it was folded into. Nothing is deleted: a copy that a rolled-back commit stored
+  stays, so the archive only grows. `forest archive show <old path>` prints
   the latest copy of a page, and `forest archive list <old path>` every copy.
 - What a machine repeats becomes facts in the subject's leaf:
   - a stay or a visit is one Timeline line per stay, with the place, the arrival, the departure or the last
@@ -840,6 +841,12 @@ below may still change while the code is ported; the design's milestones say whe
      pages' shared name without its period, its hyphens as spaces. For each year it takes the coarsest
      period whose page keeps within the cap: the year, else its quarters, else a passing quarter's
      months.
+  5. **All or nothing.** An operation, or a plan of many, is written whole or not at all, also when its
+     process is killed: before its first write it keeps an undo journal (`.forest/journal/commit.json`)
+     of every page's text before and the move log's length, and removes it only once the pages and the
+     move-log lines are written. A journal still standing is rolled back by the next writer to take the
+     writer lock, or by `forest recover`, and until then `forest check` reports it
+     (`commit_journal_standing`).
   `forest move resolve <old path>` follows the log through every operation to the present place, or to
   the archive entry and the leaf it was folded into, so evaluations and archives that hold old paths still
   find the page.

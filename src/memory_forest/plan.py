@@ -984,7 +984,18 @@ class Plan:
         }
 
     def commit(self, *, lock: LockToken | str | None = None) -> dict[str, Any]:
-        """Write the checked plan under the writer lock; any failure while writing puts every page back."""
+        """Write the checked plan under the writer lock: all of it, or the forest stays as it was.
+
+        Before the first write an undo journal (``journal``) records every
+        changed page's text before, the folders made and removed and the move
+        log's length. A failure in this process rolls the pages and the move
+        log back at once; a kill leaves the journal, which the next taker of
+        the writer lock rolls back. The journal is removed once the pages, the
+        read-back and the move-log append are done; the registry, which is
+        derived, is rebuilt after that.
+        """
+        from . import journal
+
         self.verify()
         report = self.report()
         changed = {path: text for path, text in self.after.items() if text != self.before.get(path)}
@@ -994,6 +1005,12 @@ class Plan:
                     refuse("page_changed_meanwhile", "A page changed on disk while the plan was made.", path=path)
             for item in self.archives:
                 archive.store(self.root, item.path, item.data, reason=item.reason, successor=item.successor, lock=held)
+            new_folders = self._folders_to_make(changed)
+            standing = [folder for folder in self.removed_dirs if layout.resolve(self.root, folder).is_dir()]
+            journal.write(self.root, label=" ; ".join(self.operations) or "forest move",
+                          before={path: self.before.get(path) for path in changed},
+                          made_dirs=new_folders, removed_dirs=standing)
+            moves_before = _file_size(layout.moves_path(self.root))
             made: list[Path] = []
             written: list[str] = []
             try:
@@ -1004,14 +1021,14 @@ class Plan:
                     if text is None:
                         continue
                     made.extend(_make_folders(self.root, str(PurePosixPath(path).parent)))
-                    atomic_write(target, encode(text))
                     written.append(path)
+                    atomic_write(target, encode(text))
                 for path, text in sorted(changed.items()):
                     if text is None:
                         target = layout.resolve(self.root, path)
+                        written.append(path)
                         if target.exists():
                             target.unlink()
-                        written.append(path)
                 for path, text in changed.items():
                     target = layout.resolve(self.root, path)
                     if text is None:
@@ -1019,16 +1036,38 @@ class Plan:
                             refuse("write_readback_failed", "A removed page is still there.", path=path)
                     elif target.read_bytes() != encode(text):
                         refuse("write_readback_failed", "A page did not read back as written.", path=path)
+                for folder in sorted(self.removed_dirs, key=len, reverse=True):
+                    _remove_empty_folder(self.root, folder)
+                movelog.append(self.root, self.moves, lock=held)
             except BaseException:
+                for folder in standing:
+                    _make_folders(self.root, folder)
                 self._roll_back(written, made)
+                _cut_file(layout.moves_path(self.root), moves_before)
+                journal.remove(self.root)
                 raise
-            for folder in sorted(self.removed_dirs, key=len, reverse=True):
-                _remove_empty_folder(self.root, folder)
-            movelog.append(self.root, self.moves, lock=held)
-            built = registry.build_and_write(self.root, config=self.config)
+            journal.remove(self.root)
+            try:
+                built = registry.build_and_write(self.root, config=self.config)
+                report["registry_problems"] = len(built.problems)
+            except (MemoryForestError, OSError) as exc:
+                report["registry_problems"] = None
+                self.note(f"registry_not_rebuilt: {exc.__class__.__name__}; `forest registry build` repairs it")
+                report["notes"] = list(self.notes)
         report["written"] = True
-        report["registry_problems"] = len(built.problems)
         return report
+
+    def _folders_to_make(self, changed: Mapping[str, str | None]) -> list[str]:
+        """The forest folders this commit creates (made folders and new pages' parents) that are not there now."""
+        wanted: list[str] = []
+        for folder in [*self.made_dirs, *(str(PurePosixPath(path).parent) for path, text in changed.items()
+                                          if text is not None)]:
+            parts = layout.normalize(folder).split("/")
+            for depth in range(1, len(parts) + 1):
+                relative = "/".join(parts[:depth])
+                if relative not in wanted and not layout.resolve(self.root, relative).exists():
+                    wanted.append(relative)
+        return wanted
 
     def disk_text_fresh(self, path: str) -> str | None:
         try:
@@ -1048,12 +1087,26 @@ class Plan:
                 if target.exists():
                     target.unlink()
             else:
+                _make_folders(self.root, str(PurePosixPath(path).parent))
                 atomic_write(target, encode(before))
         for folder in reversed(made):
             try:
                 folder.rmdir()
             except OSError:
                 pass
+
+
+def _file_size(path: Path) -> int:
+    return path.stat().st_size if path.is_file() else 0
+
+
+def _cut_file(path: Path, length: int) -> None:
+    """An append-only file cut back to ``length`` bytes (what a failed commit appended goes)."""
+    if path.is_file() and path.stat().st_size > length:
+        with open(path, "r+b") as handle:
+            handle.truncate(length)
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def _make_folders(root: Path, folder: str) -> list[Path]:

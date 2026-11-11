@@ -464,6 +464,22 @@ def cmd_archive_list(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recover(arguments: argparse.Namespace) -> int:
+    from . import journal
+    from .locking import writer_lock
+
+    root = forest_root(arguments)
+    standing = journal.read(root)
+    with writer_lock(root, label="forest recover"):  # taking the lock rolls a standing journal back
+        journal.roll_back(root)
+    if arguments.json:
+        _print_json({"ok": True, "rolled_back": standing is not None,
+                     "label": standing.get("label") if standing else None})
+    elif standing is None:
+        _print_lines(["no unfinished commit"])
+    return 0
+
+
 _LOCK_TOKEN = arg(
     "--lock-token",
     default=None,
@@ -477,6 +493,8 @@ FOREST_COMMANDS: list[ForestCommand] = [
     ForestCommand(("registry", "check"), cmd_registry_check, "List every registry problem; exit 1 when there is one."),
     ForestCommand(("registry", "show"), cmd_registry_show, "Show a subject or entry by id or by any name.",
                   (arg("name", help="an id, a name or an alias"),)),
+    ForestCommand(("recover",), cmd_recover, "Roll back a commit a stopped writer left unfinished (the next "
+                  "writer does it too)."),
     ForestCommand(("move", "resolve"), cmd_move_resolve, "Follow the move log from an old path.",
                   (arg("old_path", help="a forest path as it once was"),)),
     ForestCommand(("archive", "put"), cmd_archive_put, "Archive a page (with --keep: copy it and leave it).",

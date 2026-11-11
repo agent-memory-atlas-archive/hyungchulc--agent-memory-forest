@@ -40,7 +40,10 @@ are in the [contract](contract.md), section 3, Agent trees.
   list, every `## Update record` line. It then checks the planned forest (registry, homes, up-links,
   references, and that no Timeline line or collection entry was lost) and writes nothing if a check fails.
 - It writes under the forest's writer lock. A page that changed on disk since it was read stops the
-  write, and a failure while writing puts every page back.
+  write, and a failure while writing puts every page back. Before its first write it keeps an undo
+  journal, `.forest/journal/commit.json`; if its process is killed, the next command that takes the writer
+  lock rolls the half-written change back and says so in one line, and `forest recover` does the same by
+  hand.
 - It rewrites every up-link, list line, registry line, `about:`/`entity:` value and code-span path that
   named the old place. It leaves `## Update record` lines, quoted (`>`) lines and fenced blocks as they are.
 - It appends one line per moved path to `.forest/moves.jsonl` (a page, a collection entry or registry line
@@ -202,6 +205,7 @@ path and its code; it exits 1 when there is one.
 
 | Check | What it finds |
 | --- | --- |
+| `journal` | `commit_journal_standing`: a commit a killed process left half-written (`forest recover`) |
 | `structure` | page roles, frontmatter keys, sections and their order, up-links, leaves outside their subject's home, boards without folders, trees and agents without their pages or root lines |
 | `lists` | derived lists that differ from the pages: `board_leaves_stale`, `branch_list_stale` (also `## Trees` and `## Agents`), `board_pointers_stale` |
 | `pointers` | `board_pointer_stale`: a pointer to the board's own leaf, or a bare name instead of a path |

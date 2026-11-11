@@ -298,6 +298,11 @@ def hold_lock(
     os.fsync(handle.fileno())
     _HELD[str(path)] = (handle, lock_token)
     try:
+        if name == WRITER_LOCK:
+            # A commit journal found when the writer lock is taken is a dead writer's: roll it back first.
+            from . import journal
+
+            journal.recover_on_lock(root)
         yield lock_token
     finally:
         _HELD.pop(str(path), None)

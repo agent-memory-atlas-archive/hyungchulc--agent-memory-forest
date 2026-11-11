@@ -148,5 +148,5 @@ class CheckCommandTests(CheckForestTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout.decode().splitlines(), [f"{STAND}: leaf_entity_missing: no `entity:` in the frontmatter"])
         as_json = json.loads(forest("check", "--root", str(root), "--json").stdout)
-        self.assertEqual(as_json["checks"], ["structure", "lists", "pointers", "agents", "levels", "categories"])
+        self.assertEqual(as_json["checks"], ["journal", "structure", "lists", "pointers", "agents", "levels", "categories"])
         self.assertFalse(as_json["ok"])

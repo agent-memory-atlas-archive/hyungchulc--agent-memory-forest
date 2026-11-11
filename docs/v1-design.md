@@ -49,7 +49,7 @@ credentials. An embedding provider is optional; everything except vector search 
   05 daily/YYYY-MM-DD.md         the readable record of each day (a lane, not forest)
   06 istm/                       the raw record, append-only (a lane, not forest)
   .forest/                       derived and kept state: registry.json, moves.jsonl, archive/,
-                                 the search index, the time index, lint baselines, locks
+                                 the search index, the time index, lint baselines, locks, journal/
 ```
 
 The four numbered layers above the lanes are the forest. Everything under `.forest/` except `moves.jsonl`
@@ -153,7 +153,12 @@ A helper started for one task works as the agent that started it.
   registry line and code-span path that named the old place and appends one line per path that moves
   (a page, a collection entry or registry line as `<page>#<id>`, a folder moved whole) to
   `.forest/moves.jsonl`. `set-type` and `set` move nothing and log nothing; they write the change line on
-  the page they change. A page rewritten only because another moved gets no record line. `forest move resolve <old path>` follows the log to the present place.
+  the page they change. A page rewritten only because another moved gets no record line.
+- A commit is all or nothing even when its process dies: `plan.commit` writes an undo journal
+  (`.forest/journal/commit.json`: each changed page's text before, the folders made and removed, the move
+  log's length) durably before its first write and removes it after the move-log append; the registry is
+  rebuilt after that. A standing journal is a dead writer's: the next taker of the writer lock, or
+  `forest recover`, rolls it back, and `forest check` reports it until then. `forest move resolve <old path>` follows the log to the present place.
 - `.forest/archive/` holds one compressed copy per archived version of a page, under the date it was
   archived, with a manifest line (old path, hash, size, reason, the leaf it was folded into). Nothing is
   deleted. `forest archive show <old path>` prints the latest copy and `forest archive list` every copy.
@@ -264,7 +269,7 @@ provider = "none"               # none | openai-compatible
 | --- | --- | --- |
 | `config`, `layout` | settings, layer paths, slugs | `forest init` |
 | `model` | parses pages: frontmatter, sections, Timeline and record lines | |
-| `locking` | the forest writer lock and stage locks | |
+| `locking`, `journal` | the forest writer lock and stage locks; the undo journal of a commit | `forest recover` |
 | `registry` | registry lines, the compiled JSON, `agents`, `tree_kinds` | `forest registry` |
 | `movelog`, `move` | operations, reference rewriting, the move log | `forest move` |
 | `levels` | distinct days, due levels, apply | `forest levels` |

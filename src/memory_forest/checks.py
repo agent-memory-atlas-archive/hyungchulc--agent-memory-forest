@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import agents as forest_agents
 from . import collections as forest_collections
+from . import journal as forest_journal
 from . import levels as forest_levels
 from . import maps as forest_maps
 from . import validate as forest_validate
@@ -32,6 +33,10 @@ class NamedCheck:
     run: Callable[[Path, Config], list[Problem]]
     help: str
     order: int = 50
+
+
+def _journal(root: Path, config: Config) -> list[Problem]:
+    return forest_journal.problems(root)
 
 
 def _structure(root: Path, config: Config) -> list[Problem]:
@@ -61,6 +66,7 @@ def _agents(root: Path, config: Config) -> list[Problem]:
 
 # The one table of `forest check`: a module that adds a check appends one line here.
 FOREST_CHECKS: list[NamedCheck] = [
+    NamedCheck("journal", _journal, "an unfinished commit's journal (`forest recover`)", 5),
     NamedCheck("structure", _structure, "page roles, frontmatter, sections, links, homes, trees and agents", 10),
     NamedCheck("lists", _lists, "the derived lists (Leaves, Pointers, Branches, Trees, Agents) against the pages", 20),
     NamedCheck("pointers", _pointers, "pointers that name the board's own leaf or no path", 30),
