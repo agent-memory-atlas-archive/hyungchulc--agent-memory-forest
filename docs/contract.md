@@ -589,6 +589,10 @@ When the owner says that something is not to be remembered:
 1. A bank account number, an IBAN and a card number are written with the middle starred, the way a phone
    number is: the first three and the last four characters stay, so that the owner and the agents can
    tell which account it is and find the whole number in the message it came from.
+
+   A person's phone number is written the same way: the first three and the last four characters stay.
+   A line the settings name as one to keep whole (`numbers.keep_whole`: patterns for a company's or a
+   service's line) stays whole.
 2. A number is an account number because of what stands next to it: a bank's name, an account word in any
    language, an IBAN whose check digits hold, or a card number whose check digit holds. An order number, a
    parcel number, an invoice reference, a date and a bank's phone line stay whole.
@@ -730,7 +734,7 @@ owner someone who likes that sport.
 | `board_leaves_stale`, `branch_list_stale` | a `## Leaves` or `## Branches` list that misses or names a page |
 | `current_state_untagged`, `current_state_stale` | a current-state line without its date and source, or with a source changed since |
 | `reference_stale` | a code-span path to a forest page or folder that is not there and is not marked `` (archived)`` |
-| `account_number_in_full` | an account, IBAN, card or identity number written in full (section 4) |
+| `account_number_in_full` | an account, IBAN, card, identity or person's phone number written in full (section 4) |
 
 **Upkeep**, the rules the forest still breaks on many pages, each counted with examples and the rule that
 fixes it:
@@ -738,7 +742,8 @@ fixes it:
 | Code | Hit |
 | --- | --- |
 | `leaf_over_cap` | a leaf whose content is over `limits.leaf_cap_bytes` |
-| `leaf_record_over_cap` | a page that its record keeps over the cap while a trim would move older lines |
+| `record_over_budget` | a page whose record is over `limits.record_keep_bytes` while a trim would move lines |
+| `record_run_note` | a record line that is none of the three kinds of section 4 |
 | `leaf_kind_missing`, `leaf_about_missing`, `leaf_updated_missing` | a leaf without `kind:`, `about:` or `updated_at` (collection pages carry no `about:`) |
 | `leaf_lines_repeated` | a leaf holding three or more of the same lines, each of 40 characters or more, as another leaf of its subject: a split that copied instead of moving |
 | `board_pointers_stale` | a `## Pointers` list that differs from what the `about:` lines elsewhere make of it |

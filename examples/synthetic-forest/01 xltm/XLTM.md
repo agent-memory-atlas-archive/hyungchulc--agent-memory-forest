@@ -30,4 +30,4 @@ Placement rules:
 
 ## Update record
 
-- 2042-01-20 — `kiln-bot` and `ledger-bot` added under Agents: was "studio-hub only", now three agents. Why: Juno set up the two bots. Source: `02 ltm/kiln-bot_LTM.md`, `02 ltm/ledger-bot_LTM.md`.
+- 2042-01-20 — Agents: was "studio-hub only", now "studio-hub, kiln-bot and ledger-bot". Why: Juno set up the two bots. Source: `02 ltm/kiln-bot_LTM.md`, `02 ltm/ledger-bot_LTM.md`.
