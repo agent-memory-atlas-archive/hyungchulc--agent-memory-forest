@@ -38,6 +38,12 @@ the tree until the version 1 commands replace it.
   `forest archive check` verifies copies and blocks against the manifest
 - `forest move set-type` and `forest move set` write change lines; `retire-tree`, `fold-tree` and
   `recut-stream` write provenance lines
+- `forest repeats plan | apply | check`: `leaf_lines_repeated` counts fact lines only (a line in a fenced
+  block or a bare reference is none); within a subject a reference line lives in the subject's index leaf;
+  each other shared line goes to the home a decisions file names, or is judged once into
+  `.forest/repeats-judged.jsonl`, which the lint reads; a leaf left empty is archived into the index leaf
+  through the move tool; all of it as one checked plan under the undo journal, which now also cuts back the
+  appended ledger
 - `forest move recut-stream` cuts a month that still passes the cap by time, into runs of whole days (the
   first keeping the month's name, each later run named by its first day, a day past the cap into numbered
   pages of that day), each line on exactly one page and each title giving the days it holds; a

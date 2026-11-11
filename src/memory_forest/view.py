@@ -18,7 +18,7 @@ from . import layout
 from . import registry as forest_registry
 from .config import Config, load_config
 from .errors import MemoryForestError
-from .model import Page, parse_page
+from .model import Page, parse_page, split_line_ending
 from .safety import require_real_root
 
 
@@ -32,6 +32,33 @@ def page_line_numbers(page: Page) -> dict[str, int]:
     for section in page.sections:
         found.setdefault(section.heading.casefold(), number)
         number += 1 + len(section.lines)
+    return found
+
+
+def body_line_numbers(page: Page, skip: tuple[str, ...] = ()) -> list[tuple[int, str]]:
+    """(1-based line number, bare line) of a page's head and sections, outside fenced blocks, the headings
+    of its sections and the sections named in ``skip``."""
+    skipped = {name.casefold() for name in skip}
+    number = 1 + (page.frontmatter.render().count("\n") if page.frontmatter else 0)
+    found: list[tuple[int, str]] = []
+    fenced = False
+    for raw in page.head:
+        line = split_line_ending(raw)[0]
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced:
+            found.append((number, line))
+        number += 1
+    for section in page.sections:
+        number += 1
+        inside = section.heading.casefold() not in skipped
+        for raw in section.lines:
+            line = split_line_ending(raw)[0]
+            if line.lstrip().startswith(("```", "~~~")):
+                fenced = not fenced
+            elif inside and not fenced:
+                found.append((number, line))
+            number += 1
     return found
 
 

@@ -251,6 +251,41 @@ forest lint --baseline .forest/baselines/before.json
 forest lint --against .forest/baselines/before.json
 ```
 
+## `forest repeats`
+
+Two leaves of one subject that share fact lines (`leaf_lines_repeated`) hold a copy; `forest repeats` takes
+each line to its one home (contract, section 3, One home for each fact).
+
+| Command | What it does |
+| --- | --- |
+| `repeats plan [--decisions FILE]` | prints what `apply` would do, and each shared line that still waits for a reading, by subject, digest and line; writes nothing |
+| `repeats apply [--decisions FILE]` | removes reference lines that stand in the subject's index leaf, moves a period page's reference to a sibling period into it, takes each decided line to its home, archives the pages left empty with the index leaf as successor, and appends each `both` to the judged ledger |
+| `repeats check` | the count left; exits 1 while a run would change something or a line waits for a reading |
+
+A decisions file is a JSON list; `home` is the leaf that keeps the line, or `both` when the line is rightly
+in more than one leaf:
+
+```json
+[
+  {"subject": "deck-oven", "digest": "3f0c9a51d2e7b864", "home": "04 stm/bakery/deck-oven/history.md",
+   "reason": "the profile page is where the oven's size is kept"},
+  {"subject": "deck-oven", "digest": "8b21e07a4c6f9d13", "home": "both",
+   "reason": "Ilse wrote the safety rule on both pages on purpose"}
+]
+```
+
+```sh
+forest repeats plan
+# repeats: lines taken to their homes in 2 leaves
+#   04 stm/bakery/deck-oven/repairs-2051-01.md: 3 lines would be taken out, kept in 04 stm/bakery/deck-oven/history.md
+#   04 stm/bakery/deck-oven/fan.md: would be archived, every line standing in 04 stm/bakery/deck-oven/history.md
+#   judged: 0; waiting for a reading: 2; hits after: 2
+#   deck-oven 3f0c9a51d2e7b864: 04 stm/bakery/deck-oven/history.md:24, 04 stm/bakery/deck-oven/repairs.md:13
+forest repeats apply --decisions decisions.json
+forest repeats check
+# leaf_lines_repeated: 0 hits; 0 lines a run takes out; 0 pages it folds; 0 lines wait for a reading
+```
+
 ## `forest record`
 
 `record size PATH …` prints a page's content and record bytes, its record lines by kind and what is due;

@@ -21,7 +21,6 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
-from itertools import combinations
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
@@ -30,6 +29,7 @@ from . import layout
 from . import movelog
 from . import numbers as forest_numbers
 from . import record as forest_record
+from . import repeats as forest_repeats
 from .config import Config
 from .errors import MemoryForestError
 from .locking import atomic_write
@@ -41,7 +41,7 @@ from .model import (
     split_line_ending,
 )
 from .registry import COLLECTION_TYPE, LEAF_KINDS, Problem, about_ids, parse_collection_page
-from .view import ForestView, page_line_numbers, section_start, updated_date
+from .view import ForestView, body_line_numbers, page_line_numbers, section_start, updated_date
 
 
 VIOLATION: Final[str] = "violation"
@@ -51,8 +51,6 @@ CLASSES: Final[tuple[str, ...]] = (VIOLATION, UPKEEP, DUE)
 BASELINE_SCHEMA: Final[str] = "memory-forest-lint-baseline/1"
 REPORT_SCHEMA: Final[str] = "memory-forest-lint/1"
 UPKEEP_EXAMPLES: Final[int] = 5
-# A line held by more leaves of one subject than this is a form line, not a copied fact.
-REPEAT_MAX_LEAVES: Final[int] = 6
 # Exit codes a stage acts on.
 EXIT_CLEAN: Final[int] = 0
 EXIT_RUN_MUST_FIX: Final[int] = 1
@@ -145,29 +143,7 @@ def _section_lines(forest: ForestView, path: str, name: str) -> list[tuple[int, 
 
 def _body_lines(forest: ForestView, path: str, *, skip: Iterable[str] = (RECORD_SECTION,)) -> list[tuple[int, str]]:
     """(line number, bare line) of a page's head and sections, outside fenced blocks and the named sections."""
-    page = forest.page(path)
-    skipped = {name.casefold() for name in skip}
-    number = 1 + (page.frontmatter.render().count("\n") if page.frontmatter else 0)
-    found: list[tuple[int, str]] = []
-    fenced = False
-    for raw in page.head:
-        line = split_line_ending(raw)[0]
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-        elif not fenced:
-            found.append((number, line))
-        number += 1
-    for section in page.sections:
-        number += 1
-        inside = section.heading.casefold() not in skipped
-        for raw in section.lines:
-            line = split_line_ending(raw)[0]
-            if line.lstrip().startswith(("```", "~~~")):
-                fenced = not fenced
-            elif inside and not fenced:
-                found.append((number, line))
-            number += 1
-    return found
+    return body_line_numbers(forest.page(path), tuple(skip))
 
 
 def _leaf_pages(forest: ForestView) -> list[str]:
@@ -491,35 +467,26 @@ def leaf_about_missing(forest: ForestView) -> list[Hit]:
     ]
 
 
-def _fact_lines(forest: ForestView, path: str) -> set[str]:
-    minimum = forest.config.limits.repeat_min_chars
-    lines = set()
-    for _number, line in _body_lines(forest, path, skip=(RECORD_SECTION, "Links")):
-        folded = " ".join(line.split())
-        if len(folded) >= minimum and not folded.startswith("#"):
-            lines.add(folded)
-    return lines
-
-
 def leaf_lines_repeated(forest: ForestView) -> list[Hit]:
-    """A leaf sharing ``limits.repeat_min_lines`` or more long lines with another leaf of its subject."""
+    """A leaf sharing ``limits.repeat_min_lines`` or more fact lines with another leaf of its subject; a line
+    the judged ledger holds for the subject does not count (``repeats``)."""
     by_subject: dict[str, list[str]] = defaultdict(list)
     for path in forest.leaves:
         entity = forest.page(path).field("entity").strip()
         if entity:
             by_subject[entity].append(path)
     found = []
-    least = forest.config.limits.repeat_min_lines
-    for paths in by_subject.values():
+    limits = forest.config.limits
+    judged = forest_repeats.judged(forest.root)
+    for subject, paths in by_subject.items():
         if len(paths) < 2:
             continue
-        lines = {path: _fact_lines(forest, path) for path in paths}
-        holders: Counter[str] = Counter(line for path in paths for line in lines[path])
-        for first, second in combinations(sorted(paths), 2):
-            shared = [line for line in lines[first] & lines[second] if holders[line] <= REPEAT_MAX_LEAVES]
-            if len(shared) >= least:
-                for path, other in ((first, second), (second, first)):
-                    found.append(_hit("leaf_lines_repeated", path, None, f"{len(shared)} lines are also in `{other}`"))
+        pairs, _lines = forest_repeats.shared_lines(subject, {path: forest.page(path) for path in paths},
+                                                    minimum=limits.repeat_min_chars, least=limits.repeat_min_lines,
+                                                    judged_lines=judged)
+        for first, second, count in pairs:
+            for path, other in ((first, second), (second, first)):
+                found.append(_hit("leaf_lines_repeated", path, None, f"{count} lines are also in `{other}`"))
     return found
 
 
@@ -666,8 +633,8 @@ _TABLE: Final[tuple[LintCode, ...]] = (
     LintCode("leaf_kind_missing", UPKEEP, "every leaf has `kind:`", _MISSING_KIND),
     LintCode("leaf_about_missing", UPKEEP, "every leaf but a collection page has `about:`", leaf_about_missing, False),
     LintCode("leaf_updated_missing", UPKEEP, "every leaf has `updated_at:`", _MISSING_UPDATED),
-    LintCode("leaf_lines_repeated", UPKEEP, "a split moves lines; replace a copy with a reference line",
-             leaf_lines_repeated, False),
+    LintCode("leaf_lines_repeated", UPKEEP, "a split moves lines; each fact line has one home "
+             "(`forest repeats apply`; a line rightly in two leaves is judged once)", leaf_lines_repeated, False),
     LintCode("board_pointers_stale", UPKEEP, "`## Pointers` is what the `about:` lines elsewhere make of it",
              supplied_later("board_pointers_stale")),
     LintCode("board_pointer_stale", UPKEEP, "a pointer names another branch's page by its path",

@@ -44,8 +44,9 @@ number, the setting that holds it is given with its default.
 - There are no summary leaves. A board's `## Leaves` is the list of its folder.
 - Only `.md` files live in the four layers, and no symlinks. Every file and folder name is a slug,
   `[a-z0-9][a-z0-9-]*`, apart from the fixed names `XLTM.md`, `<tree>_LTM.md` and `<tree>_MTM.md`.
-- `.forest/` holds derived and kept state (design, section 3). Everything in it except the move log and the
-  archive can be deleted and rebuilt.
+- `.forest/` holds derived and kept state (design, section 3). Everything in it except the move log, the
+  archive and the judged ledger of repeated lines (section 3, One home for each fact) can be deleted and
+  rebuilt.
 
 ## 2. Subjects and the registry
 
@@ -259,6 +260,11 @@ The levels, with the defaults of the `[levels]` settings:
 
 3. A period page (`-2041`, `-2042-q2`, `-2042-05`) holds only its own period. A fact of another period
    lives on that period's page or in its subject's leaf.
+   Within one subject, a fact recorded elsewhere has one reference line, in the subject's **index leaf**:
+   the leaf whose reference lines name the most distinct pages (ties: a page without a period suffix
+   first, then a `kind: profile` page, then the shorter path). The subject's other leaves carry no copy of
+   it, and a period page carries none to a sibling period of its stream. A reference line never has its
+   home in the page it names.
 4. Two separate events of the same kind are kept apart, each named by its date: two kiln repairs in
    different months are "the March repair" and "the May repair", each with its own lines, never one
    merged account.
@@ -268,7 +274,15 @@ The levels, with the defaults of the `[levels]` settings:
 6. Each fact that quoted material carries also has a plain-words line in the leaf of the subject the fact
    is about: beside the quote when that is the same leaf, otherwise with the quoting leaf's path and the
    occasion.
-7. Something that only describes a subject (a dog's breed, a van's colour) is a line in that subject's
+7. **Repeated lines.** A **fact line** of a leaf is a line of its head or free sections (its `## Links`
+   and `## Update record` aside) of `limits.repeat_min_chars` (40) characters or more that is neither inside
+   a fenced block (a document kept as written) nor a bare reference (a list item that is nothing but code
+   spans, links or URLs). Two leaves of one subject that share fact lines hold a copy (`leaf_lines_repeated`,
+   section 8): each line goes to its one home, by code for reference lines and by a reading for the rest. A
+   line that a reading finds rightly held by more than one leaf is judged once, in the judged ledger
+   `.forest/repeats-judged.jsonl` (one row per subject and line digest, kept state like the move log),
+   and no longer counts. `forest repeats` does this (section 9).
+8. Something that only describes a subject (a dog's breed, a van's colour) is a line in that subject's
    leaf. The owner's own past told in passing (a town they grew up in, a team they played on) is a line
    where that part of their life is kept, not only inside the topic it came up in. What one person calls
    another, or says the other is like, is a line in the described person's leaf, with who said it.
@@ -810,7 +824,7 @@ fixes it:
 | `record_over_budget` | a page whose record is over `limits.record_keep_bytes` while a trim would move lines |
 | `record_run_note` | a record line that is none of the three kinds of section 4 |
 | `leaf_kind_missing`, `leaf_about_missing`, `leaf_updated_missing` | a leaf without `kind:`, `about:` or `updated_at` (collection pages carry no `about:`) |
-| `leaf_lines_repeated` | a leaf holding three or more of the same lines, each of 40 characters or more, as another leaf of its subject: a split that copied instead of moving |
+| `leaf_lines_repeated` | a leaf holding `limits.repeat_min_lines` (3) or more of the same fact lines (section 3, One home for each fact) as another leaf of its subject: a split that copied instead of moving; a line the judged ledger holds for the subject does not count |
 | `board_pointers_stale` | a `## Pointers` list that differs from what the `about:` lines elsewhere make of it |
 | `board_pointer_stale` | a pointer to the board's own leaf, or a bare name instead of a path |
 | `board_entity_missing` | a subject's board without `entity:` |
@@ -888,6 +902,18 @@ below may still change while the code is ported; the design's milestones say whe
 - **`forest record size | kinds | trim | history`** and **`forest archive put | show | list | check`** keep
   the update records and the archive (section 4); `record history` prints a page's moved record lines,
   oldest first, and `archive list` names each row's kind, a whole-page copy or a record history block.
+- **`forest repeats plan | apply | check`** takes `leaf_lines_repeated` to zero (section 3, One home for
+  each fact). `apply` removes, from the subject's other leaves, each reference line that stands in its
+  index leaf, moves into the index leaf a period page's reference line to a sibling period, and takes each
+  other shared fact line to the home a decisions file names (`--decisions FILE`: per subject and line
+  digest, the leaf that keeps it or `both`, with the reason); a `both` is appended once to the judged
+  ledger. A leaf left with nothing but its title, description, headings, `## Links` and `## Update
+  record`, each of whose lines stands in the index leaf, is archived with the index leaf as its successor
+  through the move tool. It runs as one checked plan under the writer lock, the ledger rows inside the undo
+  journal: each removed line must stand in its home, and apart from the removed lines, the free sections
+  they empty and the one record line naming where they are kept, no byte of a changed page differs. `plan`
+  prints the same run without writing, with every line still waiting for a reading by subject, digest and
+  line; `check` exits 1 while a run would change something or a line waits.
 - **`forest registry build | find`** compiles the registry and finds a subject or a collection entry by any
   name or spelling.
 - **`forest check [NAME …]`** runs every registered check, or the ones it names: the structure of the

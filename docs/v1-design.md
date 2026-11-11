@@ -49,11 +49,13 @@ credentials. An embedding provider is optional; everything except vector search 
   05 daily/YYYY-MM-DD.md         the readable record of each day (a lane, not forest)
   06 istm/                       the raw record, append-only (a lane, not forest)
   .forest/                       derived and kept state: registry.json, moves.jsonl, archive/,
-                                 the search index, the time index, lint baselines, locks, journal/
+                                 repeats-judged.jsonl, the search index, the time index, lint
+                                 baselines, locks, journal/
 ```
 
-The four numbered layers above the lanes are the forest. Everything under `.forest/` except `moves.jsonl`
-and `archive/` can be deleted and rebuilt.
+The four numbered layers above the lanes are the forest. Everything under `.forest/` except `moves.jsonl`,
+`archive/` and `repeats-judged.jsonl` (the lines a reading judged rightly held by more than one leaf) can be
+deleted and rebuilt.
 
 ## 4. Subjects, the registry and levels
 
@@ -286,6 +288,7 @@ provider = "none"               # none | openai-compatible
 | `checks` | the one table of `forest check`'s checks | `forest check` |
 | `agents` | agents from the settings and the raw lanes, their problems, `readable_trees` | `forest levels` |
 | `lint` | the codes, baselines | `forest lint` |
+| `repeats` | fact lines, the index leaf, the judged ledger; repeated lines to their one home | `forest repeats` |
 | `view` | a read-only view of one forest that the checks share: settings, registry, pages read once | |
 | `cli_upkeep` | the record, numbers, check and lint commands | `forest record`, `forest numbers`, `forest check`, `forest lint` |
 | `timeline` | the time index and time phrases | `forest timeline` |

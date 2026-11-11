@@ -137,6 +137,7 @@ forest levels check                            # which subjects and agents are d
 forest levels apply                            # carry them out through the move tool, logged
 forest check --sync                            # bring derived lists up to the pages, then every check
 forest lint                                    # every rule with a shape, by code
+forest repeats check                           # fact lines two leaves of one subject share
 forest record kinds                            # the update records' lines by kind
 forest numbers check --all                     # account, card, identity and phone numbers in full
 

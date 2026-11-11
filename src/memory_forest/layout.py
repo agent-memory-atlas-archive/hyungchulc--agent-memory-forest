@@ -44,8 +44,10 @@ ARCHIVE_DIR: Final[str] = f"{STATE_DIR}/archive"
 LOCKS_DIR: Final[str] = f"{STATE_DIR}/locks"
 INDEX_DIR: Final[str] = f"{STATE_DIR}/index"
 BASELINES_DIR: Final[str] = f"{STATE_DIR}/baselines"
+# Lines judged rightly held by more than one leaf of a subject (contract, section 3, One home for each fact).
+REPEATS_JUDGED_FILE: Final[str] = f"{STATE_DIR}/repeats-judged.jsonl"
 # What in `.forest/` is kept, never rebuilt (design, section 3).
-KEPT_STATE: Final[tuple[str, ...]] = (MOVES_FILE, ARCHIVE_DIR)
+KEPT_STATE: Final[tuple[str, ...]] = (MOVES_FILE, ARCHIVE_DIR, REPEATS_JUDGED_FILE)
 
 SLUG_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9][a-z0-9-]*")
 COLLECTION_PREFIX: Final[str] = "seen-once-"

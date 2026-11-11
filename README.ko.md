@@ -135,6 +135,7 @@ forest levels check                            # 단계가 바뀔 때가 된 sub
 forest levels apply                            # 이동 도구로 실제로 옮기고 기록
 forest check --sync                            # 파생 목록을 페이지에 맞춘 뒤 모든 검사
 forest lint                                    # 모양이 있는 모든 규칙을 code로 검사
+forest repeats check                           # 한 subject의 두 leaf가 함께 가진 사실 줄
 forest record kinds                            # update record의 줄을 종류별로
 forest numbers check --all                     # 가리지 않고 다 적힌 계좌·카드·신분증·전화번호
 

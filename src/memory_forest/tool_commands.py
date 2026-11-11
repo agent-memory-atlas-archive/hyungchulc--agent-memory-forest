@@ -1,4 +1,4 @@
-"""The ``forest`` subcommands that move things: ``move …``, ``levels …`` and ``collections …``.
+"""The ``forest`` subcommands that move things: ``move …``, ``levels …``, ``collections …`` and ``repeats …``.
 
 Each writing command takes ``--dry-run`` (print the plan as JSON, write
 nothing), ``--why`` (the reason its move-log and record lines give) and
@@ -13,12 +13,15 @@ from typing import Any
 from . import collections as forest_collections
 from . import levels as forest_levels
 from . import move as forest_move
+from . import repeats as forest_repeats
 from .cli import ForestCommand, _print_json, _print_lines, arg, forest_root
 
 _DRY = arg("--dry-run", action="store_true", help="print the plan as JSON and write nothing")
 _WHY = arg("--why", default=None, help="the reason the move log and record lines give")
 _LOCK = arg("--lock-token", default=None, help="the writer lock token of a caller that already holds the lock")
 _WRITING = (_DRY, _WHY, _LOCK)
+_DECISIONS = arg("--decisions", default=None, metavar="FILE",
+                 help="a JSON list of {subject, digest, home, reason}: the leaf that keeps a line, or `both`")
 
 
 def _report(arguments: argparse.Namespace, result: dict[str, Any]) -> int:
@@ -75,6 +78,45 @@ def cmd_levels_apply(arguments: argparse.Namespace) -> int:
                   for item in result["refused"]]
         _print_lines(lines or ["nothing is due"])
     return 1 if result["refused"] else 0
+
+
+def cmd_repeats_apply(arguments: argparse.Namespace) -> int:
+    decisions = forest_repeats.read_decisions(arguments.decisions)
+    result = forest_repeats.execute(forest_root(arguments), decisions, dry_run=arguments.dry_run,
+                                    lock=getattr(arguments, "lock_token", None), why=arguments.why)
+    if arguments.json:
+        _print_json({"ok": True, **result})
+        return 0
+    done = result.get("result") or {}
+    verb = "would be " if arguments.dry_run else ""
+    lines = [f"{' ; '.join(result.get('operations') or ['nothing to do'])}"]
+    for path, items in (done.get("removed") or {}).items():
+        homes = sorted({item["home"] for item in items})
+        lines.append(f"  {path}: {len(items)} lines {verb}taken out, kept in {', '.join(homes)}")
+    for path, index in (done.get("folded") or {}).items():
+        lines.append(f"  {path}: {verb}archived, every line standing in {index}")
+    for path, why in (done.get("shells_kept") or {}).items():
+        lines.append(f"  {path}: left with no fact line, kept ({why})")
+    lines.append(f"  judged: {len(done.get('judged') or [])}; waiting for a reading: "
+                 f"{len(done.get('undecided') or [])}; hits after: {done.get('hits_after')}")
+    lines += forest_repeats.problems_text({"hits": done.get("hits_after"), "pending": 0, "folds": 0,
+                                           "undecided": done.get("undecided") or []})[1:]
+    _print_lines(lines)
+    return 0
+
+
+def cmd_repeats_plan(arguments: argparse.Namespace) -> int:
+    arguments.dry_run = True
+    return cmd_repeats_apply(arguments)
+
+
+def cmd_repeats_check(arguments: argparse.Namespace) -> int:
+    result = forest_repeats.check(forest_root(arguments))
+    if arguments.json:
+        _print_json(result)
+    else:
+        _print_lines(forest_repeats.problems_text(result))
+    return 0 if result["ok"] and not result["undecided"] else 1
 
 
 def _collections(action: str):
@@ -162,5 +204,12 @@ TOOL_COMMANDS: list[ForestCommand] = [
     ForestCommand(("collections", "recut"), _collections("recut"), "Cut a collection page past the cap.",
                   (arg("target", metavar="page"), *_WRITING)),
     ForestCommand(("collections", "list"), cmd_collections_list, "List every collection page with its entries."),
+    ForestCommand(("repeats", "plan"), cmd_repeats_plan, "Print what `repeats apply` would take out, move, fold and "
+                  "judge, with the lines still waiting for a reading; write nothing.", (_DECISIONS, _WHY)),
+    ForestCommand(("repeats", "apply"), cmd_repeats_apply, "Take each repeated fact line to its one home, fold the "
+                  "pages left empty into the index leaf, and judge the lines the decisions keep in both.",
+                  (_DECISIONS, *_WRITING)),
+    ForestCommand(("repeats", "check"), cmd_repeats_check, "Count the repeated lines left; exit 1 while a run would "
+                  "still change something or a line waits for a reading."),
 ]
 

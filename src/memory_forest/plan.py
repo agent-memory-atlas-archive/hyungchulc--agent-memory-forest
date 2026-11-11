@@ -525,6 +525,7 @@ class Plan:
     expectations: list[Expectation] = field(default_factory=list)
     made_dirs: list[str] = field(default_factory=list)
     removed_dirs: list[str] = field(default_factory=list)
+    appends: dict[str, list[str]] = field(default_factory=dict)
     moved: dict[str, str] = field(default_factory=dict)
     archived_paths: set[str] = field(default_factory=set)
     rewritten: Counter[str] = field(default_factory=Counter)
@@ -726,6 +727,12 @@ class Plan:
 
     def expect(self, what: str, lines: Iterable[str], targets: Iterable[str], *, multiset: bool = False) -> None:
         self.expectations.append(Expectation(what, [line for line in lines if line.strip()], list(targets), multiset))
+
+    def append_state(self, relative: str, lines: Iterable[str]) -> None:
+        """Lines appended at commit to an append-only state file under ``.forest/`` (the judged ledger),
+        covered by the undo journal like the move log."""
+        layout.state_path(self.root, relative)
+        self.appends.setdefault(relative, []).extend(lines)
 
     def make_dir(self, folder: str) -> None:
         if folder not in self.made_dirs:
@@ -1022,6 +1029,7 @@ class Plan:
             "notes": list(self.notes),
             "operations": list(self.operations),
             "records": {path: list(lines) for path, lines in sorted(self.records.items())},
+            "appended": {path: len(lines) for path, lines in sorted(self.appends.items()) if lines},
             "references_rewritten": dict(sorted(self.rewritten.items())),
             "removed": pages("removed"),
             "today": self.today,
@@ -1051,9 +1059,11 @@ class Plan:
                 archive.store(self.root, item.path, item.data, reason=item.reason, successor=item.successor, lock=held)
             new_folders = self._folders_to_make(changed)
             standing = [folder for folder in self.removed_dirs if layout.resolve(self.root, folder).is_dir()]
+            appends_before = {relative: _file_size(layout.state_path(self.root, relative))
+                              for relative, lines in self.appends.items() if lines}
             journal.write(self.root, label=" ; ".join(self.operations) or "forest move",
                           before={path: self.before.get(path) for path in changed},
-                          made_dirs=new_folders, removed_dirs=standing)
+                          made_dirs=new_folders, removed_dirs=standing, appends=appends_before)
             moves_before = _file_size(layout.moves_path(self.root))
             made: list[Path] = []
             written: list[str] = []
@@ -1083,11 +1093,15 @@ class Plan:
                 for folder in sorted(self.removed_dirs, key=len, reverse=True):
                     _remove_empty_folder(self.root, folder)
                 movelog.append(self.root, self.moves, lock=held)
+                for relative in appends_before:
+                    _append_lines(layout.state_path(self.root, relative), self.appends[relative])
             except BaseException:
                 for folder in standing:
                     _make_folders(self.root, folder)
                 self._roll_back(written, made)
                 _cut_file(layout.moves_path(self.root), moves_before)
+                for relative, length in appends_before.items():
+                    _cut_file(layout.state_path(self.root, relative), length)
                 journal.remove(self.root)
                 raise
             journal.remove(self.root)
@@ -1142,6 +1156,18 @@ class Plan:
 
 def _file_size(path: Path) -> int:
     return path.stat().st_size if path.is_file() else 0
+
+
+def _append_lines(path: Path, lines: Iterable[str]) -> None:
+    """Lines appended durably to an append-only state file (made private when it is new)."""
+    data = "".join(f"{line}\n" for line in lines).encode("utf-8")
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.write(descriptor, data)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _cut_file(path: Path, length: int) -> None:

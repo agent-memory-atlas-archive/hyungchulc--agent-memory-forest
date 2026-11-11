@@ -4,16 +4,19 @@
 writer lock and before its first page write: an id, the label, every path the
 plan changes with its text before (null when the page did not exist), the
 folders it makes and removes, and the byte length of ``.forest/moves.jsonl``
-before the commit. When the pages, the read-back and the move-log append are
-done, the journal is removed durably; the registry is rebuilt after that.
+and of every other append-only state file the commit appends to (the judged
+ledger, ``.forest/repeats-judged.jsonl``) before the commit. When the pages,
+the read-back and the appends are done, the journal is removed durably; the
+registry is rebuilt after that.
 
 A journal that stands means a commit that did not finish. In the process that
 wrote it, the commit's own roll-back runs; after a kill, the next taker of the
 writer lock (whose holder the operating system released when it died) finds
 the journal and rolls it back before anything else: each page back to its
-text before, or removed; made folders removed when empty; the move log cut
-back to its length; the registry rebuilt; the journal removed. The roll-back
-is idempotent, so a roll-back that is itself interrupted is simply run again.
+text before, or removed; made folders removed when empty; the move log and
+the other appended state files cut back to their lengths; the registry
+rebuilt; the journal removed. The roll-back is idempotent, so a roll-back that
+is itself interrupted is simply run again.
 Archive copies the commit stored stay: the archive only grows.
 """
 
@@ -41,8 +44,9 @@ def journal_path(root: str | os.PathLike[str]) -> Path:
 
 
 def write(root: str | os.PathLike[str], *, label: str, before: dict[str, str | None], made_dirs: list[str],
-          removed_dirs: list[str]) -> str:
-    """Write the journal durably; returns its id."""
+          removed_dirs: list[str], appends: dict[str, int] | None = None) -> str:
+    """Write the journal durably; returns its id. ``appends`` gives the byte length before the commit of each
+    other append-only state file the commit appends to (the judged ledger)."""
     folder = Path(root) / JOURNAL_DIR
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     _fsync_directory(folder.parent)
@@ -56,6 +60,7 @@ def write(root: str | os.PathLike[str], *, label: str, before: dict[str, str | N
         "made_dirs": list(made_dirs),
         "removed_dirs": list(removed_dirs),
         "moves_bytes": moves.stat().st_size if moves.is_file() else 0,
+        "appends": dict(sorted((appends or {}).items())),
     }
     payload = json.dumps(data, ensure_ascii=True, sort_keys=True, indent=1).encode("ascii")
     atomic_write(journal_path(root), payload)
@@ -102,6 +107,15 @@ def _remove_empty(root: Path, folder: str) -> None:
             target.rmdir()
 
 
+def _cut_back(path: Path, length: int) -> None:
+    """An append-only file cut back to ``length`` bytes (what the unfinished commit appended goes)."""
+    if path.is_file() and path.stat().st_size > length:
+        with open(path, "r+b") as handle:
+            handle.truncate(length)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+
 def roll_back(root: str | os.PathLike[str]) -> dict[str, Any] | None:
     """Put the forest back as it was before the journal's commit; None when no journal stands.
 
@@ -131,13 +145,9 @@ def roll_back(root: str | os.PathLike[str]) -> dict[str, Any] | None:
             target.mkdir(mode=0o700, parents=True, exist_ok=True)
     for folder in sorted(data.get("made_dirs") or (), key=len, reverse=True):
         _remove_empty(safe_root, folder)
-    moves = layout.moves_path(safe_root)
-    length = int(data.get("moves_bytes") or 0)
-    if moves.is_file() and moves.stat().st_size > length:
-        with open(moves, "r+b") as handle:
-            handle.truncate(length)
-            handle.flush()
-            os.fsync(handle.fileno())
+    _cut_back(layout.moves_path(safe_root), int(data.get("moves_bytes") or 0))
+    for relative, length in sorted((data.get("appends") or {}).items()):
+        _cut_back(layout.state_path(safe_root, relative), int(length))
     from . import registry
 
     try:
