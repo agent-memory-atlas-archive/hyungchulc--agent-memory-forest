@@ -9,12 +9,21 @@
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
 
-Agent Memory Forest는 agent가 알게 된 것을 번호 붙은 몇 개의 폴더 안에 평범한 Markdown 페이지로 남깁니다.
-어떤 사실이 어디에 놓일지는 그 사실을 가져온 대화나 agent가 아니라 규칙이 정합니다. 사실이 바뀌면 바뀌기 전
-내용이 남고, 옮겨진 페이지는 예전 경로로 찾아도 찾아집니다. 페이지가 어디에 있어야 하는지, 어떤 주제가 자기
-페이지를 가질 만큼 자랐는지는 model이 아니라 코드가 판단합니다. 여러 agent가 하나의 forest를 함께 쓸 수도
-있습니다. 모두에게 필요한 것은 공유 tree에, 각 agent 자신의 것은 agent마다 하나씩 있는 tree에 두고,
-orchestrator는 전체를 읽습니다.
+Agent Memory Forest는 agent가 알게 된 것을 내 디스크의 번호 붙은 몇 개 폴더 안에 평범한 Markdown 페이지로
+남기는 Python 패키지이자 `forest` 명령입니다. 사실마다 집이 하나 있고, 그 집은 사실을 가져온 대화나 agent가
+아니라 규칙이 정합니다. 페이지가 어디에 있어야 하는지, 어떤 subject가 자기 페이지를 가질 만큼 자랐는지는
+model이 아니라 코드가 판단합니다. 여러 agent가 하나의 forest를 함께 씁니다. 모두에게 필요한 것은 공유 tree에,
+각 agent 자신의 것은 agent마다 하나씩 있는 tree에 두고, orchestrator는 전체를 읽습니다. agent의 tree는 저절로
+생깁니다. agent가 자기 raw lane에 첫 줄을 쓰면, 다음 관리 단계가 그 tree를 만듭니다.
+
+```sh
+ls "my-forest/06 istm/post-bot"            # agent가 여기에 첫 줄을 썼습니다
+# 2042-05-15.jsonl
+forest levels apply --root my-forest       # 명령 하나: 모든 subject의 단계를 정하는 바로 그 관리 단계
+# post-bot: none -> tree (agent; its raw lane holds a file)
+ls my-forest/"02 ltm"
+# post-bot_LTM.md   studio_LTM.md          # tree 페이지: 역할, 지시, 교훈, 현재 상태, branch
+```
 
 버전 1은 0.3 Memory Forest의 다음 세대입니다. 규칙은 모두 문서로 정리되어 있고, 코드는 세 단계에 걸쳐
 옮기는 중입니다. 자세한 내용은 [현재 상태](#현재-상태)를 보세요.
@@ -113,27 +122,29 @@ python -m pip install -e .
 ```
 
 버전 1의 명령은 [설계 문서의 package map](docs/v1-design.md#13-package-map)에 있는 `forest …` 명령들입니다.
-**아직 하나도 배포되지 않았습니다.** 아래 각 줄에는 그 명령이 들어올 milestone을 적어 두었습니다.
-milestone 1이 나오기 전까지 설치되는 명령은 0.3의 `memory-forest`이며, 그 문서는
-[`docs/archive-0.3/`](docs/archive-0.3/cli.md)에 있습니다.
+**버전 1.0.0은 아직 배포되지 않았습니다.** 아래 milestone 1 명령은 이 저장소에 들어 있고 함께 설치됩니다.
+milestone 2와 3의 명령은 아직 없습니다. 0.3의 `memory-forest` 명령([`docs/archive-0.3/`](docs/archive-0.3/cli.md)에
+설명)도 나란히 설치된 채로 남아 있습니다.
 
 ```sh
 # Milestone 1: 뼈대와 구조 도구
 forest init my-forest                          # 설정, 계층, root index
-forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"
+forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"   # 또는 lane이 만들게 둡니다
 forest registry build                          # 모든 ## Subjects 섹션을 컴파일
-forest levels check                            # 단계가 바뀔 때가 된 subject 목록
+forest levels check                            # 단계가 바뀔 때가 된 subject와 agent
 forest levels apply                            # 이동 도구로 실제로 옮기고 기록
-forest check                                   # 파생 목록을 페이지에 맞춤
+forest check --sync                            # 파생 목록을 페이지에 맞춘 뒤 모든 검사
 forest lint                                    # 모양이 있는 모든 규칙을 code로 검사
+forest record kinds                            # update record의 줄을 종류별로
+forest numbers check --all                     # 가리지 않고 다 적힌 계좌·카드·신분증·전화번호
 
-# Milestone 2: 찾기
+# Milestone 2: 찾기 (아직 없음)
 forest search "the big kiln"                   # registry 별칭 먼저, 그다음 단어 (설정하면 vector도)
 forest timeline query "yesterday evening"
 forest mcp                                     # 읽는 쪽의 범위 안에서 search, read, navigate, timeline
 
-# Milestone 3: 자라기
-forest stage …                                 # 원하는 model을 둘러싼 daily, 정리, 야간 관리 단계
+# Milestone 3: 자라기 (아직 없음)
+forest stage …                                 # 원하는 model을 둘러싼 daily, 정리, 관리 단계
 ```
 
 코드가 돌기 전에 forest가 어떻게 생겼는지 보고 싶다면 가상의 [synthetic forest](examples/synthetic-forest/README.md)를
@@ -142,7 +153,8 @@ forest stage …                                 # 원하는 model을 둘러싼 
 
 ## agent를 다섯 줄로
 
-1. agent(orchestrator, bot, 예약 실행 단계)는 첫날부터 tree인 subject입니다.
+1. agent(orchestrator, bot, 예약 실행 단계)는 첫날부터 tree인 subject입니다. 설정 항목이나 raw lane의 첫
+   파일만 있으면 되고, tree는 `forest levels apply`가 만듭니다.
 2. agent의 tree 페이지에는 역할, 고정 지시, 교훈, 현재 상태, branch가 있습니다.
 3. 기본값인 `subject-first`는 사실을 그 subject의 집에 두고 `noted by <agent>`라고 표시합니다.
    `agent-first`는 agent의 tree에 두고 `about:`으로 가리키다가, 두 agent가 같은 사실을 알게 되면 공유합니다.
@@ -159,6 +171,7 @@ forest stage …                                 # 원하는 model을 둘러싼 
 | [Contract](docs/contract.md) | forest가 지켜야 할 모든 규칙을 한 번씩 |
 | [Agents](docs/multi-agent.md) | agent tree, 두 가지 정리 방식, 읽기 범위, writer 하나 원칙 |
 | [Design](docs/v1-design.md) | 패키지: 디스크 구조, 설정, package map, milestone |
+| [Structure tools](docs/tools.md) | `forest move`, `levels`, `collections`, `check`, `lint`, `record`, `numbers`, 명령마다 예시 하나 |
 | [Comparison](docs/comparison.md) | Mem0, GBrain, LLM Wiki 아이디어, 일반 vector RAG와 무엇이 다른지 |
 | [Privacy and trust](docs/privacy-and-trust.md) | 무엇이 로컬에 남는지, 읽는 쪽이 무엇을 볼 수 있는지, 신뢰할 수 없는 데이터로서의 메모리 |
 | [Roadmap](docs/roadmap.md) | 세 milestone과 그 다음 |
@@ -172,10 +185,13 @@ forest stage …                                 # 원하는 model을 둘러싼 
 Agent Memory Forest는 alpha 단계이며, 버전 1.0.0은 아직 배포되지 않았습니다.
 
 - **작성 완료:** contract, 설계, concepts와 agents 안내서, contract를 따르는 가상의 synthetic forest.
-- **Milestone 1, 뼈대:** 구조 도구(registry, move, levels, collections, record, archive, 파생 목록, lint)와
-  가상 forest로 하는 테스트, 그리고 lint를 통과하는 synthetic forest.
-- **Milestone 2, 찾기:** 시간 index, 읽기 범위가 적용되는 검색, MCP server.
-- **Milestone 3, 자라기:** 단계별 프로그램과 prompt, 야간 관리.
+- **Milestone 1, 뼈대 (이 저장소에 있음, 미배포):** `forest` 구조 명령(registry, move, levels, collections,
+  history 파일을 쓰는 record, archive, `check`, `lint`, 번호 가리기, `recover`), lane이나 설정에서 만들어지는
+  agent tree, 모든 commit의 되돌리기 journal. 가상 forest로 하는 테스트가 있고, synthetic forest는 모든
+  검사를 통과합니다.
+- **Milestone 2, 찾기 (아직 없음):** 시간 index, 읽기 범위가 적용되는 검색, MCP server. 읽기 범위 규칙
+  자체(`agents.readable_trees`)는 milestone 1에 있습니다.
+- **Milestone 3, 자라기 (아직 없음):** 단계별 프로그램과 prompt, 야간 관리.
 
 0.3 코드(`memory-forest`)는 버전 1 명령이 대신할 때까지 저장소에 남아 있습니다. 평가하고 응용해 보기에는
 알맞지만, 사람이 지켜보지 않는 중요한 결정에 쓸 수준은 아닙니다.
