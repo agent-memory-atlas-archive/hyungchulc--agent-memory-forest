@@ -53,7 +53,8 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Callable, Iterable
+from bisect import bisect_left
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from typing import Any, Final
@@ -75,6 +76,10 @@ FIX_REASON: Final[str] = "credential-masking"
 MIN_BARE: Final[int] = 3
 MAX_BARE: Final[int] = 64
 MAX_QUOTED: Final[int] = 128
+# A value longer than this, after a secret name, a label or a scheme word, is masked whole, without the checks
+# that could leave it (code, a number, a key literal). A check reads at most this much of one value, so no
+# text makes a step read the same run once for each label in it.
+MAX_VALUE: Final[int] = 1024
 _ASSIGN_MARKS: Final[str] = ":=："
 _OPENERS: Final[str] = "\"'`([{<“‘«"
 _CLOSERS: Final[str] = "\"'`)]}>”’».,;:!?"
@@ -123,6 +128,42 @@ def rules_for(config: Config) -> _Rules:
 
 
 _VALUE_STOPS: Final = frozenset("\"')]},;<")
+# A bare value: up to white space, a stop, or a JSON escape of a quote or of white space. Whether a place stops
+# a value does not depend on where the value started, so every start inside a run that was read ends where that
+# run ends. ``_last_run`` keeps the last run read, so a text of starts with no stop between them (``a:a:a:...``)
+# is read once, not once for each start.
+_BARE_VALUE_RE: Final = re.compile(r"(?:[^\s\\" + re.escape("".join(sorted(_VALUE_STOPS))) + r"]|\\(?![\"'nrt]))*")
+_last_run: tuple[str, int, int] | None = None
+
+
+def _bare_end(text: str, start: int) -> int:
+    global _last_run
+    run = _last_run
+    if run is not None and run[0] is text and run[1] <= start <= run[2]:
+        return run[2]
+    end = _BARE_VALUE_RE.match(text, start).end()
+    _last_run = (text, start, end)
+    return end
+
+
+def _forget_last_run() -> None:
+    """Drop the text ``_bare_end`` keeps, so no read text stays in memory after a mask."""
+    global _last_run
+    _last_run = None
+
+
+class _Marks:
+    """Where the word ``REDACTED`` stands in one text, found once: a step asks of each value without reading it."""
+
+    def __init__(self, text: str) -> None:
+        self._at = [found.start() for found in re.finditer("REDACTED", text)]
+
+    def within(self, start: int, end: int) -> bool:
+        """``"REDACTED" in text[start:end]``."""
+        index = bisect_left(self._at, max(start, 0))
+        return index < len(self._at) and self._at[index] + len("REDACTED") <= end
+
+
 # A word starts after a character that is no part of a word, or after ``\n``, ``\r`` or ``\t`` written as a
 # JSON escape, so a line inside a JSON string is read as the same line on its own.
 _START: Final = r"(?:(?<![A-Za-z0-9_])|(?<=\\[nrt]))"
@@ -158,14 +199,7 @@ def value_at(text: str, start: int) -> tuple[int, int, int]:
         if close > body:
             return body, close, close + len(closing)
         start = body  # no partner: the rest is read as a bare value
-    end = start
-    while end < size:
-        character = text[end]
-        if character.isspace() or character in _VALUE_STOPS:
-            break
-        if character == "\\" and text[end + 1:end + 2] in ('"', "'", "n", "r", "t"):
-            break
-        end += 1
+    end = _bare_end(text, start)
     core_start, core_end = start, end
     while core_start < core_end and text[core_start] in _OPENERS:
         core_start += 1
@@ -198,6 +232,8 @@ def _counted(rules: _Rules, text: str, end: int) -> bool:
 # | case | rule |
 # | --- | --- |
 # | the name | the secret word is the last part of the name (``API_KEY``, ``db_password``, ``auth-token``, ``apiKey``, ``"key"``) |
+# | where a name starts | after a character that is no part of a word, a JSON ``\n``, ``\r``, ``\t``, or a hyphen (``-key=``, ``--api-key=``, ``.-key:``); it runs to the operator, at any length |
+# | a value longer than ``MAX_VALUE`` | masked whole, after a name, a label or a scheme word; no check reads more of a value |
 # | a name that holds the word elsewhere | not a secret name (``TOKEN_LIMIT``, ``PASSWORD_MIN_LENGTH``, ``key_count``, ``secret_santa``) |
 # | a value that reads as code | not masked, after a name or a label: an identifier followed by ``(``, ``[`` or ``.`` and a name; the words ``lambda``, ``None``, ``null``, ``true``, ``false``, ``undefined``; a type word (``str``, ``int``, ``string`` ...); a reference to the environment (``os.environ[...]``, ``process.env.X``, ``$X``, ``${X}``, ``%X%``); the name itself (``password=password``) |
 # | after a name that ends in ``key`` | masked only as a literal secret: quoted, or 8 characters or more with a digit, a mix of cases or a symbol |
@@ -309,16 +345,47 @@ _PART_TAG_RE: Final = re.compile(
     r"|quoted_selection|ide_selection)\b[^>]*>",
     re.IGNORECASE,
 )
-_NAMED_ASSIGN_RE: Final = re.compile(
-    r"""(?x)
-    (?:(?<![A-Za-z0-9_.\\])|(?<=\\[nrt]))
-    (?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)
-    (?:\\?["'])?
-    [ \t]*
-    (?::(?![:=])|=>|=(?![=>]))
-    [ \t]*
-    """
-)
+# An assignment: a name, an optional quote (also an escaped ``\"``), spaces, and ``:``, ``=`` or ``=>``. A name
+# starts after a character that is no part of a word (or after a JSON ``\n``, ``\r``, ``\t``), also after a
+# hyphen inside a run (``.-key:``, ``4821db-key=``); it runs to the operator. An assignment is found from its
+# operator back: the names of two operators never share a character, so each character is read a bounded number
+# of times (a pattern tried at each start read a run of hyphenated words once for each hyphen in it).
+_ASSIGN_OP_RE: Final = re.compile(r":(?![:=])|=>|=(?![=>])")
+_NAME_CHARS: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+_NAME_HEADS: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_")
+_NOT_BEFORE_NAME: Final = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.\\")
+
+
+def _name_start(text: str, place: int) -> bool:
+    if text[place] not in _NAME_HEADS:
+        return False
+    if place == 0 or text[place - 1] not in _NOT_BEFORE_NAME:
+        return True
+    return place >= 2 and text[place - 2] == "\\" and text[place - 1] in "nrt"
+
+
+def _named_assignments(text: str) -> Iterator[tuple[int, str, int]]:
+    """Each assignment in ``text``: where it starts, its name, and where its value starts."""
+    size = len(text)
+    for operator in _ASSIGN_OP_RE.finditer(text):
+        place = operator.start()
+        while place > 0 and text[place - 1] in " \t":
+            place -= 1
+        if place > 0 and text[place - 1] in "\"'":
+            place -= 1
+            if place > 0 and text[place - 1] == "\\":
+                place -= 1
+        name_end = place
+        while place > 0 and text[place - 1] in _NAME_CHARS:
+            place -= 1
+        while place < name_end and not _name_start(text, place):
+            place += 1
+        if place == name_end:
+            continue
+        value_start = operator.end()
+        while value_start < size and text[value_start] in " \t":
+            value_start += 1
+        yield place, text[place:name_end], value_start
 
 
 def _skip_tags(text: str, pos: int) -> int:
@@ -344,7 +411,7 @@ def _value_after(text: str, pos: int) -> tuple[int, int, int]:
 
 def _scheme_value(text: str, start: int, end: int, raw_end: int) -> tuple[int, int, int]:
     """A value that is only a scheme word is not the value. The token after it is."""
-    if text[start:end].casefold() not in _SCHEME_WORDS:
+    if end - start > _LONGEST_SCHEME or text[start:end].casefold() not in _SCHEME_WORDS:
         return start, end, raw_end
     pos = _skip_tags(text, raw_end)
     if pos >= len(text) or text[pos].isspace() or pos == raw_end:
@@ -352,11 +419,17 @@ def _scheme_value(text: str, start: int, end: int, raw_end: int) -> tuple[int, i
     return value_at(text, pos)
 
 
-def _step(rules: _Rules, text: str, after: re.Pattern[str], accept: Callable[[str], bool]) -> str:
-    """Each value that ``after`` finds right after a label word and ``accept`` takes, replaced by REDACTED."""
+def _step(
+    rules: _Rules, text: str, after: re.Pattern[str], accept: Callable[[str], bool], *, long_masked: bool
+) -> str:
+    """Each value that ``after`` finds right after a label word and ``accept`` takes, replaced by REDACTED.
+
+    A value longer than ``MAX_VALUE`` is masked whole when ``long_masked``, and left otherwise (the bare step
+    takes no value that long)."""
     assert rules.label is not None
     pieces: list[str] = []
     cursor = 0
+    marks = _Marks(text)
     for found in rules.label.finditer(text):
         if found.start() < cursor:
             continue
@@ -369,8 +442,15 @@ def _step(rules: _Rules, text: str, after: re.Pattern[str], accept: Callable[[st
         start, end, raw_end = _value_after(text, value_start)
         if after is rules.assign:
             start, end, raw_end = _scheme_value(text, start, end, raw_end)
+        if start >= end or marks.within(start - 1, raw_end + 1):
+            continue
+        if end - start > MAX_VALUE:
+            if long_masked:
+                pieces += [text[cursor:start], REDACTED]
+                cursor = end
+            continue
         core = text[start:end]
-        if not core or "REDACTED" in text[max(0, start - 1):raw_end + 1] or not accept(core):
+        if not accept(core):
             continue
         if _counted(rules, text, raw_end):
             continue
@@ -390,23 +470,27 @@ def _mask_named(text: str, *, guarded: bool = True) -> str:
         return text
     pieces: list[str] = []
     cursor = 0
-    for found in _NAMED_ASSIGN_RE.finditer(text):
-        if found.start() < cursor:
+    marks = _Marks(text)
+    for assigned_at, name, value_start in _named_assignments(text):
+        if assigned_at < cursor:
             continue
-        word = secret_word(found.group("name"))
+        word = secret_word(name)
         if word is None:
             continue
-        value_start = found.end()
         if value_start >= len(text) or text[value_start].isspace():
             continue
         start, end, raw_end = _value_after(text, value_start)
-        core = text[start:end]
-        if not core or "REDACTED" in text[max(0, start - 1):raw_end + 1]:
+        if start >= end or marks.within(start - 1, raw_end + 1):
             continue
+        if end - start > MAX_VALUE:
+            pieces += [text[cursor:start], REDACTED]
+            cursor = end
+            continue
+        core = text[start:end]
         if not any(character.isalnum() for character in core):
             continue
         quoted = _opened_by_quote(text, start)
-        if _code_value(text, start, end, name=found.group("name")):
+        if _code_value(text, start, end, name=name):
             continue
         if not _number_ok(core, word):
             continue
@@ -475,6 +559,7 @@ _KEY_RE: Final = re.compile(
     r")(?![A-Za-z0-9])"
 )
 _SCHEME_WORDS: Final = frozenset({"bearer", "basic", "token", "digest"})
+_LONGEST_SCHEME: Final = max(len(word) for word in _SCHEME_WORDS)
 _AUTH_VALUE_FLOOR: Final = 16
 # ``basic``, ``bearer`` and ``digest`` are a scheme only where a header can stand: after ``authorization``,
 # with ``:``, ``=``, quotes or white space between. ``Bearer`` alone is one before a mixed token.
@@ -570,6 +655,7 @@ def _mask_auth(text: str) -> str:
     """An ``Authorization`` header's value, and a mixed token after ``Bearer`` alone."""
     pieces: list[str] = []
     cursor = 0
+    marks = _Marks(text)
     for found in _AUTH_HEADER_RE.finditer(text):
         if found.start() < cursor:
             continue
@@ -584,9 +670,13 @@ def _mask_auth(text: str) -> str:
             cursor = end
             continue
         start, end, raw_end = value_at(text, pos)
-        core = text[start:end]
-        if not core or "REDACTED" in text[pos:raw_end]:
+        if start >= end or marks.within(pos, raw_end):
             continue
+        if end - start > MAX_VALUE:
+            pieces += [text[cursor:start], REDACTED]
+            cursor = end
+            continue
+        core = text[start:end]
         if separated:
             if not any(character.isalnum() for character in core):
                 continue
@@ -599,12 +689,18 @@ def _mask_auth(text: str) -> str:
         text = "".join(pieces)
     pieces = []
     cursor = 0
+    marks = _Marks(text)
     for found in _BEARER_RE.finditer(text):
         if found.start() < cursor:
             continue
         start, end, raw_end = value_at(text, found.end())
-        core = text[start:end]
-        if len(core) < _AUTH_VALUE_FLOOR or "REDACTED" in text[found.end():raw_end] or not _mixed_token(core):
+        if end - start < _AUTH_VALUE_FLOOR or marks.within(found.end(), raw_end):
+            continue
+        if end - start > MAX_VALUE:
+            pieces += [text[cursor:start], REDACTED]
+            cursor = end
+            continue
+        if not _mixed_token(text[start:end]):
             continue
         pieces += [text[cursor:start], REDACTED]
         cursor = end
@@ -619,12 +715,18 @@ def _mask_after_old_mark(text: str) -> str:
         return text
     pieces: list[str] = []
     cursor = 0
+    marks = _Marks(text)
     for found in _OLD_HEADER_RE.finditer(text):
         if found.start() < cursor:
             continue
         start, end, raw_end = value_at(text, found.end())
-        core = text[start:end]
-        if len(core) < _AUTH_VALUE_FLOOR or "REDACTED" in text[found.end():raw_end] or not _mixed_token(core):
+        if end - start < _AUTH_VALUE_FLOOR or marks.within(found.end(), raw_end):
+            continue
+        if end - start > MAX_VALUE:
+            pieces += [text[cursor:start], REDACTED]
+            cursor = end
+            continue
+        if not _mixed_token(text[start:end]):
             continue
         pieces += [text[cursor:start], REDACTED]
         cursor = end
@@ -709,9 +811,9 @@ def mask_labelled(text: str, *, config: Config, guarded: bool = True) -> str:
     if not holds_label:
         return text
     if not guarded or any(mark in text for mark in _ASSIGN_MARKS):
-        text = _step(rules, text, rules.assign, _assigned)
+        text = _step(rules, text, rules.assign, _assigned, long_masked=True)
     if not guarded or any(character.isdigit() for character in text):
-        text = _step(rules, text, rules.bare, _bare)
+        text = _step(rules, text, rules.bare, _bare, long_masked=False)
     return text
 
 
@@ -728,7 +830,10 @@ def mask(text: str, *, config: Config, ledger: Any = _LOOKUP) -> str:
 
     # A shape is masked first, whatever stands before it. The label step runs after, so a scheme
     # word is not taken for the token that follows it.
-    text = _mask_after_old_mark(mask_labelled(mask_shapes(text), config=config))
+    try:
+        text = _mask_after_old_mark(mask_labelled(mask_shapes(text), config=config))
+    finally:
+        _forget_last_run()
     known = credential_ledger.for_config(config) if ledger is _LOOKUP else ledger
     return credential_ledger.mask_known(text, known)
 

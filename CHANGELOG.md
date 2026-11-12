@@ -13,6 +13,11 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- Masking reads a text in time proportional to its length. An assignment is found from its operator back
+  (it finds what the earlier pattern found), each run is read for its end once, and a value longer than
+  1024 characters after a secret name, a label or a scheme word is masked whole instead of being checked
+  again for each label inside it. A run of `key-` or `token:os.x(` 40 kB long took seconds; it now takes
+  milliseconds, and the tests count the characters read.
 - A turn's id escapes its parts before they are joined, so two different raw ids never become one, and
   the day's id file is read by `\n` alone. No release shipped the earlier form, so nothing is migrated.
   Any failure after a line is in the lane reports how many turns it stored (`N turns, then failed`). A

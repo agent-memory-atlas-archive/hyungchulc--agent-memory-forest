@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -153,6 +155,16 @@ for _tag in TAGS:
     ROWS.append((f"<{_tag}>PIN: 4821</{_tag}>", "4821", f"{_tag} with a colon"))
     ROWS.append((f'<{_tag} name="kiln.txt">password: hunter22</{_tag}>', "hunter22", f"{_tag} with an attribute"))
 
+# A name of any length, a name joined by two hyphens, a command-line flag, and a value longer than MAX_VALUE.
+ROWS += [
+    ("Q" * 200 + "_API_KEY=Zq81xWv0", "Zq81xWv0", "a name of 200 characters"),
+    ("kiln-key--api-key=Zq81xWv0", "Zq81xWv0", "a name joined by two hyphens"),
+    ("glaze --api-key=Zq81xWv0 --fire", "Zq81xWv0", "a command-line flag"),
+    ("glaze -key=Zq81xWv0 -fire", "Zq81xWv0", "a flag with one hyphen"),
+    ("glaze\\n-api_token=Zq81xWv0", "Zq81xWv0", "a flag after a JSON escape"),
+    ("api_token=" + "os.x(" * 300, "os.x(" * 300, "a value longer than MAX_VALUE, masked whole"),
+]
+
 NEIGHBOURS = ("The kiln cooled overnight.", "PIN: 9036", "TOKEN_LIMIT=2048")
 
 
@@ -235,6 +247,93 @@ class MaskingTableTests(unittest.TestCase):
             self.assertEqual(shapes, credentials.mask_shapes(text, guarded=False), text)
             once = masked(text)
             self.assertEqual(masked(once), once, text)
+
+
+# The assignment as a pattern: what ``_named_assignments`` finds, defined the way it was before the scan. Tried at
+# each start, it reads a run of hyphenated words once for each hyphen in it; the scan reads it once.
+NAMED_ASSIGNMENT = re.compile(
+    r"""(?x)
+    (?:(?<![A-Za-z0-9_.\\])|(?<=\\[nrt]))
+    (?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)
+    (?:\\?["'])?
+    [ \t]*
+    (?::(?![:=])|=>|=(?![=>]))
+    [ \t]*
+    """
+)
+
+
+class _ReadCount(str):
+    """A text that counts the characters read from it, one for an index and the length for a slice."""
+
+    reads = 0
+
+    def __getitem__(self, key):
+        found = str.__getitem__(self, key)
+        self.reads += max(len(found), 1)
+        return found
+
+
+class _Counted:
+    """A stand-in for ``_BARE_VALUE_RE`` that adds up the characters each read consumes."""
+
+    def __init__(self, pattern, tally: list[int]) -> None:
+        self._pattern = pattern
+        self._tally = tally
+
+    def match(self, text: str, start: int):
+        found = self._pattern.match(text, start)
+        self._tally[0] += found.end() - start
+        return found
+
+
+# A run with no stop in it and a label every few characters: before the bounds, each label read the run to its
+# end again, so the work grew with the square of the length. Each run is also tried with a mark at its end, so
+# every value in it is left (it holds the mark) and no masking moves past the run.
+RUNS = ("token:os.x(", "api_token=os.x(", "Authorization: Bearer aB3", "Bearer aB3x", "key-", "--key", "\\npassword:a")
+
+
+class WorkTests(unittest.TestCase):
+    def test_an_assignment_is_found_where_the_pattern_finds_it(self) -> None:
+        generator = random.Random(20510303)
+        pieces = ["key", "KEY", "api_key", "db-key", "-", "--", ".", "_", "4821", "x9", ":", "::", "=", "==", "=>",
+                  ":=", " ", "\t", '"', "'", "\\", "\\n", "\\t", "\n", "a", "Q"]
+        texts = [text for text, _secret, _note in ROWS]
+        texts += ["".join(generator.choice(pieces) for _ in range(generator.randint(1, 18))) for _ in range(6000)]
+        for text in texts:
+            expected = [(found.start(), found.group("name"), found.end()) for found in NAMED_ASSIGNMENT.finditer(text)]
+            self.assertEqual(list(credentials._named_assignments(text)), expected, text)
+
+    def test_an_assignment_search_reads_each_character_a_bounded_number_of_times(self) -> None:
+        for unit in ("key-", "--key", "a.b-c_d", "\\nkey-", " -k", "key ="):
+            text = _ReadCount(unit * (20000 // len(unit)) + "=Zq81xWv0")
+            found = list(credentials._named_assignments(text))
+            with self.subTest(unit=unit):
+                self.assertTrue(found)
+                self.assertLessEqual(text.reads, 4 * len(text), "a run of a name was read again for each start in it")
+
+    def test_a_masking_reads_each_character_a_bounded_number_of_times(self) -> None:
+        for unit, tail in [(unit, tail) for unit in RUNS for tail in ("", R)]:
+            text = unit * (20000 // len(unit)) + tail
+            scanned = [0]
+            checked = [0]
+
+            def counted(function, size):
+                def wrapper(*args, **kwargs):
+                    checked[0] += size(*args)
+                    return function(*args, **kwargs)
+                return wrapper
+
+            with self.subTest(unit=unit, tail=tail), \
+                    mock.patch.object(credentials, "_BARE_VALUE_RE", _Counted(credentials._BARE_VALUE_RE, scanned)), \
+                    mock.patch.object(credentials, "_code_value", counted(credentials._code_value, lambda t, s, e: e - s)), \
+                    mock.patch.object(credentials, "_mixed_token", counted(credentials._mixed_token, len)), \
+                    mock.patch.object(credentials, "_assigned", counted(credentials._assigned, len)), \
+                    mock.patch.object(credentials, "_bare", counted(credentials._bare, len)):
+                masked(text)
+                # Linear: a bounded number of reads of each character, whatever the length.
+                self.assertLessEqual(scanned[0], 4 * len(text), "a value was read again for each label in it")
+                self.assertLessEqual(checked[0], 4 * len(text), "a value was checked again for each label in it")
 
 
 if __name__ == "__main__":

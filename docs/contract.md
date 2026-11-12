@@ -817,6 +817,9 @@ When the owner says that something is not to be remembered:
    value that opens with a quote ends at that quote's partner on the same line. `[REDACTED]` is one
    token: text that holds it is never masked into `[[REDACTED]]`. No rule depends on where a line stands
    in the text, and a line inside a JSON string (after `\n`) is read as the same line.
+   A value longer than 1024 characters after a secret name, a label or a scheme word is masked whole: the
+   checks that could leave a value (code, a number, a key literal) read no more of a value than that, so a
+   text with no stop and many labels in it is still read in time proportional to its length.
 
    **What is a secret after a name.** An assignment (`=`, `:` or `=>`) whose name ends in a secret word is
    a labelled value:
@@ -824,6 +827,7 @@ When the owner says that something is not to be remembered:
    | case | rule |
    | --- | --- |
    | the name | the secret word (`key`, `token`, `secret`, `password`, `passwd`, `passphrase`, `credential`) is the last part of the name: `API_KEY`, `db_password`, `auth-token`, `apiKey`, `"key"`, `key` |
+   | where a name starts | after a character that is no part of a word, after `\n`, `\r` or `\t` written as a JSON escape, or after a hyphen (`-key=`, a command-line flag `--api-key=`, `.-key:`); the name runs to the operator (`db-key--api-key` is one name) and may be of any length. An assignment is found from its operator back, so a long run of hyphenated words is read once |
    | the word elsewhere in the name | not a secret name: `TOKEN_LIMIT`, `PASSWORD_MIN_LENGTH`, `key_count`, `secret_santa` |
    | a value that reads as code | not masked, after a name or a label: an identifier followed by `(` or `[`; a dotted name whose head holds no digit (`os.environ`, `settings.db_password`, not `ya29.A0…`); `lambda`, `None`, `null`, `true`, `false`, `undefined`; a type word (`str`, `int`, `string` …); a reference to the environment (`$X`, `${X}`, `%X%`, also quoted); the name itself (`password=password`) |
    | after a name that ends in `key` | masked only when it reads as a literal secret: quoted, or 8 characters or more with a digit, a mix of cases or a symbol (`primary_key: id`, `foreign_key=user_id` stay; `key=hunter22`, `"key": "hunter22"` are masked) |
