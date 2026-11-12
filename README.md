@@ -128,9 +128,14 @@ The version 1 commands are the `forest …` commands of the [design's package ma
 the milestone 2 and 3 commands do not exist yet. The 0.3 `memory-forest` command (documented in
 [`docs/archive-0.3/`](docs/archive-0.3/cli.md)) stays installed beside them.
 
+`forest init` is the only command that creates a forest. The others use `--root` when you pass it, and
+otherwise the nearest folder at or above the current one that holds `forest.toml`. The block below creates
+a forest and enters it, so each following line finds that file.
+
 ```sh
 # Milestone 1: skeleton and structure tools
 forest init my-forest                          # settings, layers, root index
+cd my-forest                                   # this folder is the forest the commands below use
 forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"   # or let its lane make it
 forest registry build                          # compile every ## Subjects section
 forest levels check                            # which subjects and agents are due a new level

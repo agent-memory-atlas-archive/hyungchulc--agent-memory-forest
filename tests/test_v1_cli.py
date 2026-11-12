@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -12,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from v1_support import REPOSITORY_ROOT, SYNTHETIC_FOREST, ForestTestCase  # noqa: E402
 
 from memory_forest import cli  # noqa: E402
+from memory_forest.config import find_root  # noqa: E402
 
 LEAF = "04 stm/bakery/deck-oven/repairs.md"
 
@@ -147,6 +149,136 @@ class DispatchTests(unittest.TestCase):
             with self.subTest(command=command.words):
                 arguments = parser.parse_args([*command.words, *positional, *required, "--root", "/r", "--json"])
                 self.assertEqual((arguments.root, arguments.json), ("/r", True))
+
+
+def command_argv(command: cli.ForestCommand) -> list[str]:
+    """Enough arguments for the command to parse, so the forest-root rule is what answers."""
+    argv = list(command.words)
+    for argument in command.arguments:
+        flag = argument.flags[0]
+        if flag.startswith("-"):
+            if argument.options.get("required"):
+                argv.extend([flag, "x"])
+            continue
+        if argument.options.get("nargs") in ("?", "*"):
+            continue
+        argv.append("x")
+    if command.words == ("credentials", "judge"):
+        argv.append("--sign-in")
+    return argv
+
+
+def milestone_1_lines(readme: str) -> str:
+    """The Milestone 1 lines of the README quick-start shell block, comments included."""
+    blocks = re.findall(r"```sh\n(.*?)```", readme, re.DOTALL)
+    block = next((item for item in blocks if "forest init my-forest" in item and "Milestone 1" in item), None)
+    if block is None:
+        raise AssertionError("the quick start has no Milestone 1 shell block")
+    lines: list[str] = []
+    started = False
+    for line in block.splitlines():
+        if not started:
+            if re.search(r"Milestone 1\b", line):
+                started = True
+            continue
+        if re.search(r"Milestone 2\b", line):
+            break
+        lines.append(line)
+    if not any(line.lstrip().startswith(("forest ", "cd ")) for line in lines):
+        raise AssertionError("Milestone 1 has no commands")
+    return "\n".join(lines) + "\n"
+
+
+class ForestRootTests(ForestTestCase):
+    def test_every_command_but_init_refuses_an_empty_folder_and_writes_nothing(self) -> None:
+        creators = [command.words for command in cli.FOREST_COMMANDS if not command.uses_root]
+        self.assertEqual(creators, [("init",)])
+        parser = cli.build_forest_parser()
+        folder = self.base / "empty"
+        folder.mkdir()
+        self.assertIsNone(find_root(folder))
+        for command in cli.FOREST_COMMANDS:
+            if not command.uses_root:
+                continue
+            argv = command_argv(command)
+            with self.subTest(command=" ".join(command.words)):
+                try:
+                    parser.parse_args(argv)
+                except SystemExit as exc:
+                    self.fail(f"{argv} did not parse: {exc}")
+                result = forest(*argv, cwd=folder)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                text = (result.stderr + result.stdout).decode()
+                self.assertIn("forest.toml", text)
+                self.assertIn("forest init", text)
+                self.assertIn("--root", text)
+                self.assertEqual(list(folder.iterdir()), [])
+
+    def test_a_named_folder_without_settings_is_refused_and_left_empty(self) -> None:
+        folder = self.base / "named"
+        folder.mkdir()
+        result = forest("registry", "build", "--root", str(folder), cwd=folder)
+        self.assertNotEqual(result.returncode, 0)
+        text = result.stderr.decode()
+        self.assertIn("No forest.toml", text)
+        self.assertIn(f"forest init {folder}", text)
+        self.assertIn("--root", text)
+        self.assertEqual(list(folder.iterdir()), [])
+        as_json = forest("registry", "build", "--root", str(folder), "--json", cwd=folder)
+        self.assertNotEqual(as_json.returncode, 0)
+        self.assertEqual(json.loads(as_json.stdout)["error"]["code"], "no_forest")
+        self.assertEqual(list(folder.iterdir()), [])
+
+    def test_a_missing_root_is_still_not_found(self) -> None:
+        missing = self.base / "missing"
+        result = forest("registry", "build", "--root", str(missing))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"root_not_found", result.stderr)
+        self.assertFalse(missing.exists())
+
+    def test_an_explicit_root_wins_over_the_folder_the_command_is_in(self) -> None:
+        first = self.base / "first"
+        second = self.base / "second"
+        self.assertEqual(forest("init", str(first)).returncode, 0)
+        self.assertEqual(forest("init", str(second)).returncode, 0)
+        result = forest("registry", "build", "--root", str(second), cwd=first)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((second / ".forest" / "registry.json").is_file())
+        self.assertFalse((first / ".forest" / "registry.json").exists())
+
+    def test_the_readme_milestone_1_quick_start_runs(self) -> None:
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        script = milestone_1_lines(readme)
+        self.assertIn("forest init my-forest", script)
+        self.assertIn("\ncd my-forest", script)
+        self.assertNotIn("forest setup", script)
+        work = self.base / "quick-start"
+        work.mkdir()
+        bindir = work / "bin"
+        bindir.mkdir()
+        wrapper = bindir / "forest"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            "exec \"$FOREST_PYTHON\" -c "
+            "'from memory_forest.cli import forest_main; raise SystemExit(forest_main())' \"$@\"\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        env = dict(os.environ, PYTHONPATH=str(REPOSITORY_ROOT / "src"), FOREST_PYTHON=sys.executable)
+        env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+        result = subprocess.run(
+            ["/bin/sh", "-c", "set -e\n" + script],
+            cwd=work,
+            env=env,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode() + "\n" + result.stdout.decode())
+        created = work / "my-forest"
+        self.assertTrue((created / "forest.toml").is_file())
+        self.assertTrue((created / ".forest" / "registry.json").is_file())
+        self.assertTrue((created / "02 ltm" / "studio-hub_LTM.md").is_file())
+        self.assertFalse((work / ".forest").exists())
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from . import layout as forest_layout
 from . import credentials as forest_credentials
 from . import movelog as forest_movelog
 from . import registry as forest_registry
-from .config import DEFAULT_CONFIG, Config, find_root, load_config
+from .config import CONFIG_FILENAME, DEFAULT_CONFIG, Config, find_root, load_config
 from .core import audit_forest, doctor_forest, initialize_forest, validate_forest
 from .errors import MemoryForestError
 from .index import index_forest, route_index, search_index
@@ -308,8 +309,15 @@ def _emit(result: dict[str, Any], *, compact: bool) -> None:
 #
 # Each subcommand is one function `(arguments) -> exit code` and one line in
 # FOREST_COMMANDS: its words, the function, its help and its arguments. Every
-# command except `init` takes `--root` (default: the nearest folder above the
-# working directory that holds a forest.toml) and `--json`.
+# command except `init` takes `--root` and `--json`. The forest root is `--root`
+# when it is given, otherwise the nearest folder at or above the working
+# directory that holds forest.toml. `init` is the only command that creates a
+# forest. Any other command, when there is no such folder, stops before it
+# writes anything.
+
+_ROOT_HELP = (
+    "the forest root; when omitted, the nearest folder at or above the current one that holds forest.toml"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,13 +339,37 @@ class ForestCommand:
     uses_root: bool = True
 
 
+def _no_forest(root: str | None) -> MemoryForestError:
+    """What is missing, and the ``forest init`` or ``--root`` line that supplies it."""
+    if root is None:
+        message = (
+            "No forest.toml in this folder or any folder above it. "
+            "Create one with `forest init my-forest`, or name one with `forest --root my-forest`."
+        )
+    else:
+        message = (
+            f"No forest.toml in {root}. "
+            f"Create one with `forest init {root}`, or name a forest with `forest --root <folder>`."
+        )
+    return MemoryForestError("no_forest", message)
+
+
 def forest_root(arguments: argparse.Namespace) -> Path:
-    """The forest the command works on: ``--root``, else the nearest folder holding forest.toml."""
+    """``--root`` when given, else the nearest folder at or above the working directory with forest.toml.
+
+    A folder without that file is not a forest. ``init`` is the only command that creates one, and it does
+    not call this.
+    """
     chosen = getattr(arguments, "root", None)
     if chosen:
-        return require_real_root(chosen)
+        root = require_real_root(chosen)
+        if not (root / CONFIG_FILENAME).is_file():
+            raise _no_forest(shlex.quote(str(root)))
+        return root
     found = find_root(os.getcwd())
-    return require_real_root(found if found is not None else os.getcwd())
+    if found is None:
+        raise _no_forest(None)
+    return require_real_root(found)
 
 
 # The settings of the forest a `forest` command works on, so that everything it prints shows a sign-in
@@ -563,9 +595,9 @@ def build_forest_parser(commands: Sequence[ForestCommand] | None = None) -> argp
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print JSON")
     rooted = argparse.ArgumentParser(add_help=False, parents=[common])
-    rooted.add_argument("--root", default=argparse.SUPPRESS, help="the forest root")
+    rooted.add_argument("--root", default=argparse.SUPPRESS, help=_ROOT_HELP)
     parser.add_argument("--json", action="store_true", default=False, help="print JSON")
-    parser.add_argument("--root", default=None, help="the forest root")
+    parser.add_argument("--root", default=None, help=_ROOT_HELP)
     groups: dict[tuple[str, ...], Any] = {(): parser.add_subparsers(dest="command", required=True, metavar="COMMAND")}
     parsers: dict[tuple[str, ...], argparse.ArgumentParser] = {}
     for command in commands if commands is not None else FOREST_COMMANDS:
@@ -585,7 +617,7 @@ def build_forest_parser(commands: Sequence[ForestCommand] | None = None) -> argp
         )
         for argument in command.arguments:
             leaf.add_argument(*argument.flags, **argument.options)
-        leaf.set_defaults(_run=command.run)
+        leaf.set_defaults(_run=command.run, _uses_root=command.uses_root)
     return parser
 
 
@@ -601,8 +633,13 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
     parser = build_forest_parser()
     arguments = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     global _SHOWN_CONFIG
-    _SHOWN_CONFIG = _config_for_output(arguments)
+    _SHOWN_CONFIG = None
     try:
+        # Resolve the forest before the command runs, so a new command cannot write into a folder that
+        # is not one. `init` is the only command registered with uses_root false.
+        if getattr(arguments, "_uses_root", True):
+            forest_root(arguments)
+        _SHOWN_CONFIG = _config_for_output(arguments)
         return arguments._run(arguments)
     except MemoryForestError as exc:
         if arguments.json:

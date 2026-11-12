@@ -126,9 +126,14 @@ python -m pip install -e .
 milestone 2와 3의 명령은 아직 없습니다. 0.3의 `memory-forest` 명령([`docs/archive-0.3/`](docs/archive-0.3/cli.md)에
 설명)도 나란히 설치된 채로 남아 있습니다.
 
+`forest init`만 새 forest를 만듭니다. 다른 명령은 `--root`를 주면 그 폴더를 쓰고, 아니면 현재 폴더와 그
+위쪽에서 `forest.toml`이 있는 가장 가까운 폴더를 씁니다. 아래는 forest를 만든 뒤 그 폴더로 들어가서,
+이어지는 줄이 그 파일을 찾게 합니다.
+
 ```sh
 # Milestone 1: 뼈대와 구조 도구
 forest init my-forest                          # 설정, 계층, root index
+cd my-forest                                   # 아래 명령은 이 폴더의 forest를 씁니다
 forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"   # 또는 lane이 만들게 둡니다
 forest registry build                          # 모든 ## Subjects 섹션을 컴파일
 forest levels check                            # 단계가 바뀔 때가 된 subject와 agent

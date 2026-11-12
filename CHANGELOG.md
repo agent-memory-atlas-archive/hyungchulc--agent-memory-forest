@@ -130,6 +130,12 @@ the tree until the version 1 commands replace it.
   line naming what replaces it; the five 0.3 plan and receipt schemas stay in `docs/`, beside the 0.3 code
   that still uses them
 
+### Fixed
+
+- a `forest` command other than `init` takes the forest at `--root`, or the nearest folder at or above the
+  current one that holds `forest.toml`. With no such folder it stops, names `forest init` or `--root`, and
+  writes nothing. The quick start enters the new forest before the commands that run inside it
+
 ### Removed
 
 - the 0.3 synthetic example forest under `examples/synthetic-forest/` (kept in the history at `v0.3.0`;

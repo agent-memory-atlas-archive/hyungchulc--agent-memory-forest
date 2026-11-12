@@ -57,8 +57,10 @@ are in the [contract](contract.md), section 3, Agent trees.
   and references to it are marked ` (archived)`.
 - Common options: `--dry-run` prints the plan as JSON and writes nothing; `--why "…"` gives the reason the
   move log and the record lines carry; `--lock-token` lets a caller that already holds the writer lock run
-  it; `--json` prints the result as JSON; `--root` names the forest (by default the one above the current
-  folder).
+  it; `--json` prints the result as JSON; `--root` names the forest. When `--root` is omitted, the forest
+  is the nearest folder at or above the current one that holds `forest.toml`. `forest init` is the only
+  command that creates a forest. Any other command, when there is no such folder, stops with a message
+  and writes nothing.
 
 A refused command exits 2 and prints its error code (for example `target_exists` or
 `branch_holds_other_subjects`).
