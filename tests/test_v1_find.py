@@ -22,6 +22,7 @@ import urllib.request
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from io import StringIO
+from unittest import mock
 from pathlib import Path
 
 from memory_forest import embeddings, mcp, search, timeline
@@ -295,7 +296,7 @@ class IndexSearchTests(ForestTestCase):
         glaze = search.query(self.root, "글레이즈", reader="till-bot")
         self.assertIn("글레이즈", _texts(glaze))
         status = search.status(self.root)
-        self.assertEqual(status["schema"], "2")
+        self.assertEqual(status["schema"], search.SCHEMA)
         japanese = search.query(self.root, "釉薬", reader="till-bot")
         self.assertIn("釉薬", _texts(japanese))
         if "trigram" not in status["tokenizer"]:
@@ -1161,6 +1162,33 @@ class ReviewPathTests(ForestTestCase):
         self.assertIn("dusky", _cli(self, ["search", "dusky", "--as", "till-bot", "--json"])[1])
 
     def test_memory_log_does_not_copy_the_index_and_says_when_it_is_not_indexed(self) -> None:
+        index = self.root / ".forest" / "index.sqlite"
+        inode = index.stat().st_ino
+        parsed = {"n": 0}
+        original = search._turn_unit
+
+        def counted(*args, **kwargs):
+            parsed["n"] += 1
+            return original(*args, **kwargs)
+
+        lanes = []
+        with mock.patch.object(search, "_turn_unit", counted):
+            for number, text in enumerate(("the till logged a first crate", "the till logged a second crate"), 1):
+                parsed["n"] = 0
+                reply, _version = mcp.handle_message(
+                    self.root, "till-bot", _log_call(text), "stdio", "2025-11-25"
+                )
+                body = json.loads(reply["result"]["content"][0]["text"])
+                self.assertTrue(body["wrote"])
+                self.assertTrue(body["indexed"])
+                lanes.append(body["path"])
+                # One turn was written, so one line was parsed: the lane was not read again whole.
+                self.assertEqual(parsed["n"], 1, number)
+                # The update wrote into the published file; no copy was swapped in.
+                self.assertEqual(index.stat().st_ino, inode)
+        self.assertEqual(lanes[0], lanes[1])
+        self.assertFalse((self.root / ".forest" / "index.sqlite.building").exists())
+        self.assertIn("second crate", _cli(self, ["search", "second crate", "--as", "till-bot", "--json"])[1])
         with _stdio(self.root) as proc:
             _rpc(proc, _initialize("2025-11-25"))
             started = threading.Event()

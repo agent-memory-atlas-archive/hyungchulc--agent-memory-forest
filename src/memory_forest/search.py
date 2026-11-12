@@ -2,13 +2,21 @@
 
 ``.forest/index.sqlite`` is derived. Deleting it and running ``forest index
 build`` makes it again. One row is one page section, one collection entry, one
-marked block of a daily page, or one raw-lane turn. The build holds the
-``index`` lock and publishes the file by replacing it, so a reader opens the
-published file and never waits for a build.
+marked block of a daily page, or one raw-lane turn. A build or update holds
+the ``index`` lock and writes the published file in place, in one transaction,
+in WAL mode: a reader keeps the snapshot it opened and never waits for a
+writer. Nothing replaces or unlinks the file or its journal files.
 
 The stored text is the text a read shows: sign-in values masked, numbers
 starred. Words, the trigram index and vectors are built from that text, so a
-guess at a hidden value is not confirmed by a hit.
+guess at a hidden value is not confirmed by a hit. The metadata keeps the
+fingerprint of the masking it was built under (the settings, the ledger's
+judged values, the masking code's version); when the forest's fingerprint
+differs, every file is indexed again before a query is answered.
+
+A raw lane only grows: the index keeps the end of its last complete line and a
+hash of the bytes before it, and when those bytes are unchanged only the new
+complete lines are read. A half-written last line waits for its newline.
 
 Word search uses FTS5. Where this SQLite has the trigram tokenizer, a run of
 three or more characters is findable inside unspaced text, and a unicode61
@@ -36,13 +44,17 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import Iterable, Sequence
+import threading
+import time
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import embeddings, layout, registry as registry_mod
+from . import credential_ledger, embeddings, layout, registry as registry_mod
+from . import credentials as forest_credentials
 from .collections import owner_of
 from .config import Config, load_config
 from .credentials import shown as show_text
@@ -55,8 +67,15 @@ from .scope import Scope, for_reader
 
 
 INDEX_RELATIVE = f"{layout.STATE_DIR}/index.sqlite"
-SCHEMA = "2"
+SCHEMA = "3"
 LOCK_NAME = "index"
+# When the masking changed, a query waits this long for another build before it refuses to answer.
+MASKING_WAIT_SECONDS = 60.0
+# A reader never waits for a writer (WAL); this covers SQLite's own brief locks only.
+READER_TIMEOUT_SECONDS = 2.0
+WRITER_TIMEOUT_SECONDS = 5.0
+# Ids passed to one ``IN (...)``: below the 999 host parameters of an older stock SQLite build.
+IN_CHUNK = 500
 VECTOR_FLOOR = 0.2
 # A restore that keeps the size and the time (``rsync -t``, ``cp -p``) is
 # invisible to the cheap check. Hash those files once this interval has passed.
@@ -90,6 +109,30 @@ def tokenizer_name() -> str:
 # ─────────────────────────────── build ───────────────────────────────
 
 
+class _Masker:
+    """The masking settings and the credential ledger, loaded once for one build or update.
+
+    Every heading and text of every unit goes through ``shown``; loading the ledger for each of them was most
+    of an update's time. ``fingerprint`` is what the index keeps in its metadata (``credentials.fingerprint``).
+    """
+
+    __slots__ = ("config", "fingerprint", "ledger")
+
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.ledger = credential_ledger.for_config(config)
+        self.fingerprint = forest_credentials.fingerprint(config, self.ledger)
+
+    def shown(self, text: str) -> str:
+        value = show_text(text, config=self.config, ledger=self.ledger)
+        return value if isinstance(value, str) else text
+
+
+def masking_fingerprint(root: str | os.PathLike[str]) -> str:
+    """The fingerprint of the masking the forest at ``root`` applies now."""
+    return _Masker(load_config(require_real_root(root))).fingerprint
+
+
 def build(
     root: str | os.PathLike[str],
     *,
@@ -99,26 +142,16 @@ def build(
 ) -> dict[str, Any]:
     """Build or update the index. A lock held elsewhere returns ``busy`` without waiting past ``wait_seconds``.
 
-    The published file is replaced at the end, so a reader of the previous file
-    never sees a half-written index. ``verify`` hashes every file whose size and
-    time are unchanged.
+    The published file is written in place, in one transaction: a reader keeps the snapshot it opened and sees
+    the new one after the commit. ``verify`` hashes every file whose size and time are unchanged.
     """
     try:
-        with hold_lock(root, LOCK_NAME, wait_seconds=wait_seconds, label="forest index"):
-            result = _build_held(root, only=only, verify=verify)
+        with _index_writer(root, wait_seconds):
+            result = _write_held(require_real_root(root), None if only is None else list(only), verify=verify)
     except MemoryForestError as exc:
-        if exc.code != "lock_busy":
+        if exc.code not in _BUSY_CODES:
             raise
-        return {
-            "busy": True,
-            "files": 0,
-            "indexed": False,
-            "message": "an index build is already running",
-            "ok": True,
-            "path": INDEX_RELATIVE,
-            "units": 0,
-            "updated": 0,
-        }
+        return _busy_result("an index build is already running")
     result["indexed"] = True
     return result
 
@@ -136,39 +169,59 @@ def update_files(
     on disk; the next query brings them in.
     """
     safe = require_real_root(root)
-    if not _index_path(safe).is_file():
-        result = build(safe, only=list(paths), wait_seconds=wait_seconds, verify=verify)
-        result["indexed"] = not bool(result.get("busy"))
-        return result
     try:
-        with hold_lock(safe, LOCK_NAME, wait_seconds=wait_seconds, label="forest index"):
-            result = _update_held(safe, [layout.normalize(item) for item in paths], verify=verify)
+        with _index_writer(safe, wait_seconds):
+            result = _write_held(safe, [layout.normalize(item) for item in paths], verify=verify)
     except MemoryForestError as exc:
-        if exc.code != "lock_busy":
+        if exc.code not in _BUSY_CODES:
             raise
-        return {
-            "busy": True,
-            "files": 0,
-            "indexed": False,
-            "ok": True,
-            "path": INDEX_RELATIVE,
-            "units": 0,
-            "updated": 0,
-        }
-    result["busy"] = False
+        return _busy_result("")
     result["indexed"] = True
     return result
 
 
 def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
-    """Bring changed lane and daily files into the index. Returns how many could not be updated."""
+    """Make the index fit to answer from. Returns how many changed files could not be brought in.
+
+    When the masking (``credentials.fingerprint``) differs from the one the index was built under, every file
+    is indexed again first, waiting up to ``MASKING_WAIT_SECONDS`` for another build; a query never answers
+    from text masked under other rules. Otherwise the changed lane files and daily pages are brought in, by the
+    sizes and times of one listing of their folders.
+    """
     safe = require_real_root(root)
-    if not _index_path(safe).is_file():
-        result = build(safe, wait_seconds=0)
-        if result.get("busy"):
-            return len(_lane_daily_files(safe))
+    listing = _lane_daily_listing(safe)
+    connection = connect(safe)
+    if connection is None:
+        if build(safe, wait_seconds=0).get("busy"):
+            return len(listing)
         return 0
-    changed = _changed_lane_daily(safe)
+    try:
+        meta = _metadata(connection)
+        stored = {
+            row[0]: (row[1], row[2])
+            for row in connection.execute(
+                "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
+                (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
+            )
+        }
+    finally:
+        connection.close()
+    if meta.get("masking") != masking_fingerprint(safe):
+        if build(safe, wait_seconds=MASKING_WAIT_SECONDS).get("busy"):
+            raise MemoryForestError(
+                "index_busy",
+                "The masking rules changed and another build still holds the index. Nothing was answered from "
+                "text masked under the old rules; ask again when the build is done.",
+            )
+        return 0
+    changed = sorted(
+        {
+            relative
+            for relative, (_path, size, mtime_ns) in listing.items()
+            if stored.get(relative) != (size, mtime_ns)
+        }
+        | {relative for relative in stored if relative not in listing}
+    )
     if not changed:
         return 0
     result = update_files(safe, changed, wait_seconds=0)
@@ -203,6 +256,7 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
         "built_at": meta.get("built_at", ""),
         "exists": True,
         "files": files,
+        "masking": "current" if meta.get("masking") == masking_fingerprint(safe) else "changed",
         "ok": True,
         "path": INDEX_RELATIVE,
         "schema": meta.get("schema", ""),
@@ -216,13 +270,17 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
 
 
 def connect(root: str | os.PathLike[str]) -> sqlite3.Connection | None:
-    """Open the published index without waiting on a build. Writes are refused on this connection."""
+    """Open the published index for reading. Writes are refused on this connection.
+
+    The index is in WAL mode, so a reader does not wait for a writer: it reads the last committed snapshot.
+    The short timeout only covers SQLite's own brief locks (opening the WAL index after a crash).
+    """
     path = _index_path(require_real_root(root))
     if not path.is_file() or path.is_symlink():
         return None
     for _attempt in (1, 2):
         try:
-            connection = sqlite3.connect(path, timeout=0.0)
+            connection = sqlite3.connect(path, timeout=READER_TIMEOUT_SECONDS)
         except sqlite3.OperationalError:
             continue
         connection.row_factory = sqlite3.Row
@@ -231,7 +289,7 @@ def connect(root: str | os.PathLike[str]) -> sqlite3.Connection | None:
             schema = connection.execute(
                 "SELECT value FROM metadata WHERE key = 'schema'"
             ).fetchone()
-        except sqlite3.OperationalError:
+        except sqlite3.DatabaseError:
             connection.close()
             continue
         if schema is None or schema[0] != SCHEMA:
@@ -252,74 +310,111 @@ def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
     return connection
 
 
-def _build_held(root: str | os.PathLike[str], *, only: Sequence[str] | None, verify: bool = False) -> dict[str, Any]:
-    safe = require_real_root(root)
-    config = load_config(safe)
-    published = _index_path(safe)
-    published.parent.mkdir(mode=0o700, exist_ok=True)
-    staging = published.with_name(published.name + _STAGING_SUFFIX)
-    if staging.exists():
-        staging.unlink()
-    tokenizer = tokenizer_name()
-    recreate = not published.is_file()
-    if not recreate:
-        current = connect(safe)
-        if current is None:
-            recreate = True
-        else:
-            meta = _metadata(current)
-            current.close()
-            recreate = meta.get("schema") != SCHEMA or meta.get("tokenizer") != tokenizer
-    connection = sqlite3.connect(staging)
+# The index lock is a file lock, held once per process. Threads of one process (the HTTP server's) queue here
+# first, so a second thread waits like a second process instead of meeting ``lock_already_held``.
+_WRITERS = threading.Lock()
+_BUSY_CODES = frozenset({"lock_busy", "lock_already_held"})
+
+
+@contextmanager
+def _index_writer(root: str | os.PathLike[str], wait_seconds: float) -> Iterator[None]:
+    """Hold the right to write the index: this process's turn, then the ``index`` lock, within ``wait_seconds``."""
+    wait = max(0.0, wait_seconds)
+    deadline = time.monotonic() + wait
+    taken = _WRITERS.acquire(timeout=wait) if wait > 0 else _WRITERS.acquire(blocking=False)
+    if not taken:
+        raise MemoryForestError("lock_busy", "Another thread of this process is writing the index.")
     try:
-        connection.execute("PRAGMA journal_mode = DELETE")
-        connection.execute("PRAGMA synchronous = FULL")
-        if not recreate and published.is_file():
-            source = sqlite3.connect(published)
-            try:
-                source.backup(connection)
-            finally:
-                source.close()
-        else:
+        left = max(0.0, deadline - time.monotonic())
+        with hold_lock(root, LOCK_NAME, wait_seconds=left, label="forest index"):
+            yield
+    finally:
+        _WRITERS.release()
+
+
+def _busy_result(message: str) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "busy": True,
+        "files": 0,
+        "indexed": False,
+        "ok": True,
+        "path": INDEX_RELATIVE,
+        "units": 0,
+        "updated": 0,
+    }
+    if message:
+        result["message"] = message
+    return result
+
+
+def _write_held(root: Path, paths: list[str] | None, *, verify: bool) -> dict[str, Any]:
+    """Write the index in place, in one transaction. The caller holds the index lock.
+
+    ``paths`` None walks every file of the forest; a list updates those files. A schema, tokenizer or masking
+    fingerprint that differs from the one in the file empties it and indexes every file, inside the same
+    transaction. Nothing is unlinked: no journal, WAL or shared-memory file another connection may hold.
+    """
+    masker = _Masker(load_config(root))
+    published = _index_path(root)
+    published.parent.mkdir(mode=0o700, exist_ok=True)
+    _remove_old_staging(published)
+    created = not published.exists()
+    tokenizer = tokenizer_name()
+    connection = _open_writer(published)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        meta = _metadata_or_none(connection)
+        recreate = (
+            meta is None
+            or meta.get("schema") != SCHEMA
+            or meta.get("tokenizer") != tokenizer
+            or meta.get("masking") != masker.fingerprint
+        )
+        if recreate:
+            _drop_all(connection)
             _create_schema(connection, trigram="trigram" in tokenizer)
-            recreate = True
-        present = {relative: path for relative, path in _source_files(safe)}
-        wanted = set(present) if only is None or recreate else {layout.normalize(item) for item in only}
+        walk = paths is None or recreate
+        present = dict(_source_files(root)) if walk else {}
+        wanted = sorted(present) if walk else sorted(set(paths or ()))
         updated = 0
-        for relative in sorted(wanted):
-            path = present.get(relative)
+        for relative in wanted:
+            path = present.get(relative) if walk else _file_at(root, relative)
             if path is None:
-                _drop_path(connection, relative)
-                updated += 1
+                if connection.execute("SELECT 1 FROM files WHERE path = ?", (relative,)).fetchone():
+                    _drop_path(connection, relative)
+                    updated += 1
                 continue
             if _unchanged(connection, relative, path, verify=verify):
                 continue
-            _replace_path(connection, config, relative, path, tokenizer)
+            _replace_path(connection, masker, relative, path, tokenizer)
             updated += 1
-        if recreate or only is None:
+        if walk:
             stored = {row[0] for row in connection.execute("SELECT path FROM files")}
             for relative in sorted(stored - set(present)):
                 _drop_path(connection, relative)
                 updated += 1
         _set_meta(connection, "schema", SCHEMA)
         _set_meta(connection, "tokenizer", tokenizer)
+        _set_meta(connection, "masking", masker.fingerprint)
         _set_meta(connection, "built_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
         connection.commit()
         files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
+        _checkpoint(connection)
     except BaseException:
-        connection.close()
-        staging.unlink(missing_ok=True)
+        try:
+            connection.rollback()
+        except sqlite3.Error:
+            pass
         raise
-    connection.close()
-    os.chmod(staging, 0o600)
-    os.replace(staging, published)
-    os.chmod(published, 0o600)
-    for suffix in ("-wal", "-shm"):
+    finally:
+        connection.close()
+    for suffix in ("", "-wal", "-shm"):
         sidecar = Path(str(published) + suffix)
-        if sidecar.exists() and not sidecar.is_symlink():
-            sidecar.unlink()
-    _fsync_directory(published.parent)
+        if sidecar.is_file() and not sidecar.is_symlink():
+            os.chmod(sidecar, 0o600)
+    if created:
+        _fsync_directory(published.parent)
     return {
         "busy": False,
         "files": files,
@@ -331,20 +426,92 @@ def _build_held(root: str | os.PathLike[str], *, only: Sequence[str] | None, ver
     }
 
 
+def _open_writer(published: Path) -> sqlite3.Connection:
+    """The published file, opened for writing in WAL mode. A file SQLite cannot read is refused, not replaced."""
+    if published.is_symlink():
+        raise MemoryForestError("symlink_forbidden", "Symlinks are not allowed inside a Memory Forest.")
+    connection = sqlite3.connect(published, timeout=WRITER_TIMEOUT_SECONDS, isolation_level=None)
+    try:
+        mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+        connection.execute("PRAGMA synchronous = NORMAL")
+    except sqlite3.OperationalError as exc:
+        connection.close()
+        raise MemoryForestError(
+            "index_busy",
+            "The search index could not be opened for writing; another connection holds it.",
+            details={"path": INDEX_RELATIVE},
+        ) from exc
+    except sqlite3.DatabaseError as exc:
+        connection.close()
+        raise MemoryForestError(
+            "index_unreadable",
+            "The search index is not a database SQLite can read. Stop every forest process, delete "
+            f"{INDEX_RELATIVE} with its -wal and -shm files, and build again.",
+            details={"path": INDEX_RELATIVE},
+        ) from exc
+    if str(mode).lower() != "wal":
+        connection.close()
+        raise MemoryForestError(
+            "index_busy",
+            "The search index could not be put in WAL mode.",
+            details={"path": INDEX_RELATIVE},
+        )
+    return connection
+
+
+def _checkpoint(connection: sqlite3.Connection) -> None:
+    """Fold the WAL into the file and truncate it when no reader needs it. Never waits for a reader."""
+    try:
+        connection.execute("PRAGMA busy_timeout = 0")
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.Error:
+        pass
+
+
+def _remove_old_staging(published: Path) -> None:
+    """A staging copy an earlier release left behind. No connection reads it: it was never published."""
+    staging = published.with_name(published.name + _STAGING_SUFFIX)
+    for leftover in (staging, Path(str(staging) + "-journal")):
+        if leftover.is_file() and not leftover.is_symlink():
+            leftover.unlink()
+
+
+def _metadata_or_none(connection: sqlite3.Connection) -> dict[str, str] | None:
+    try:
+        return _metadata(connection)
+    except sqlite3.OperationalError:
+        return None
+
+
+def _drop_all(connection: sqlite3.Connection) -> None:
+    """Every table of the file, virtual tables first (their own tables go with them)."""
+    for kind in ("virtual", "plain"):
+        rows = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        for name, sql in rows:
+            virtual = str(sql or "").upper().startswith("CREATE VIRTUAL TABLE")
+            if (kind == "virtual") != virtual:
+                continue
+            connection.execute(f'DROP TABLE IF EXISTS "{name.replace(chr(34), chr(34) * 2)}"')
+
+
 def _create_schema(connection: sqlite3.Connection, *, trigram: bool) -> None:
-    connection.executescript(
-        """
-        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE files (
+    statements = [
+        "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        """CREATE TABLE files (
             path TEXT PRIMARY KEY,
             size INTEGER NOT NULL,
             mtime_ns INTEGER NOT NULL,
             sha256 TEXT NOT NULL,
             verified_at TEXT NOT NULL,
             undecodable INTEGER NOT NULL,
-            torn INTEGER NOT NULL
-        );
-        CREATE TABLE units (
+            torn INTEGER NOT NULL,
+            indexed_bytes INTEGER NOT NULL,
+            indexed_lines INTEGER NOT NULL,
+            prefix_sha256 TEXT NOT NULL
+        )""",
+        """CREATE TABLE units (
             id INTEGER PRIMARY KEY,
             path TEXT NOT NULL,
             address TEXT NOT NULL,
@@ -358,30 +525,28 @@ def _create_schema(connection: sqlite3.Connection, *, trigram: bool) -> None:
             line_start INTEGER NOT NULL,
             line_end INTEGER NOT NULL,
             page_zone TEXT NOT NULL
-        );
-        CREATE INDEX units_path ON units(path);
-        CREATE INDEX units_address ON units(address);
-        CREATE TABLE times (
+        )""",
+        "CREATE INDEX units_path ON units(path)",
+        "CREATE INDEX units_address ON units(address)",
+        """CREATE TABLE times (
             unit_id INTEGER NOT NULL,
             start_utc TEXT NOT NULL,
             end_utc TEXT NOT NULL,
             zone TEXT NOT NULL
-        );
-        CREATE INDEX times_start ON times(start_utc);
-        CREATE TABLE vectors (
-            unit_id INTEGER PRIMARY KEY,
-            vector TEXT NOT NULL
-        );
-        CREATE VIRTUAL TABLE units_words USING fts5(heading, text, tokenize = 'unicode61 remove_diacritics 2');
-        CREATE TABLE cjk_grams (
-            gram TEXT NOT NULL,
-            unit_id INTEGER NOT NULL
-        );
-        CREATE INDEX cjk_grams_gram ON cjk_grams(gram);
-        """
-    )
+        )""",
+        "CREATE INDEX times_start ON times(start_utc)",
+        "CREATE INDEX times_unit ON times(unit_id)",
+        "CREATE TABLE vectors (unit_id INTEGER PRIMARY KEY, vector TEXT NOT NULL)",
+        "CREATE VIRTUAL TABLE units_words USING fts5(heading, text, tokenize = 'unicode61 remove_diacritics 2')",
+        "CREATE TABLE cjk_grams (gram TEXT NOT NULL, unit_id INTEGER NOT NULL)",
+        "CREATE INDEX cjk_grams_gram ON cjk_grams(gram)",
+        "CREATE INDEX cjk_grams_unit ON cjk_grams(unit_id)",
+    ]
     if trigram:
-        connection.execute("CREATE VIRTUAL TABLE units_tri USING fts5(heading, text, tokenize = 'trigram')")
+        statements.append("CREATE VIRTUAL TABLE units_tri USING fts5(heading, text, tokenize = 'trigram')")
+    # One statement at a time: ``executescript`` would commit the transaction this runs in.
+    for statement in statements:
+        connection.execute(statement)
 
 
 def _source_files(root: Path) -> list[tuple[str, Path]]:
@@ -389,41 +554,63 @@ def _source_files(root: Path) -> list[tuple[str, Path]]:
     for layer in layout.FOREST_LAYERS:
         for relative in layout.iter_pages(root, (layer,)):
             found.append((relative, layout.resolve(root, relative)))
-    found.extend(_lane_daily_files(root))
+    found.extend((relative, item[0]) for relative, item in _lane_daily_listing(root).items())
     return found
 
 
-def _lane_daily_files(root: Path) -> list[tuple[str, Path]]:
-    """Daily pages and raw-lane files only. A query refresh stats these, not every page."""
-    found: list[tuple[str, Path]] = []
-    for relative in layout.iter_pages(root, (layout.DAILY,)):
-        path = _file_at(root, relative)
-        if path is not None:
-            found.append((relative, path))
-    top = root / layout.ISTM
+def _lane_daily_listing(root: Path) -> dict[str, tuple[Path, int, int]]:
+    """Daily pages and raw-lane files with their sizes and times, from one listing of their folders.
+
+    The two top folders are resolved once; below them a symlink is refused from the listing itself, so a query
+    costs one ``scandir`` per folder and one ``stat`` per file, never a path walk per file.
+    """
+    found: dict[str, tuple[Path, int, int]] = {}
+    daily = layout.resolve(root, layout.DAILY)
+    if daily.is_symlink():
+        raise MemoryForestError("symlink_forbidden", "Symlinks are not allowed inside a Memory Forest.")
+    if daily.is_dir():
+        stack: list[tuple[str, str]] = [(str(daily), layout.DAILY)]
+        while stack:
+            folder, prefix = stack.pop()
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        raise MemoryForestError(
+                            "symlink_forbidden", "Symlinks are not allowed inside a Memory Forest."
+                        )
+                    relative = f"{prefix}/{entry.name}"
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append((entry.path, relative))
+                    elif entry.is_file(follow_symlinks=False) and entry.name.endswith(".md"):
+                        info = entry.stat(follow_symlinks=False)
+                        found[relative] = (Path(entry.path), info.st_size, info.st_mtime_ns)
+    top = layout.resolve(root, layout.ISTM)
     if not top.exists():
         return found
     if top.is_symlink() or not top.is_dir():
         raise MemoryForestError("symlink_forbidden", "Symlinks are not allowed inside a Memory Forest.")
-    for agent in sorted(os.scandir(top), key=lambda entry: entry.name):
-        if agent.name.startswith(".") or agent.is_symlink():
-            if agent.is_symlink():
-                raise MemoryForestError(
-                    "symlink_forbidden", "Symlinks are not allowed inside a Memory Forest."
-                )
+    with os.scandir(top) as agents:
+        lanes = sorted(agents, key=lambda entry: entry.name)
+    for agent in lanes:
+        if agent.is_symlink():
+            raise MemoryForestError("symlink_forbidden", "Symlinks are not allowed inside a Memory Forest.")
+        if agent.name.startswith(".") or not agent.is_dir(follow_symlinks=False):
             continue
-        if not agent.is_dir(follow_symlinks=False):
-            continue
-        for entry in sorted(os.scandir(agent.path), key=lambda item: item.name):
-            if entry.is_symlink():
-                raise MemoryForestError(
-                    "symlink_forbidden", "Symlinks are not allowed inside a Memory Forest."
+        with os.scandir(agent.path) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    raise MemoryForestError(
+                        "symlink_forbidden", "Symlinks are not allowed inside a Memory Forest."
+                    )
+                if entry.name.startswith(".") or not entry.name.endswith(".jsonl"):
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                found[f"{layout.ISTM}/{agent.name}/{entry.name}"] = (
+                    Path(entry.path), info.st_size, info.st_mtime_ns,
                 )
-            if entry.name.startswith(".") or not entry.name.endswith(".jsonl") or not entry.is_file(follow_symlinks=False):
-                continue
-            relative = f"{layout.ISTM}/{agent.name}/{entry.name}"
-            found.append((relative, Path(entry.path)))
-    return found
+    return dict(sorted(found.items()))
 
 
 def _file_at(root: Path, relative: str) -> Path | None:
@@ -434,94 +621,6 @@ def _file_at(root: Path, relative: str) -> Path | None:
     if path.is_symlink() or not path.is_file():
         return None
     return path
-
-
-def _changed_lane_daily(root: Path) -> list[str]:
-    connection = connect(root)
-    if connection is None:
-        return [relative for relative, _path in _lane_daily_files(root)]
-    try:
-        stored = {
-            row[0]: (row[1], row[2])
-            for row in connection.execute(
-                "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
-                (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
-            )
-        }
-    finally:
-        connection.close()
-    present = dict(_lane_daily_files(root))
-    changed = []
-    for relative, path in present.items():
-        info = path.stat()
-        old = stored.get(relative)
-        if old is None or old[0] != info.st_size or old[1] != info.st_mtime_ns:
-            changed.append(relative)
-    changed.extend(relative for relative in stored if relative not in present)
-    return sorted(set(changed))
-
-
-def _update_held(root: Path, paths: list[str], *, verify: bool) -> dict[str, Any]:
-    """Write ``paths`` into the published database. The caller holds the index lock."""
-    config = load_config(root)
-    tokenizer = tokenizer_name()
-    published = _index_path(root)
-    connection: sqlite3.Connection | None = None
-    try:
-        connection = sqlite3.connect(published)
-        connection.execute("PRAGMA busy_timeout = 1000")
-        meta = _metadata(connection)
-        if meta.get("schema") != SCHEMA or meta.get("tokenizer") != tokenizer:
-            connection.close()
-            connection = None
-            return _build_held(root, only=None, verify=verify)
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("BEGIN IMMEDIATE")
-        updated = 0
-        for relative in paths:
-            path = _file_at(root, relative)
-            if path is None:
-                if connection.execute("SELECT 1 FROM files WHERE path = ?", (relative,)).fetchone():
-                    _drop_path(connection, relative)
-                    updated += 1
-                continue
-            if _unchanged(connection, relative, path, verify=verify):
-                continue
-            _replace_path(connection, config, relative, path, tokenizer)
-            updated += 1
-        _set_meta(connection, "schema", SCHEMA)
-        _set_meta(connection, "tokenizer", tokenizer)
-        _set_meta(connection, "built_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-        connection.commit()
-        try:
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except sqlite3.Error:
-            pass
-        files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
-    except BaseException:
-        if connection is not None:
-            try:
-                connection.rollback()
-            except sqlite3.Error:
-                pass
-        raise
-    finally:
-        if connection is not None:
-            connection.close()
-    os.chmod(published, 0o600)
-    for suffix in ("-wal", "-shm"):
-        sidecar = Path(str(published) + suffix)
-        if sidecar.is_file() and not sidecar.is_symlink():
-            os.chmod(sidecar, 0o600)
-    return {
-        "files": files,
-        "ok": True,
-        "path": INDEX_RELATIVE,
-        "tokenizer": tokenizer,
-        "units": units,
-        "updated": updated,
-    }
 
 
 def _unchanged(connection: sqlite3.Connection, relative: str, path: Path, *, verify: bool) -> bool:
@@ -543,31 +642,132 @@ def _unchanged(connection: sqlite3.Connection, relative: str, path: Path, *, ver
     return True
 
 
+def _is_lane(relative: str) -> bool:
+    return relative.startswith(layout.ISTM + "/") and relative.endswith(".jsonl")
+
+
 def _replace_path(
     connection: sqlite3.Connection,
-    config: Config,
+    masker: _Masker,
     relative: str,
     path: Path,
     tokenizer: str,
 ) -> None:
     info = path.stat()
-    digest = _hash(path)
-    text, undecodable = _read_text(path)
-    torn = _torn_lane(relative, text)
+    if _is_lane(relative):
+        _index_lane(connection, masker, relative, path, info, tokenizer)
+        return
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    text, undecodable = _decode(data)
     verified = _verified_stamp()
     row = connection.execute("SELECT sha256 FROM files WHERE path = ?", (relative,)).fetchone()
     if row is not None and row[0] == digest:
         connection.execute(
-            "UPDATE files SET size = ?, mtime_ns = ?, verified_at = ?, undecodable = ?, torn = ? WHERE path = ?",
-            (info.st_size, info.st_mtime_ns, verified, int(undecodable), int(torn), relative),
+            "UPDATE files SET size = ?, mtime_ns = ?, verified_at = ?, undecodable = ? WHERE path = ?",
+            (info.st_size, info.st_mtime_ns, verified, int(undecodable), relative),
         )
         return
-    units = units_of(relative, text, config)
     _drop_path(connection, relative)
+    _insert_units(connection, masker, units_of(relative, text, masker.config), tokenizer)
+    connection.execute(
+        "INSERT INTO files (path, size, mtime_ns, sha256, verified_at, undecodable, torn, indexed_bytes, "
+        "indexed_lines, prefix_sha256) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, ?)",
+        (relative, info.st_size, info.st_mtime_ns, digest, verified, int(undecodable), len(data), digest),
+    )
+
+
+def _index_lane(
+    connection: sqlite3.Connection,
+    masker: _Masker,
+    relative: str,
+    path: Path,
+    info: os.stat_result,
+    tokenizer: str,
+) -> None:
+    """A raw lane only grows. When the bytes already indexed are unchanged, only the new complete lines are read.
+
+    ``indexed_bytes`` is the end of the last complete line indexed and ``prefix_sha256`` the hash of the bytes
+    before it. A half-written last line (no newline yet) is left for the next update. A file that shrank or whose
+    indexed bytes changed is indexed again whole.
+    """
+    row = connection.execute(
+        "SELECT sha256, undecodable, torn, indexed_bytes, indexed_lines, prefix_sha256 FROM files WHERE path = ?",
+        (relative,),
+    ).fetchone()
+    verified = _verified_stamp()
+    with path.open("rb") as handle:
+        if row is not None and 0 < row[3] <= info.st_size:
+            prefix = hashlib.sha256()
+            remaining = int(row[3])
+            while remaining:
+                chunk = handle.read(min(1 << 20, remaining))
+                if not chunk:
+                    break
+                prefix.update(chunk)
+                remaining -= len(chunk)
+            if remaining == 0 and prefix.hexdigest() == row[5]:
+                tail = handle.read()
+                whole = prefix.copy()
+                whole.update(tail)
+                cut = tail.rfind(b"\n") + 1
+                added = tail[:cut]
+                prefix.update(added)
+                text, undecodable = _decode(added)
+                units, torn = _turn_units(relative, text, layout.classify(relative), masker.config,
+                                          first_line=int(row[4]) + 1)
+                _insert_units(connection, masker, units, tokenizer)
+                connection.execute(
+                    "UPDATE files SET size = ?, mtime_ns = ?, sha256 = ?, verified_at = ?, undecodable = ?, "
+                    "torn = ?, indexed_bytes = ?, indexed_lines = ?, prefix_sha256 = ? WHERE path = ?",
+                    (
+                        info.st_size, info.st_mtime_ns, whole.hexdigest(), verified,
+                        int(bool(row[1]) or undecodable), int(bool(row[2]) or torn),
+                        int(row[3]) + cut, int(row[4]) + added.count(b"\n"), prefix.hexdigest(), relative,
+                    ),
+                )
+                return
+            handle.seek(0)
+        data = handle.read()
+    digest = hashlib.sha256(data).hexdigest()
+    if row is not None and row[0] == digest:
+        connection.execute(
+            "UPDATE files SET size = ?, mtime_ns = ?, verified_at = ? WHERE path = ?",
+            (info.st_size, info.st_mtime_ns, verified, relative),
+        )
+        return
+    cut = data.rfind(b"\n") + 1
+    complete = data[:cut]
+    text, undecodable = _decode(complete)
+    units, torn = _turn_units(relative, text, layout.classify(relative), masker.config)
+    _drop_path(connection, relative)
+    _insert_units(connection, masker, units, tokenizer)
+    connection.execute(
+        "INSERT INTO files (path, size, mtime_ns, sha256, verified_at, undecodable, torn, indexed_bytes, "
+        "indexed_lines, prefix_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            relative, info.st_size, info.st_mtime_ns, digest, verified, int(undecodable), int(torn), cut,
+            complete.count(b"\n"), hashlib.sha256(complete).hexdigest(),
+        ),
+    )
+
+
+def _insert_units(
+    connection: sqlite3.Connection,
+    masker: _Masker,
+    units: list[dict[str, Any]],
+    tokenizer: str,
+) -> None:
+    """Insert the units as a read would show them, each table in one statement."""
+    if not units:
+        return
+    config = masker.config
+    shown_units = [
+        {**unit, "heading": masker.shown(unit["heading"]), "text": masker.shown(unit["text"])} for unit in units
+    ]
     provider = embeddings.get(config.embeddings.provider)
     vectors: Sequence[Sequence[float]] | None = None
-    shown_units = [_shown_unit(unit, config) for unit in units]
-    if provider is not None and shown_units:
+    if provider is not None:
         try:
             vectors = provider.embed([unit["text"] for unit in shown_units])
         except Exception as exc:
@@ -582,64 +782,55 @@ def _replace_path(
                 "The embedding provider returned a different number of vectors than texts.",
                 details={"provider": provider.name},
             )
-    trigram = "trigram" in tokenizer
-    for index, unit in enumerate(shown_units):
-        cursor = connection.execute(
-            "INSERT INTO units (path, address, layer, tree, agent, kind, subjects, heading, text, "
-            "line_start, line_end, page_zone) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    first = int(connection.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM units").fetchone()[0])
+    ids = range(first, first + len(shown_units))
+    connection.executemany(
+        "INSERT INTO units (id, path, address, layer, tree, agent, kind, subjects, heading, text, "
+        "line_start, line_end, page_zone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
             (
-                unit["path"],
-                unit["address"],
-                unit["layer"],
-                unit["tree"],
-                unit["agent"],
-                unit["kind"],
-                json.dumps(unit["subjects"], ensure_ascii=False),
-                unit["heading"],
-                unit["text"],
-                unit["line_start"],
-                unit["line_end"],
-                unit["page_zone"],
-            ),
+                unit_id, unit["path"], unit["address"], unit["layer"], unit["tree"], unit["agent"], unit["kind"],
+                json.dumps(unit["subjects"], ensure_ascii=False), unit["heading"], unit["text"],
+                unit["line_start"], unit["line_end"], unit["page_zone"],
+            )
+            for unit_id, unit in zip(ids, shown_units)
+        ],
+    )
+    words = [(unit_id, unit["heading"], unit["text"]) for unit_id, unit in zip(ids, shown_units)]
+    connection.executemany("INSERT INTO units_words (rowid, heading, text) VALUES (?, ?, ?)", words)
+    if "trigram" in tokenizer:
+        connection.executemany("INSERT INTO units_tri (rowid, heading, text) VALUES (?, ?, ?)", words)
+    connection.executemany(
+        "INSERT INTO times (unit_id, start_utc, end_utc, zone) VALUES (?, ?, ?, ?)",
+        [
+            (unit_id, _stamp(start), _stamp(end), zone)
+            for unit_id, unit in zip(ids, shown_units)
+            for start, end, zone in unit["times"]
+        ],
+    )
+    if vectors is not None:
+        connection.executemany(
+            "INSERT INTO vectors (unit_id, vector) VALUES (?, ?)",
+            [(unit_id, json.dumps(list(vector))) for unit_id, vector in zip(ids, vectors)],
         )
-        unit_id = int(cursor.lastrowid)
-        connection.execute(
-            "INSERT INTO units_words (rowid, heading, text) VALUES (?, ?, ?)",
-            (unit_id, unit["heading"], unit["text"]),
-        )
-        if trigram:
-            connection.execute(
-                "INSERT INTO units_tri (rowid, heading, text) VALUES (?, ?, ?)",
-                (unit_id, unit["heading"], unit["text"]),
-            )
-        for start, end, zone in unit["times"]:
-            connection.execute(
-                "INSERT INTO times (unit_id, start_utc, end_utc, zone) VALUES (?, ?, ?, ?)",
-                (unit_id, _stamp(start), _stamp(end), zone),
-            )
-        if vectors is not None:
-            connection.execute(
-                "INSERT INTO vectors (unit_id, vector) VALUES (?, ?)",
-                (unit_id, json.dumps(list(vectors[index]))),
-            )
-        _insert_grams(connection, unit_id, unit["heading"], unit["text"])
-    connection.execute(
-        "INSERT INTO files (path, size, mtime_ns, sha256, verified_at, undecodable, torn) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (relative, info.st_size, info.st_mtime_ns, digest, verified, int(undecodable), int(torn)),
+    connection.executemany(
+        "INSERT INTO cjk_grams (gram, unit_id) VALUES (?, ?)",
+        [
+            (gram, unit_id)
+            for unit_id, unit in zip(ids, shown_units)
+            for gram in _cjk_grams(unit["heading"] + "\n" + unit["text"])
+        ],
     )
 
 
 def _drop_path(connection: sqlite3.Connection, relative: str) -> None:
-    rows = connection.execute("SELECT id FROM units WHERE path = ?", (relative,)).fetchall()
-    for (unit_id,) in rows:
-        connection.execute("DELETE FROM units_words WHERE rowid = ?", (unit_id,))
-        if _has_trigram(connection):
-            connection.execute("DELETE FROM units_tri WHERE rowid = ?", (unit_id,))
-        connection.execute("DELETE FROM times WHERE unit_id = ?", (unit_id,))
-        connection.execute("DELETE FROM vectors WHERE unit_id = ?", (unit_id,))
-        connection.execute("DELETE FROM cjk_grams WHERE unit_id = ?", (unit_id,))
+    owned = "(SELECT id FROM units WHERE path = ?)"
+    connection.execute(f"DELETE FROM units_words WHERE rowid IN {owned}", (relative,))
+    if _has_trigram(connection):
+        connection.execute(f"DELETE FROM units_tri WHERE rowid IN {owned}", (relative,))
+    connection.execute(f"DELETE FROM times WHERE unit_id IN {owned}", (relative,))
+    connection.execute(f"DELETE FROM vectors WHERE unit_id IN {owned}", (relative,))
+    connection.execute(f"DELETE FROM cjk_grams WHERE unit_id IN {owned}", (relative,))
     connection.execute("DELETE FROM units WHERE path = ?", (relative,))
     connection.execute("DELETE FROM files WHERE path = ?", (relative,))
 
@@ -689,38 +880,17 @@ def _hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _read_text(path: Path) -> tuple[str, bool]:
-    """The file as text. A page that is not UTF-8 is read with replacement characters."""
-    data = path.read_bytes()
+def _decode(data: bytes) -> tuple[str, bool]:
+    """Bytes as text. A page that is not UTF-8 is read with replacement characters."""
     try:
         return data.decode("utf-8"), False
     except UnicodeDecodeError:
         return data.decode("utf-8", errors="replace"), True
 
 
-def _torn_lane(relative: str, text: str) -> bool:
-    """Whether a raw-lane file has a line that is not one JSON object. The other lines are still indexed."""
-    if not relative.startswith(layout.ISTM + "/"):
-        return False
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        try:
-            json.loads(line)
-        except json.JSONDecodeError:
-            return True
-    return False
-
-
-def _shown_unit(unit: dict[str, Any], config: Config) -> dict[str, Any]:
-    """The unit with the heading and text a read would print."""
-    heading = show_text(unit["heading"], config=config)
-    text = show_text(unit["text"], config=config)
-    return {
-        **unit,
-        "heading": heading if isinstance(heading, str) else unit["heading"],
-        "text": text if isinstance(text, str) else unit["text"],
-    }
+def _read_text(path: Path) -> tuple[str, bool]:
+    """The file as text. A page that is not UTF-8 is read with replacement characters."""
+    return _decode(path.read_bytes())
 
 
 def _verified_stamp() -> str:
@@ -750,16 +920,6 @@ def _verify_due(connection: sqlite3.Connection) -> list[str]:
         if _verification_due(stamp):
             found.append(path)
     return found
-
-
-def _insert_grams(connection: sqlite3.Connection, unit_id: int, heading: str, text: str) -> None:
-    grams = _cjk_grams(heading + "\n" + text)
-    if not grams:
-        return
-    connection.executemany(
-        "INSERT INTO cjk_grams (gram, unit_id) VALUES (?, ?)",
-        [(gram, unit_id) for gram in grams],
-    )
 
 
 def _cjk_ids(connection: sqlite3.Connection, tokens: Sequence[str]) -> set[int]:
@@ -835,7 +995,7 @@ def units_of(relative: str, text: str, config: Config) -> list[dict[str, Any]]:
     """The index rows of one file, in file order."""
     info = layout.classify(relative)
     if info.role is layout.PageRole.RAW_FILE:
-        return _turn_units(relative, text, info, config)
+        return _turn_units(relative, text, info, config)[0]
     if info.role is layout.PageRole.DAILY_PAGE:
         return _daily_units(relative, text, config)
     return _page_units(relative, text, info, config)
@@ -953,31 +1113,69 @@ def _daily_units(relative: str, text: str, config: Config) -> list[dict[str, Any
     return units
 
 
-def _turn_units(relative: str, text: str, info: layout.PathInfo, config: Config) -> list[dict[str, Any]]:
-    agent = info.tree or ""
+def _turn_units(
+    relative: str,
+    text: str,
+    info: layout.PathInfo,
+    config: Config,
+    *,
+    first_line: int = 1,
+) -> tuple[list[dict[str, Any]], bool]:
+    """The turns of raw-lane text, its first line numbered ``first_line``, and whether a line is not JSON.
+
+    A lane is one JSON object per line, split on newlines only (a turn's text may hold other line separators).
+    """
     units = []
-    for number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(value, dict):
-            continue
-        body = value.get("text") if isinstance(value.get("text"), str) else ""
-        if not body:
-            body = " ".join(str(item) for item in value.values() if isinstance(item, str))
-        turn_id = value.get("id") if isinstance(value.get("id"), str) and value.get("id") else f"L{number}"
-        moment = _parse_moment(str(value.get("at") or ""), config.zone)
-        unit = _unit(
-            relative, f"{relative}#{turn_id}", info, "turn", [agent] if agent else [],
-            turn_id, body, number, number, config.zone, config, agent=agent,
-        )
-        if moment is not None:
-            unit["times"] = [(moment, moment + timedelta(microseconds=1), _zone_name(moment))]
-        units.append(unit)
-    return units
+    torn = False
+    for number, line in enumerate(_lane_lines(text), start=first_line):
+        unit = _turn_unit(relative, number, line, info, config)
+        if unit is None and line.strip() and not _is_json(line):
+            torn = True
+        if unit is not None:
+            units.append(unit)
+    return units, torn
+
+
+def _lane_lines(text: str) -> list[str]:
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
+
+
+def _is_json(line: str) -> bool:
+    try:
+        json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
+def _turn_unit(
+    relative: str, number: int, line: str, info: layout.PathInfo, config: Config
+) -> dict[str, Any] | None:
+    """One line of a lane as a unit, or None for a blank line or one that is not a JSON object."""
+    if not line.strip():
+        return None
+    try:
+        value = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    agent = info.tree or ""
+    body = value.get("text") if isinstance(value.get("text"), str) else ""
+    if not body:
+        body = " ".join(str(item) for item in value.values() if isinstance(item, str))
+    turn_id = value.get("id") if isinstance(value.get("id"), str) and value.get("id") else f"L{number}"
+    moment = _parse_moment(str(value.get("at") or ""), config.zone)
+    unit = _unit(
+        relative, f"{relative}#{turn_id}", info, "turn", [agent] if agent else [],
+        turn_id, body, number, number, config.zone, config, agent=agent,
+    )
+    if moment is not None:
+        unit["times"] = [(moment, moment + timedelta(microseconds=1), _zone_name(moment))]
+    return unit
 
 
 def _unit(
@@ -1292,7 +1490,7 @@ def read(
                 "Those lines fall outside the addressed section.",
                 details={"lines": f"{want_start}-{want_end}", "path": path},
             )
-        file_lines = file_text.splitlines()
+        file_lines = _file_lines(path, file_text)
         body = "\n".join(file_lines[overlap_start - 1 : overlap_end])
         start, end = overlap_start, overlap_end
     tree = info.tree or ""
@@ -1531,10 +1729,7 @@ def _add_word_hits(
     ids.update(_cjk_ids(connection, tokens))
     if not ids:
         return
-    for row in connection.execute(
-        f"SELECT * FROM units WHERE id IN ({','.join('?' for _ in ids)})",
-        tuple(ids),
-    ):
+    for row in _units_by_id(connection, ids):
         unit = _row_dict(row)
         if not _visible(scope, unit["path"]):
             continue
@@ -1542,6 +1737,21 @@ def _add_word_hits(
         if not matched:
             continue
         _add_row(pages, unit, "words: " + ", ".join(matched), tier=1, score=len(matched), scope=scope)
+
+
+def _units_by_id(connection: sqlite3.Connection, ids: Iterable[int]) -> list[sqlite3.Row]:
+    """The unit rows of ``ids``, in id order, asked ``IN_CHUNK`` ids at a time so no statement passes
+    SQLite's limit on host parameters, whichever build of SQLite is linked."""
+    ordered = sorted(set(ids))
+    rows: list[sqlite3.Row] = []
+    for start in range(0, len(ordered), IN_CHUNK):
+        chunk = ordered[start : start + IN_CHUNK]
+        rows.extend(
+            connection.execute(
+                f"SELECT * FROM units WHERE id IN ({','.join('?' for _ in chunk)}) ORDER BY id", tuple(chunk)
+            )
+        )
+    return rows
 
 
 def _add_vector_hits(
@@ -1580,12 +1790,7 @@ def _add_vector_hits(
     if not ranked:
         return "used"
     ids = [unit_id for _score, unit_id in ranked]
-    rows = {
-        int(row["id"]): row
-        for row in connection.execute(
-            f"SELECT * FROM units WHERE id IN ({','.join('?' for _ in ids)})", tuple(ids)
-        )
-    }
+    rows = {int(row["id"]): row for row in _units_by_id(connection, ids)}
     for score, unit_id in ranked:
         row = rows.get(unit_id)
         if row is None:
@@ -1743,8 +1948,13 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
+def _file_lines(path: str, text: str) -> list[str]:
+    """The lines of a file as the index numbers them: a raw lane splits on newlines only."""
+    return _lane_lines(text) if _is_lane(path) else text.splitlines()
+
+
 def _addressed(path: str, text: str, address: str, config: Config) -> tuple[int, int, str, str]:
-    lines = text.splitlines()
+    lines = _file_lines(path, text)
     if not address:
         return 1, len(lines) or 1, text, ""
     if path.startswith(layout.ISTM + "/"):
@@ -1753,8 +1963,9 @@ def _addressed(path: str, text: str, address: str, config: Config) -> tuple[int,
                 value = json.loads(line)
             except json.JSONDecodeError:
                 value = None
-            turn_id = value.get("id") if isinstance(value, dict) else None
-            if turn_id == address or (not turn_id and address == f"L{number}"):
+            raw_id = value.get("id") if isinstance(value, dict) else None
+            turn_id = raw_id if isinstance(raw_id, str) and raw_id else f"L{number}"
+            if turn_id == address:
                 return number, number, line, address
         raise MemoryForestError("address_unknown", "That address is not a turn in the file.", details={"path": path})
     for unit in units_of(path, text, config):

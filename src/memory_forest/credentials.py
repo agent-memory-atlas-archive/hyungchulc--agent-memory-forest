@@ -29,10 +29,12 @@ a value split over lines, a label word the settings do not list) is said in
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from typing import Any, Final
 
@@ -45,6 +47,10 @@ from .safety import require_real_root
 from .view import read_text
 
 REDACTED: Final[str] = "[REDACTED]"
+# The version of what ``shown`` does to a text (this module's rules and ``numbers.star_numbers``). Raise it with
+# any change that can make a read show less than before: text kept masked under the old rules (the search
+# index) is then masked again.
+MASKING_VERSION: Final[str] = "1"
 FIX_REASON: Final[str] = "credential-masking"
 MIN_BARE: Final[int] = 3
 MAX_BARE: Final[int] = 64
@@ -173,27 +179,54 @@ def mask_labelled(text: str, *, config: Config, guarded: bool = True) -> str:
     return text
 
 
-def mask(text: str, *, config: Config) -> str:
+_LOOKUP: Final[Any] = object()  # ``ledger`` not given: find the forest's ledger from ``config``
+
+
+def mask(text: str, *, config: Config, ledger: Any = _LOOKUP) -> str:
     """Every sign-in value ``text`` holds replaced by ``[REDACTED]``: after a label word, and, in a forest
-    that keeps a judged ledger (``credential_ledger``), every value a reader judged a sign-in value."""
+    that keeps a judged ledger (``credential_ledger``), every value a reader judged a sign-in value.
+
+    A caller masking many texts passes the ledger it loaded once (or None for none); without it the ledger is
+    looked up for each call."""
     from . import credential_ledger
 
     text = mask_labelled(text, config=config)
-    return credential_ledger.mask_known(text, credential_ledger.for_config(config))
+    known = credential_ledger.for_config(config) if ledger is _LOOKUP else ledger
+    return credential_ledger.mask_known(text, known)
 
 
-def shown(value: Any, *, config: Config) -> Any:
+def shown(value: Any, *, config: Config, ledger: Any = _LOOKUP) -> Any:
     """What a tool shows (a text, or the strings of a JSON-like value) with its sign-in values masked and its
     numbers starred: the read path hides what the write path keeps out."""
-    from . import numbers
+    from . import credential_ledger, numbers
 
+    if ledger is _LOOKUP:
+        ledger = credential_ledger.for_config(config)
     if isinstance(value, str):
-        return numbers.star_numbers(mask(value, config=config), config=config)[0]
+        return numbers.star_numbers(mask(value, config=config, ledger=ledger), config=config)[0]
     if isinstance(value, dict):
-        return {key: shown(item, config=config) for key, item in value.items()}
+        return {key: shown(item, config=config, ledger=ledger) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [shown(item, config=config) for item in value]
+        return [shown(item, config=config, ledger=ledger) for item in value]
     return value
+
+
+def fingerprint(config: Config, ledger: Any = _LOOKUP) -> str:
+    """One digest of everything ``shown`` reads: ``MASKING_VERSION``, the number and sign-in settings, and the
+    set of sign-in digests of the ledger. A text masked under one fingerprint may show more under another, so
+    whatever keeps masked text (the search index) is rebuilt when it changes. The digest names no value."""
+    from . import credential_ledger
+
+    if ledger is _LOOKUP:
+        ledger = credential_ledger.for_config(config)
+    signed = sorted(ledger.sign_in) if ledger is not None else []
+    material = {
+        "credentials": asdict(config.credentials),
+        "ledger": hashlib.sha256("\n".join(signed).encode("ascii")).hexdigest() if signed else "",
+        "numbers": asdict(config.numbers),
+        "version": MASKING_VERSION,
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
 def name_problem(names: Iterable[str], *, config: Config) -> str | None:
@@ -309,10 +342,12 @@ def fix(
 
 __all__ = [
     "FIX_REASON",
+    "MASKING_VERSION",
     "REDACTED",
     "PageCredentials",
     "changed_lines",
     "check",
+    "fingerprint",
     "fix",
     "mask",
     "mask_labelled",
