@@ -13,17 +13,22 @@ class MemoryForestError(Exception):
         details: Mapping[str, Any] | None = None,
         next_step: str | None = None,
         command: str | None = None,
+        after_seconds: float | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.details = dict(details or {})
-        # Section 15.4: a refusal a program can follow has ``next`` of ``run`` and the command.
+        # Section 15.4: a refusal a program can follow says its next move. ``run`` carries the command,
+        # ``retry`` the seconds to wait before the same call again, and ``report`` means the message is
+        # what to tell the owner, because no command helps. A refusal with no next move has none of them.
         self.next_step = next_step
         self.command = command
+        self.after_seconds = after_seconds
 
     def as_dict(self) -> dict[str, Any]:
-        body = {
+        """The one shape of a refusal: ``code``, ``message``, ``details`` and, when there is one, the next move."""
+        body: dict[str, Any] = {
             "code": self.code,
             "details": dict(sorted(self.details.items())),
             "message": self.message,
@@ -32,4 +37,6 @@ class MemoryForestError(Exception):
             body["command"] = self.command
         if self.next_step:
             body["next"] = self.next_step
+        if self.after_seconds is not None:
+            body["after_seconds"] = self.after_seconds
         return body

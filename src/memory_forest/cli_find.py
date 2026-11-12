@@ -27,9 +27,6 @@ def cmd_index_reset(arguments: Any) -> int:
     if arguments.json:
         _print_json(result)
         return 0
-    if result.get("busy"):
-        _print_lines([result["message"]])
-        return 0
     verb = "would remove" if result.get("dry_run") else "removed"
     removed = result.get("removed") or []
     _print_lines([f"{verb}: {path}" for path in removed] or [f"{verb}: (nothing)"])

@@ -40,6 +40,11 @@ of those versions that the client names, or 2025-11-25 when the client names
 another. A JSON-RPC batch is accepted only for 2025-03-26, the revision that
 added batches; the revision before it had none, and 2025-06-18 removed them.
 
+A tool that refuses answers ``isError: true`` with one JSON object as its text:
+``code``, ``message``, ``details`` and, when there is one, the next move
+(``next`` with ``command`` or ``after_seconds``). An input validation error
+under 2025-11-25 is ``arguments_invalid`` in the same shape.
+
 The reader's id is ``--as``. A tool argument cannot set it, and cannot set the
 role or origin of ``memory_log``. The first tool call of each agent is recorded
 under ``.forest/mcp/seen.json`` so a later doctor can prove the server was used.
@@ -479,18 +484,16 @@ def _call(
         _check_arguments(name, arguments, known[name])
     except _BadArguments as exc:
         if version in INPUT_ERROR_RESULT_VERSIONS:
-            return _tool_error(exc.message)
+            return _tool_error(MemoryForestError("arguments_invalid", exc.message), root)
         raise
     try:
         payload = _invoke(root, reader, name, arguments, transport)
     except _BadArguments:
         raise
     except MemoryForestError as exc:
-        if exc.next_step:
-            return _tool_error(json.dumps(exc.as_dict(), ensure_ascii=False, sort_keys=True))
-        return _tool_error(exc.message)
+        return _tool_error(exc, root)
     except Exception:
-        return _tool_error("The tool could not answer.")
+        return _tool_error(MemoryForestError("tool_failed", "The tool could not answer."), root)
     try:
         _remember(root, reader, name, transport)
     except Exception:
@@ -924,8 +927,18 @@ def _port(text: str) -> int:
     return port
 
 
-def _tool_error(message: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": message}], "isError": True}
+def _tool_error(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dict[str, Any]:
+    """Every refusal of a tool is one JSON object (``MemoryForestError.as_dict``), with or without a next move.
+
+    Its strings are masked like every answer; when the settings cannot be read for that, the details go.
+    """
+    body = refusal.as_dict()
+    try:
+        body = search.mask_result(body, config=load_config(root))
+    except Exception:
+        body["details"] = {}
+    text = json.dumps(body, ensure_ascii=False, sort_keys=True)
+    return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
 def _result(msg_id: Any, payload: Mapping[str, Any]) -> dict[str, Any]:

@@ -24,7 +24,7 @@ from memory_forest import credential_ledger, credentials, layout, mcp, search
 from memory_forest.errors import MemoryForestError
 from memory_forest.locking import hold_lock
 
-from test_v1_find import FILES, SETTINGS, _cli, _initialize, _http, _read_frame, _rpc, _stdio
+from test_v1_find import FILES, SETTINGS, _cli, _initialize, _http, _read_frame, _rpc, _stdio, held_in_thread
 from v1_support import ForestTestCase
 
 
@@ -195,26 +195,13 @@ class MaskingFingerprintTests(ForestTestCase):
 
     def test_a_query_refuses_rather_than_answer_under_old_masking_when_it_cannot_rebuild(self) -> None:
         self._settings('\n[credentials]\nlabel_words = ["password", "combo"]\n')
-        started, release = threading.Event(), threading.Event()
-
-        def hold() -> None:
-            with search._index_writer(self.root, 2):
-                started.set()
-                release.wait(5)
-
-        thread = threading.Thread(target=hold)
-        thread.start()
-        self.assertTrue(started.wait(2))
-        try:
+        with held_in_thread(lambda: search._index_writer(self.root, 60)):
             with mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.2):
                 began = time.monotonic()
                 with self.assertRaises(MemoryForestError) as refused:
                     search.query(self.root, "zebra99", reader="till-bot")
                 waited = time.monotonic() - began
             self.assertFalse(search._WRITERS.acquire(blocking=False))
-        finally:
-            release.set()
-            thread.join(5)
         self.assertGreaterEqual(waited, 0.15)
         self.assertEqual(refused.exception.code, "index_busy")
         self.assertNotIn("zebra99", refused.exception.message)
@@ -481,6 +468,235 @@ class PublishingTests(ForestTestCase):
         self.assertEqual(page.read_text(encoding="utf-8"), page_text)
         again = search.query(self.root, "counter", reader="till-bot")
         self.assertIn(TILL, [item["path"] for item in again["results"]])
+
+
+class SqliteErrorClassTests(ForestTestCase):
+    """Only a corrupt file is index_unreadable. Busy waits or answers stale; read-only and cannot-open say what to do."""
+
+    MASKED = '\n[credentials]\nlabel_words = ["password", "combo"]\n'
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root = self.make_forest(dict(FILES))
+        self.index = self.root / layout.STATE_DIR / "index.sqlite"
+
+    def _append(self, number: int, text: str) -> None:
+        with (self.root / TILL).open("a", encoding="utf-8") as handle:
+            handle.write(_turn(number, text))
+
+    def _settings(self, extra: str) -> None:
+        (self.root / "forest.toml").write_text(SETTINGS + extra, encoding="utf-8")
+
+    def test_a_build_paused_in_its_transaction_is_no_index_yet_for_a_second_reader(self) -> None:
+        self.assertFalse(self.index.exists())
+        marker = self.base / "index-pause"
+        builder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys; from memory_forest import search; search.build(sys.argv[1], wait_seconds=30)",
+             str(self.root)],
+            env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), search._PAUSE_ENV: str(marker)},
+        )
+        try:
+            deadline = time.monotonic() + 120
+            while not marker.is_file() and builder.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(marker.is_file(), "the build did not reach its transaction")
+            self.assertTrue(self.index.is_file())
+            self.assertIsNone(search.connect(self.root))
+            state = search.status(self.root)
+            self.assertEqual((state["available"], state["exists"]), (False, True))
+            code, out, err = _cli(self, ["index", "status", "--json"])
+            self.assertEqual(code, 0, out + err)
+            with mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.2):
+                with self.assertRaises(MemoryForestError) as held:
+                    search.query(self.root, "trays", reader="till-bot")
+            self.assertEqual(held.exception.code, "index_busy")
+            self.assertEqual(held.exception.next_step, "retry")
+            self.assertIsNone(held.exception.command)
+            marker.unlink()
+            self.assertEqual(builder.wait(timeout=120), 0)
+        finally:
+            if marker.exists():
+                marker.unlink()
+            if builder.poll() is None:
+                builder.kill()
+                builder.wait()
+        found = search.query(self.root, "trays", reader="till-bot")
+        self.assertIn(TILL, [page["path"] for page in found["results"]])
+
+    def test_an_outside_writer_is_busy_for_a_build_and_stale_or_retry_for_a_query(self) -> None:
+        search.build(self.root)
+        holder = sqlite3.connect(self.index, isolation_level=None)
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            self._append(41, "the till noted the quorn tally")
+            built = search.build(self.root)
+            self.assertTrue(built["busy"])
+            self.assertFalse(built["indexed"])
+            found = search.query(self.root, "trays", reader="till-bot")
+            self.assertGreater(found.get("stale", 0), 0)
+            self.assertIn(TILL, [page["path"] for page in found["results"]])
+            self._settings(self.MASKED)
+            with mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.2):
+                with self.assertRaises(MemoryForestError) as refused:
+                    search.query(self.root, "trays", reader="till-bot")
+        finally:
+            holder.rollback()
+            holder.close()
+        body = refused.exception.as_dict()
+        self.assertEqual(body["code"], "index_busy")
+        self.assertEqual(body["next"], "retry")
+        self.assertGreater(body["after_seconds"], 0)
+        self.assertNotIn("command", body)
+        self.assertTrue(self.index.is_file())
+        self.assertIn(TILL, [page["path"] for page in search.query(self.root, "quorn", reader="till-bot")["results"]])
+
+    @unittest.skipIf(os.geteuid() == 0, "the superuser writes a read-only file")
+    def test_a_read_only_index_is_a_refusal_of_its_own_and_not_a_reset(self) -> None:
+        search.build(self.root)
+        self._append(42, "the till noted the brambling tally")
+        os.chmod(self.index, 0o444)
+        self.addCleanup(os.chmod, self.index, 0o644)
+        for call in (lambda: search.build(self.root), lambda: search.query(self.root, "brambling", reader="till-bot")):
+            with self.assertRaises(MemoryForestError) as refused:
+                call()
+            body = refused.exception.as_dict()
+            self.assertEqual(body["code"], "index_read_only")
+            self.assertEqual(body["next"], "report")
+            self.assertNotIn("command", body)
+            self.assertNotIn("reset", body["message"].replace("A reset would not help", ""))
+        self.assertTrue(self.index.is_file())
+        code, out, _err = _cli(self, ["index", "build", "--json"])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out)["error"]["code"], "index_read_only")
+
+    def test_an_index_path_that_cannot_be_opened_is_a_refusal_of_its_own(self) -> None:
+        self.index.parent.mkdir(mode=0o700, exist_ok=True)
+        self.index.mkdir()
+        with self.assertRaises(MemoryForestError) as refused:
+            search.build(self.root)
+        self.assertEqual(refused.exception.code, "index_cannot_open")
+        self.assertEqual(refused.exception.next_step, "report")
+        self.assertIsNone(refused.exception.command)
+        with self.assertRaises(MemoryForestError) as reset:
+            search.reset(self.root)
+        self.assertEqual(reset.exception.code, "index_reset_refused")
+        self.assertTrue(self.index.is_dir())
+
+    def test_reset_checks_every_path_before_it_removes_one(self) -> None:
+        search.build(self.root)
+        wal = Path(str(self.index) + "-wal")
+        shm = Path(str(self.index) + "-shm")
+        wal.write_bytes(b"wal")
+        elsewhere = self.base / "elsewhere"
+        elsewhere.write_bytes(b"keep")
+        shm.symlink_to(elsewhere)
+        code, out, err = _cli(self, ["index", "reset"])
+        self.assertTrue(self.index.is_file())
+        self.assertEqual(wal.read_bytes(), b"wal")
+        self.assertTrue(shm.is_symlink())
+        self.assertEqual(elsewhere.read_bytes(), b"keep")
+        self.assertEqual(code, 2, out)
+        self.assertIn("symlink_forbidden", err)
+        self.assertIn("Nothing was removed", err)
+
+    def test_reset_with_the_lock_held_exits_non_zero_and_says_retry(self) -> None:
+        search.build(self.root)
+        with held_in_thread(lambda: hold_lock(self.root, "index", wait_seconds=60, label="test")):
+            code, out, err = _cli(self, ["index", "reset", "--json"])
+            text = _cli(self, ["index", "reset"])
+        self.assertEqual(code, 2, out + err)
+        payload = json.loads(out)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "index_busy")
+        self.assertEqual(payload["error"]["next"], "retry")
+        self.assertGreater(payload["error"]["after_seconds"], 0)
+        self.assertEqual(text[0], 2)
+        self.assertIn("next: retry", text[2])
+        self.assertTrue(self.index.is_file())
+        self.assertEqual(_cli(self, ["index", "reset"])[0], 0)
+        self.assertFalse(self.index.exists())
+
+    def test_a_busy_open_is_tried_again_at_a_short_interval_until_it_goes_through(self) -> None:
+        search.build(self.root)
+        self._settings(self.MASKED)
+        held = _delete_reader(self.index)
+        pauses: list[float] = []
+
+        def pause(seconds: float) -> None:
+            pauses.append(seconds)
+            held.close()  # the old reader lets go during the first pause
+
+        try:
+            with mock.patch.object(search, "MASKING_WAIT_SECONDS", 600.0), \
+                    mock.patch.object(search, "WRITER_TIMEOUT_SECONDS", search.RETRY_INTERVAL_SECONDS), \
+                    mock.patch.object(search, "_retry_pause", pause):
+                found = search.query(self.root, "trays", reader="till-bot")
+        finally:
+            held.close()
+        self.assertGreaterEqual(len(pauses), 1)
+        self.assertTrue(all(seconds <= search.RETRY_INTERVAL_SECONDS for seconds in pauses), pauses)
+        self.assertNotIn("stale", found)
+        self.assertIn(TILL, [page["path"] for page in found["results"]])
+        self.assertEqual(search.status(self.root)["masking"], "current")
+
+    def test_a_schema_3_file_with_no_masking_key_waits_and_refuses(self) -> None:
+        search.build(self.root)
+        database = sqlite3.connect(self.index)
+        database.execute("DELETE FROM metadata WHERE key = 'masking'")
+        database.commit()
+        database.close()
+        self.assertEqual(search.status(self.root)["schema"], search.SCHEMA)
+        budgets: list[float] = []
+        original = search._index_writer
+
+        def recording(root, wait_seconds):
+            budgets.append(wait_seconds)
+            return original(root, wait_seconds)
+
+        with held_in_thread(lambda: hold_lock(self.root, "index", wait_seconds=60, label="test")):
+            with mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.2), \
+                    mock.patch.object(search, "_index_writer", recording):
+                with self.assertRaises(MemoryForestError) as refused:
+                    search.query(self.root, "trays", reader="till-bot")
+        self.assertTrue(budgets and budgets[0] > 0, budgets)
+        self.assertEqual(refused.exception.code, "index_busy")
+        self.assertEqual(refused.exception.next_step, "retry")
+
+    def test_every_tool_refusal_is_one_json_shape_with_or_without_a_next_move(self) -> None:
+        with self.assertRaises(MemoryForestError) as missing:
+            search.require_index(self.root)
+        self.assertEqual(missing.exception.as_dict()["next"], "run")
+        self.assertEqual(missing.exception.as_dict()["command"], "forest index build")
+        search.build(self.root)
+        calls = [
+            ("2025-11-25", {"name": "memory_search", "arguments": {"words": "  "}}, "search_empty"),
+            ("2025-11-25", {"name": "memory_search", "arguments": {"words": "trays", "limit": 0}},
+             "arguments_invalid"),
+            ("2025-11-25", {"name": "memory_read", "arguments": {"path": "04 stm/bakery/none.md"}}, None),
+        ]
+        for version, params, expected in calls:
+            with self.subTest(params=params), _stdio(self.root) as proc:
+                _rpc(proc, _initialize(version))
+                reply = _rpc(proc, {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": params})
+                self.assertTrue(reply["result"]["isError"], reply)
+                body = json.loads(reply["result"]["content"][0]["text"])
+                self.assertEqual(set(body) - {"next", "command", "after_seconds"}, {"code", "details", "message"})
+                self.assertNotIn("next", body)
+                if expected:
+                    self.assertEqual(body["code"], expected)
+        self._settings(self.MASKED)
+        with held_in_thread(lambda: hold_lock(self.root, "index", wait_seconds=60, label="test")):
+            with mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.2):
+                reply, _version = mcp.handle_message(
+                    self.root, "till-bot",
+                    {"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                     "params": {"name": "memory_search", "arguments": {"words": "trays"}}},
+                    "stdio", "2025-11-25",
+                )
+        body = json.loads(reply["result"]["content"][0]["text"])
+        self.assertEqual((body["code"], body["next"]), ("index_busy", "retry"))
+        self.assertGreater(body["after_seconds"], 0)
 
 
 class ProtocolTests(ForestTestCase):

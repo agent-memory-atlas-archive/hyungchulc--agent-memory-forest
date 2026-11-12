@@ -77,6 +77,10 @@ MASKING_WAIT_SECONDS = 60.0
 # A reader never waits for a writer (WAL); this covers SQLite's own brief locks only.
 READER_TIMEOUT_SECONDS = 2.0
 WRITER_TIMEOUT_SECONDS = 5.0
+# A write that met a busy file tries again at this interval until its budget is spent.
+RETRY_INTERVAL_SECONDS = 0.1
+# What a busy refusal tells the caller to wait before the same call again.
+RETRY_AFTER_SECONDS = 2.0
 # Ids passed to one ``IN (...)``: below the 999 host parameters of an older stock SQLite build.
 IN_CHUNK = 500
 VECTOR_FLOOR = 0.2
@@ -188,8 +192,11 @@ def update_files(
 def reset(root: str | os.PathLike[str], *, dry_run: bool = False) -> dict[str, Any]:
     """Remove the derived index and its ``-wal`` and ``-shm`` files, and nothing else.
 
-    The index lock is held for the removal. Pages, lanes and every other file stay. The next query or
-    ``forest index build`` makes the index again. ``dry_run`` names the files and leaves them.
+    For a file that is corrupt or is not a database, while no forest server is running. The index lock is
+    held for the removal, which keeps builds and updates out; a reader takes no lock, so a process that
+    has the file open still holds it. All three paths are checked first, so the removal is all or nothing.
+    Pages, lanes and every other file stay. The next query or ``forest index build`` makes the index again.
+    ``dry_run`` names the files and leaves them. A held lock is the refusal ``index_busy`` (next: retry).
     """
     safe = require_real_root(root)
     try:
@@ -198,15 +205,8 @@ def reset(root: str | os.PathLike[str], *, dry_run: bool = False) -> dict[str, A
     except MemoryForestError as exc:
         if exc.code not in _BUSY_CODES:
             raise
-        return {
-            "busy": True,
-            "dry_run": dry_run,
-            "message": "The index lock is held, so nothing was removed.",
-            "ok": True,
-            "path": INDEX_RELATIVE,
-            "removed": [],
-        }
-    return {"busy": False, "dry_run": dry_run, "ok": True, "path": INDEX_RELATIVE, "removed": removed}
+        raise index_busy_error("The index lock is held, so nothing was removed. Reset again when it is free.") from exc
+    return {"dry_run": dry_run, "ok": True, "path": INDEX_RELATIVE, "removed": removed}
 
 
 _MASKING_BUSY = (
@@ -233,7 +233,7 @@ def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
         # is not answered as stale.
         if published.is_file():
             if build(safe, wait_seconds=MASKING_WAIT_SECONDS).get("busy"):
-                raise MemoryForestError("index_busy", _MASKING_BUSY)
+                raise index_busy_error(_MASKING_BUSY)
             return 0
         if build(safe, wait_seconds=0).get("busy"):
             return len(listing)
@@ -248,13 +248,13 @@ def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
                     (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
                 )
             }
-        except sqlite3.DatabaseError as exc:
-            raise index_unreadable_error() from exc
+        except sqlite3.Error as exc:
+            raise index_error(exc) from exc
     finally:
         connection.close()
     if "masking" not in meta or meta.get("masking") != masking_fingerprint(safe):
         if build(safe, wait_seconds=MASKING_WAIT_SECONDS).get("busy"):
-            raise MemoryForestError("index_busy", _MASKING_BUSY)
+            raise index_busy_error(_MASKING_BUSY)
         return 0
     changed = sorted(
         {
@@ -292,8 +292,8 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
             undecodable = _flagged(connection, "undecodable")
             torn = _flagged(connection, "torn")
             verify_due = _verify_due(connection)
-        except sqlite3.DatabaseError as exc:
-            raise index_unreadable_error() from exc
+        except sqlite3.Error as exc:
+            raise index_error(exc) from exc
     finally:
         connection.close()
     return {
@@ -315,35 +315,39 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
 
 
 def connect(root: str | os.PathLike[str]) -> sqlite3.Connection | None:
-    """Open the published index for reading. Writes are refused on this connection.
+    """Open the published index for reading, or None when there is no index yet. Writes are refused on it.
 
     The index is in WAL mode, so a reader does not wait for a writer: it reads the last committed snapshot.
-    The short timeout only covers SQLite's own brief locks (opening the WAL index after a crash).
+    The short timeout only covers SQLite's own brief locks (opening the WAL index after a crash). A file
+    whose schema is not there yet (the first build's transaction is still open) is no index yet. Any other
+    SQLite error is classified by ``index_error``: only a corrupt file, or one that is not a database, is
+    ``index_unreadable``.
     """
     path = _index_path(require_real_root(root))
     if not path.is_file() or path.is_symlink():
         return None
-    for _attempt in (1, 2):
-        try:
-            connection = sqlite3.connect(path, timeout=READER_TIMEOUT_SECONDS)
-        except sqlite3.OperationalError:
-            continue
-        except sqlite3.DatabaseError as exc:
-            raise index_unreadable_error() from exc
-        connection.row_factory = sqlite3.Row
-        try:
-            connection.execute("PRAGMA query_only = ON")
-            schema = connection.execute(
-                "SELECT value FROM metadata WHERE key = 'schema'"
-            ).fetchone()
-        except sqlite3.DatabaseError as exc:
-            connection.close()
-            raise index_unreadable_error() from exc
-        if schema is None or schema[0] != SCHEMA:
-            connection.close()
+    try:
+        connection = sqlite3.connect(path, timeout=READER_TIMEOUT_SECONDS)
+    except sqlite3.Error as exc:
+        raise index_error(exc) from exc
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        schema = connection.execute("SELECT value FROM metadata WHERE key = 'schema'").fetchone()
+    except sqlite3.Error as exc:
+        connection.close()
+        if _no_schema_yet(exc):
             return None
-        return connection
-    return None
+        raise index_error(exc) from exc
+    if schema is None or schema[0] != SCHEMA:
+        connection.close()
+        return None
+    return connection
+
+
+def _no_schema_yet(exc: sqlite3.Error) -> bool:
+    """A file with no ``metadata`` table: SQLite's generic error, naming that table."""
+    return sqlite_error_kind(exc) == "other" and "no such table" in str(exc).casefold()
 
 
 def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
@@ -353,6 +357,8 @@ def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
             "index_missing",
             "The forest has no search index. Run `forest index build`.",
             details={"path": INDEX_RELATIVE},
+            next_step="run",
+            command="forest index build",
         )
     return connection
 
@@ -366,15 +372,119 @@ _PAUSE_ENV = "MEMORY_FOREST_INDEX_PAUSE"
 _RESET_COMMAND = "forest index reset"
 
 
-def index_unreadable_error() -> MemoryForestError:
-    """The index is not a database SQLite can read. The next move is ``forest index reset``."""
+def index_unreadable_error(name: str = "") -> MemoryForestError:
+    """The index file is corrupt or is not a database. The next move is ``forest index reset``."""
+    details = {"path": INDEX_RELATIVE}
+    if name:
+        details["sqlite"] = name
     return MemoryForestError(
         "index_unreadable",
-        "The search index is not a database SQLite can read. Run `forest index reset`.",
-        details={"path": INDEX_RELATIVE},
+        "The search index file is corrupt or is not a database. Run `forest index reset`.",
+        details=details,
         next_step="run",
         command=_RESET_COMMAND,
     )
+
+
+def index_busy_error(message: str, name: str = "") -> MemoryForestError:
+    """Another connection holds the index. The next move is the same call again, after a short wait."""
+    details = {"path": INDEX_RELATIVE}
+    if name:
+        details["sqlite"] = name
+    return MemoryForestError(
+        "index_busy", message, details=details, next_step="retry", after_seconds=RETRY_AFTER_SECONDS
+    )
+
+
+# SQLite's primary result codes (https://sqlite.org/rescode.html): the low byte of an extended code.
+_PRIMARY_KINDS = {
+    3: "read_only",  # SQLITE_PERM
+    5: "busy",  # SQLITE_BUSY
+    6: "busy",  # SQLITE_LOCKED
+    8: "read_only",  # SQLITE_READONLY
+    10: "io",  # SQLITE_IOERR
+    11: "corrupt",  # SQLITE_CORRUPT
+    13: "full",  # SQLITE_FULL
+    14: "cannot_open",  # SQLITE_CANTOPEN
+    15: "busy",  # SQLITE_PROTOCOL: a WAL lock that kept changing hands
+    23: "read_only",  # SQLITE_AUTH
+    26: "corrupt",  # SQLITE_NOTADB
+}
+# An error the ``sqlite3`` module raises itself carries no SQLite code. SQLite's own messages name the class.
+_MESSAGE_KINDS = (
+    ("malformed", "corrupt"),
+    ("not a database", "corrupt"),
+    ("database is locked", "busy"),
+    ("database table is locked", "busy"),
+    ("readonly", "read_only"),
+    ("read-only", "read_only"),
+    ("disk is full", "full"),
+    ("disk i/o error", "io"),
+    ("unable to open", "cannot_open"),
+)
+_PERSON_MESSAGES = {
+    "read_only": (
+        "index_read_only",
+        "The search index cannot be written: the file, its -wal or -shm file, or the .forest folder is "
+        "read-only to this process. Give this user write access to them, then ask again. A reset would not help.",
+    ),
+    "full": (
+        "index_disk_full",
+        "The disk that holds the forest is full, so the search index cannot be written. Free space on that "
+        "disk, then ask again. Do not reset the index: building it again needs more room than it holds now.",
+    ),
+    "io": (
+        "index_io_error",
+        "The disk returned an input/output error for the search index. Check the disk that holds the forest, "
+        "then ask again. A reset would not help.",
+    ),
+    "cannot_open": (
+        "index_cannot_open",
+        "The search index cannot be opened: .forest/index.sqlite is not a file this process can open or "
+        "create (a folder in its place, or a .forest folder it cannot enter). Fix that path, then ask again.",
+    ),
+    "other": (
+        "index_failed",
+        "SQLite refused the search index for a reason this package does not classify. The pages are "
+        "untouched. Tell the owner the SQLite code in the details.",
+    ),
+}
+
+
+def sqlite_error_kind(exc: sqlite3.Error) -> str:
+    """``corrupt``, ``busy``, ``read_only``, ``full``, ``io``, ``cannot_open`` or ``other``.
+
+    The SQLite result code decides (``sqlite_errorcode``, set on every error SQLite itself returns since
+    Python 3.11, the package's minimum). An error the module raises without a code is read by its message.
+    """
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        return _PRIMARY_KINDS.get(code & 0xFF, "other")
+    text = str(exc).casefold()
+    return next((kind for marker, kind in _MESSAGE_KINDS if marker in text), "other")
+
+
+def index_error(exc: sqlite3.Error, *, busy_message: str = "") -> MemoryForestError:
+    """The one place a ``sqlite3.Error`` from the index becomes a refusal, with its next move.
+
+    Corrupt or not a database: ``index_unreadable``, next ``run`` the reset. Busy or locked: ``index_busy``,
+    next ``retry``. Read-only, full, I/O and cannot-open have a code of their own and next ``report``:
+    the message is what a person has to do, and no command helps.
+    """
+    kind = sqlite_error_kind(exc)
+    name = str(getattr(exc, "sqlite_errorname", "") or "")
+    if kind == "corrupt":
+        return index_unreadable_error(name)
+    if kind == "busy":
+        return index_busy_error(busy_message or _INDEX_HELD, name)
+    code, message = _PERSON_MESSAGES[kind]
+    details = {"path": INDEX_RELATIVE}
+    if name:
+        details["sqlite"] = name
+    return MemoryForestError(code, message, details=details, next_step="report")
+
+
+_INDEX_HELD = "Another connection holds the search index. Ask again in a moment."
 
 
 def _attempt_write(
@@ -387,42 +497,67 @@ def _attempt_write(
 ) -> dict[str, Any]:
     """Write the index, or return a busy result.
 
-    A held index lock, and ``index_busy`` from opening the file (WAL mode cannot be set while an old reader
-    holds it), are both busy. With ``wait_seconds`` above zero an ``index_busy`` open waits out that budget
-    and tries once more before reporting busy. A caller that may answer from the rows on file passes zero
-    and hears about the busy open at once.
+    A held index lock, and ``index_busy`` from the file (another connection holds it, or an old reader keeps
+    it out of WAL mode), are both busy. With ``wait_seconds`` above zero a busy file is tried again every
+    ``RETRY_INTERVAL_SECONDS`` until that budget is spent, so the write goes through as soon as the file is
+    free. A caller that may answer from the rows on file passes zero and hears about the busy file at once.
+    Every other refusal (``index_unreadable``, ``index_read_only`` and the rest) is raised.
     """
     deadline = time.monotonic() + max(0.0, wait_seconds)
-    retried = False
     while True:
         remaining = deadline - time.monotonic()
         try:
             with _index_writer(root, remaining if wait_seconds > 0 else 0.0):
-                return _write_held(root, paths, verify=verify)
+                return _write_held(root, paths, verify=verify, busy_seconds=_busy_seconds(remaining))
         except MemoryForestError as exc:
             if exc.code not in _BUSY_CODES and exc.code != "index_busy":
                 raise
-            if exc.code != "index_busy" or wait_seconds <= 0 or retried or remaining <= 0:
+            remaining = deadline - time.monotonic()
+            if exc.code != "index_busy" or wait_seconds <= 0 or remaining <= 0:
                 return _busy_result(busy_message)
-            retried = True
-            threading.Event().wait(max(0.0, deadline - time.monotonic()))
+            _retry_pause(min(RETRY_INTERVAL_SECONDS, remaining))
+
+
+def _busy_seconds(remaining: float) -> float:
+    """How long SQLite itself may wait for a lock in one attempt: within the budget, never past the writer's cap."""
+    return min(WRITER_TIMEOUT_SECONDS, max(RETRY_INTERVAL_SECONDS, remaining))
+
+
+def _retry_pause(seconds: float) -> None:
+    """The pause between two attempts on a busy file. Tests replace it to release the holder."""
+    threading.Event().wait(seconds)
 
 
 def _unlink_index(root: Path, *, dry_run: bool) -> list[str]:
-    """The index database and its ``-wal`` and ``-shm`` files. Nothing else, and no symlink is followed."""
+    """The index database and its ``-wal`` and ``-shm`` files. Nothing else, and no symlink is followed.
+
+    All three paths are checked before anything is removed, so a symlink or a folder among them leaves
+    every file in place.
+    """
     published = _index_path(root)
-    removed: list[str] = []
+    found: list[tuple[Path, str]] = []
     for suffix in ("", "-wal", "-shm"):
         path = Path(str(published) + suffix)
         relative = INDEX_RELATIVE + suffix
         if path.is_symlink():
-            raise MemoryForestError("symlink_forbidden", "Symlinks are not allowed inside a Memory Forest.")
-        if not path.is_file():
-            continue
-        if not dry_run:
+            raise MemoryForestError(
+                "symlink_forbidden",
+                "Symlinks are not allowed inside a Memory Forest. Nothing was removed.",
+                details={"path": relative},
+            )
+        if path.exists() and not path.is_file():
+            raise MemoryForestError(
+                "index_reset_refused",
+                "An index path is not a file, so nothing was removed. Move it out of .forest/, then reset again.",
+                details={"path": relative},
+                next_step="report",
+            )
+        if path.is_file():
+            found.append((path, relative))
+    if not dry_run:
+        for path, _relative in found:
             path.unlink()
-        removed.append(relative)
-    return removed
+    return [relative for _path, relative in found]
 
 
 def _pause_in_transaction() -> None:
@@ -470,7 +605,9 @@ def _busy_result(message: str) -> dict[str, Any]:
     return result
 
 
-def _write_held(root: Path, paths: list[str] | None, *, verify: bool) -> dict[str, Any]:
+def _write_held(
+    root: Path, paths: list[str] | None, *, verify: bool, busy_seconds: float = WRITER_TIMEOUT_SECONDS
+) -> dict[str, Any]:
     """Write the index in place, in one transaction. The caller holds the index lock.
 
     ``paths`` None walks every file of the forest; a list updates those files. A schema, tokenizer or masking
@@ -483,7 +620,7 @@ def _write_held(root: Path, paths: list[str] | None, *, verify: bool) -> dict[st
     _remove_old_staging(published)
     created = not published.exists()
     tokenizer = tokenizer_name()
-    connection = _open_writer(published)
+    connection = _open_writer(published, busy_seconds)
     try:
         connection.execute("BEGIN IMMEDIATE")
         meta = _metadata_or_none(connection)
@@ -525,12 +662,12 @@ def _write_held(root: Path, paths: list[str] | None, *, verify: bool) -> dict[st
         files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
         _checkpoint(connection)
-    except sqlite3.DatabaseError as exc:
+    except sqlite3.Error as exc:
         try:
             connection.rollback()
         except sqlite3.Error:
             pass
-        raise index_unreadable_error() from exc
+        raise index_error(exc, busy_message=_WRITER_HELD) from exc
     except BaseException:
         try:
             connection.rollback()
@@ -556,32 +693,31 @@ def _write_held(root: Path, paths: list[str] | None, *, verify: bool) -> dict[st
     }
 
 
-def _open_writer(published: Path) -> sqlite3.Connection:
-    """The published file, opened for writing in WAL mode. A file SQLite cannot read is refused, not replaced."""
+def _open_writer(published: Path, busy_seconds: float = WRITER_TIMEOUT_SECONDS) -> sqlite3.Connection:
+    """The published file, opened for writing in WAL mode. A file SQLite cannot read is refused, not replaced.
+
+    Every SQLite error is classified by ``index_error``; a mode other than WAL means an old reader keeps the
+    file in its rollback journal, which is busy.
+    """
     if published.is_symlink():
         raise MemoryForestError("symlink_forbidden", "Symlinks are not allowed inside a Memory Forest.")
-    connection = sqlite3.connect(published, timeout=WRITER_TIMEOUT_SECONDS, isolation_level=None)
+    try:
+        connection = sqlite3.connect(published, timeout=busy_seconds, isolation_level=None)
+    except sqlite3.Error as exc:
+        raise index_error(exc, busy_message=_WRITER_HELD) from exc
     try:
         mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
         connection.execute("PRAGMA synchronous = NORMAL")
-    except sqlite3.OperationalError as exc:
+    except sqlite3.Error as exc:
         connection.close()
-        raise MemoryForestError(
-            "index_busy",
-            "The search index could not be opened for writing; another connection holds it.",
-            details={"path": INDEX_RELATIVE},
-        ) from exc
-    except sqlite3.DatabaseError as exc:
-        connection.close()
-        raise index_unreadable_error() from exc
+        raise index_error(exc, busy_message=_WRITER_HELD) from exc
     if str(mode).lower() != "wal":
         connection.close()
-        raise MemoryForestError(
-            "index_busy",
-            "The search index could not be put in WAL mode.",
-            details={"path": INDEX_RELATIVE},
-        )
+        raise index_busy_error("The search index could not be put in WAL mode; another connection holds it.")
     return connection
+
+
+_WRITER_HELD = "The search index could not be opened for writing; another connection holds it."
 
 
 def _checkpoint(connection: sqlite3.Connection) -> None:
@@ -602,10 +738,13 @@ def _remove_old_staging(published: Path) -> None:
 
 
 def _metadata_or_none(connection: sqlite3.Connection) -> dict[str, str] | None:
+    """The metadata, or None for a file with no schema yet. Any other error is the caller's to classify."""
     try:
         return _metadata(connection)
-    except sqlite3.OperationalError:
-        return None
+    except sqlite3.Error as exc:
+        if _no_schema_yet(exc):
+            return None
+        raise
 
 
 def _drop_all(connection: sqlite3.Connection) -> None:
@@ -1571,8 +1710,8 @@ def query(
             if stale:
                 payload["stale"] = stale
             return payload
-        except sqlite3.DatabaseError as exc:
-            raise index_unreadable_error() from exc
+        except sqlite3.Error as exc:
+            raise index_error(exc) from exc
     finally:
         connection.close()
 

@@ -176,8 +176,8 @@ def subject(
             if stale:
                 payload["stale"] = stale
             return payload
-        except sqlite3.DatabaseError as exc:
-            raise search.index_unreadable_error() from exc
+        except sqlite3.Error as exc:
+            raise search.index_error(exc) from exc
     finally:
         connection.close()
 
@@ -265,8 +265,8 @@ def _collect(
             payload["phrase"] = phrase
             payload["when"] = _when_dict(when)
             return payload
-        except sqlite3.DatabaseError as exc:
-            raise search.index_unreadable_error() from exc
+        except sqlite3.Error as exc:
+            raise search.index_error(exc) from exc
     finally:
         connection.close()
 

@@ -366,24 +366,12 @@ class IndexSearchTests(ForestTestCase):
         search.build(self.root)
         self.assertIn("rye crumb", _texts(search.query(self.root, "rye crumb", reader="till-bot")))
 
-        started = threading.Event()
-        release = threading.Event()
-
-        def hold() -> None:
-            with hold_lock(self.root, "index", wait_seconds=2, label="test"):
-                started.set()
-                release.wait(5)
-
-        thread = threading.Thread(target=hold)
-        thread.start()
-        self.assertTrue(started.wait(2))
-        found = search.query(self.root, "유약", reader="till-bot")
-        with self.assertRaises(MemoryForestError) as still_held:
-            with hold_lock(self.root, "index", wait_seconds=0, label="test"):
-                pass
+        with held_in_thread(lambda: hold_lock(self.root, "index", wait_seconds=60, label="test")):
+            found = search.query(self.root, "유약", reader="till-bot")
+            with self.assertRaises(MemoryForestError) as still_held:
+                with hold_lock(self.root, "index", wait_seconds=0, label="test"):
+                    pass
         self.assertEqual(still_held.exception.code, "lock_already_held")
-        release.set()
-        thread.join(5)
         self.assertIn("유약", _texts(found))
 
     def test_read_masks_a_sign_in_value_and_the_command_prints_json(self) -> None:
@@ -985,33 +973,21 @@ class ReviewPathTests(ForestTestCase):
         self.assertIn("barley delivery after intake", again[1])
 
     def test_a_second_build_waits_for_nobody_and_a_half_written_file_is_not_what_a_reader_sees(self) -> None:
-        started = threading.Event()
-        release = threading.Event()
-
-        def hold() -> None:
-            with hold_lock(self.root, "index", wait_seconds=2, label="test"):
-                started.set()
-                release.wait(10)
-
-        thread = threading.Thread(target=hold)
-        thread.start()
-        self.assertTrue(started.wait(2))
-        # A second process, so the lock this process holds is "already running" rather than re-entry.
-        busy = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "from memory_forest.cli import forest_main; raise SystemExit(forest_main())",
-                "index",
-                "build",
-                "--root",
-                str(self.root),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        release.set()
-        thread.join(5)
+        with held_in_thread(lambda: hold_lock(self.root, "index", wait_seconds=60, label="test")):
+            # A second process, so the lock this process holds is "already running" rather than re-entry.
+            busy = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from memory_forest.cli import forest_main; raise SystemExit(forest_main())",
+                    "index",
+                    "build",
+                    "--root",
+                    str(self.root),
+                ],
+                capture_output=True,
+                text=True,
+            )
         self.assertEqual(busy.returncode, 0, busy.stderr)
         self.assertIn("already running", busy.stdout)
         seen = _cli(self, ["search", "유약", "--as", "till-bot", "--json"])
@@ -1207,32 +1183,20 @@ class ReviewPathTests(ForestTestCase):
         self.assertIn("second crate", _cli(self, ["search", "second crate", "--as", "till-bot", "--json"])[1])
         with _stdio(self.root) as proc:
             _rpc(proc, _initialize("2025-11-25"))
-            started = threading.Event()
-            release = threading.Event()
-
-            def hold() -> None:
-                with hold_lock(self.root, "index", wait_seconds=2, label="test"):
-                    started.set()
-                    release.wait(10)
-
-            thread = threading.Thread(target=hold)
-            thread.start()
-            self.assertTrue(started.wait(2))
-            logged = _rpc(
-                proc,
-                {
-                    "jsonrpc": "2.0",
-                    "id": 4,
-                    "method": "tools/call",
-                    "params": {"name": "memory_log", "arguments": {"text": "the till logged a held index"}},
-                },
-            )
-            with self.assertRaises(MemoryForestError) as still_held:
-                with hold_lock(self.root, "index", wait_seconds=0, label="test"):
-                    pass
+            with held_in_thread(lambda: hold_lock(self.root, "index", wait_seconds=60, label="test")):
+                logged = _rpc(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/call",
+                        "params": {"name": "memory_log", "arguments": {"text": "the till logged a held index"}},
+                    },
+                )
+                with self.assertRaises(MemoryForestError) as still_held:
+                    with hold_lock(self.root, "index", wait_seconds=0, label="test"):
+                        pass
             self.assertEqual(still_held.exception.code, "lock_already_held")
-            release.set()
-            thread.join(5)
             body = json.loads(logged["result"]["content"][0]["text"])
             self.assertTrue(body["wrote"])
             self.assertFalse(body["indexed"])
@@ -1294,6 +1258,39 @@ def _http(
     status = response.status
     connection.close()
     return _Response(status, data)
+
+
+@contextmanager
+def held_in_thread(holder):
+    """Enter ``holder()`` in another thread and keep it entered until the block ends.
+
+    The thread waits on an event with no deadline, so a slow machine cannot cut the hold short; the block's
+    end always sets it. A holder that does not start, or does not let go, fails the test loudly.
+    """
+    started, release = threading.Event(), threading.Event()
+    failures: list[BaseException] = []
+
+    def hold() -> None:
+        try:
+            with holder():
+                started.set()
+                release.wait()
+        except BaseException as exc:  # reported to the test below
+            failures.append(exc)
+            started.set()
+
+    thread = threading.Thread(target=hold, daemon=True)
+    thread.start()
+    if not started.wait(120) or failures:
+        release.set()
+        raise AssertionError(f"the holder did not take hold: {failures!r}")
+    try:
+        yield
+    finally:
+        release.set()
+        thread.join(120)
+        if thread.is_alive():
+            raise AssertionError("the holder did not let go")
 
 
 @contextmanager
