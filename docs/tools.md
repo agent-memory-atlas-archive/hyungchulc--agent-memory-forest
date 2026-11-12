@@ -2,7 +2,8 @@
 
 The commands that keep a forest in order: `forest move …`, `forest levels …` and `forest collections …`
 change where things live; `forest check`, `forest lint`, `forest record …`, `forest numbers …` and
-`forest credentials …` check the pages and keep their records, numbers and sign-in values. Each example below runs on an invented forest of a bakery
+`forest credentials …` check the pages and keep their records, numbers and sign-in values.
+`forest intake` is the writer of a raw lane. Each example below runs on an invented forest of a bakery
 owner, Ilse Varrow, with a `bakery` tree, a `people` tree and an agent tree `front-desk`. The rules the
 tools keep are in the [contract](contract.md); the settings they read are in the
 [design](v1-design.md#12-settings).
@@ -403,3 +404,49 @@ forest credentials candidates
 forest credentials judge "04 stm/bakery/suppliers/millstone-flour.md:14:1" --sign-in
 forest credentials fix --all
 ```
+
+## `forest intake`
+
+`forest intake` is the only writer of a raw lane. It reads a tool's transcripts through an adapter and
+appends one JSON line per new turn to `06 istm/<agent>/<YYYY-MM-DD>.jsonl`, the day in the forest's time
+zone. The record and the writer's rules are in the [contract](contract.md), section 1.
+
+The package ships four adapters: `claude-code`, `codex`, `grok` and `jsonl`. `jsonl` reads a folder of
+files that are already in the record's shape. Another tool is another module in the entry point group
+`memory_forest.adapters`.
+
+Intake for a tool stays off until `[intake.tools.<adapter>] enabled` is true. Until then the command says
+so and takes nothing, unless `--once` is given. The agent is `--as`, or `agent` in that table. Without
+either, the command stops and says how to set it. `include` and `exclude` are folders the session ran in.
+`import_earlier` is false until set: the first run places each cursor at the end of what already exists,
+and later runs take only turns that arrived after that. `--dry-run` prints a count per transcript and
+writes nothing.
+
+A hook runs the same command with `--hook` and the tool's JSON on stdin. The command reads from its cursor,
+so a hook that did not fire loses nothing. If the intake lock is already held, the command stops at once,
+leaves the cursor and exits 0, so the hook does not hold up the agent. A line the adapter does not
+understand is skipped and counted. `forest intake status` shows the count.
+
+```sh
+# Turn intake on for the till bot's exported records, and take what is already there.
+# In forest.toml:
+# [intake.tools.jsonl]
+# enabled = true
+# agent = "till-bot"
+# path = "transcripts"
+# import_earlier = true
+
+forest intake --from jsonl --dry-run
+# till-bot: 2 turns would be taken in
+#   2051-03-02.jsonl: 2 turns
+forest intake --from jsonl
+# till-bot: 2 turns taken in
+forest intake status
+# jsonl: on, agent till-bot, unknown 0
+forest levels check
+# 06 istm/till-bot/: level_due: till-bot none -> tree: agent; its raw lane holds a file
+```
+
+A tool turn records that the tool ran (`ran <name>`), not what it printed, unless `intake.tool_output` is
+`keep`. A session whose environment carries `MEMORY_FOREST_INTERNAL` is a forest stage's own run and is
+not taken in. Search, the MCP server and setup are not part of this command.

@@ -124,8 +124,9 @@ python -m pip install -e .
 ```
 
 The version 1 commands are the `forest …` commands of the [design's package map](docs/v1-design.md#13-package-map).
-**Version 1.0.0a1 is this tree's alpha, not a stable release.** The milestone 1 commands below are in this tree and installed with it;
-the milestone 2 and 3 commands do not exist yet. The 0.3 `memory-forest` command (documented in
+**Version 1.0.0a1 is this tree's alpha, not a stable release.** The milestone 1 commands below are in this tree and installed with it.
+Milestone 2 has begun: `forest intake` is in this tree. Search, the MCP server and setup are not, and the
+milestone 3 commands are not either. The 0.3 `memory-forest` command (documented in
 [`docs/archive-0.3/`](docs/archive-0.3/cli.md)) stays installed beside them.
 
 `forest init` is the only command that creates a forest. The others use `--root` when you pass it, and
@@ -146,13 +147,14 @@ forest repeats check                           # fact lines two leaves of one su
 forest record kinds                            # the update records' lines by kind
 forest numbers check --all                     # account, card, identity and phone numbers in full
 
-# Milestone 2: connecting and finding (not built yet)
-forest setup                                   # run by your agent: it asks you, previews, writes, checks
-forest intake --from <tool>                    # new turns of that tool's transcript into its raw lane
-forest doctor                                  # proves a turn arrives and the MCP server answers
-forest search "the big kiln"                   # registry aliases first, then words (and vectors if set)
-forest timeline query "yesterday evening"
-forest mcp                                     # search, read, navigate, timeline with the reader's scope
+# Milestone 2: intake is in this tree; search, the MCP server and setup are not
+forest intake --from jsonl --once              # new turns of that tool's transcript into its raw lane
+forest intake status                           # lines an adapter did not understand
+forest setup                                   # not built yet: run by your agent
+forest doctor                                  # not built yet: proves a turn arrives and the MCP server answers
+forest search "the big kiln"                   # not built yet
+forest timeline query "yesterday evening"      # not built yet
+forest mcp                                     # not built yet
 
 # Milestone 3: growing (not built yet)
 forest stage …                                 # the daily, filing and upkeep stages around your model
@@ -199,10 +201,11 @@ Agent Memory Forest is alpha software. The version in this tree is 1.0.0a1.
   levels, collections, record with its history files, archive, `check`, `lint`, number starring,
   `recover`), agents' trees made from their lanes or settings, and an undo journal for every commit, with
   tests on made-up forests and the synthetic forest passing every check.
-- **Milestone 2, connecting and finding (not built yet):** intake from each agent's own transcripts, the
-  time index, search with reader scopes, the MCP server, and setup carried out by the owner's agent
-  ([design, section 15](docs/v1-design.md#15-connecting-agents)). Until it is built nothing reaches a raw
-  lane by itself. The reader-scope rule itself (`agents.readable_trees`) is in milestone 1.
+- **Milestone 2, connecting and finding (intake is in this tree):** `forest intake` reads each tool's
+  transcripts into that agent's raw lane. The time index, search with reader scopes, the MCP server and
+  setup carried out by the owner's agent are not built yet
+  ([design, section 15](docs/v1-design.md#15-connecting-agents)). The reader-scope rule itself
+  (`agents.readable_trees`) is in milestone 1.
 - **Milestone 3, growing (not built yet):** the stage programs and their prompts, the nightly upkeep.
 
 The 0.3 code (`memory-forest`) stays in this tree until the version 1 commands replace it. It is suitable

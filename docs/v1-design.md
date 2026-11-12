@@ -274,6 +274,15 @@ folded_type = "component"       # the type an agent's subject takes when fold-tr
 [agents.known.<id>]             # an agent declared by the people running the forest (any slug as id)
 name = "…"                      # optional, free text in any script; default: the id
 role = "…"                      # optional; default: `## Role` holds `(not set)`
+[intake]
+tool_output = "omit"            # omit | keep. omit: a tool turn records that the tool ran
+[intake.tools.<adapter>]        # claude-code, codex, grok, jsonl, or an adapter added later
+enabled = false                 # automatic intake is off until this is true
+agent = ""                      # the agent these turns belong to; else `forest intake --as`
+include = []                    # folders the session ran in; empty means every folder
+exclude = []
+import_earlier = false          # the first run places cursors at the end of what already exists
+path = ""                       # jsonl: the folder of record files; others: look here instead of the tool's own place
 [embeddings]
 provider = "none"               # none | openai-compatible
 ```
@@ -324,8 +333,12 @@ that agent's own job.
 
 - **The record.** One line per turn in `06 istm/<agent>/<YYYY-MM-DD>.jsonl`: `id` (stable for the turn:
   the agent, the session and the turn's own id, or a hash of its place and text where the tool gives none),
-  `at` (with its offset), `session`, `role` (`owner`, `agent`, `tool`, or `other:<name>`), `text`, `source`
-  (the transcript and the place in it the turn came from) and, for a tool turn, the tool's `name`.
+  `at` (with its offset), `session`, `role` (`owner`, `agent`, `tool`, or `other:<name>`), `text`, `origin`
+  (`interactive`, `headless` or `subagent`), `source` (the adapter, the transcript and the place in it) and,
+  for a tool turn, the tool's `name`. Where the tool marks a span the owner pasted, attached or quoted,
+  `text` stays whole and `parts` names the span and its kind. A turn is the owner speaking only when its
+  role is `owner` and its origin is `interactive`. A sub-agent's work is a tool turn of the agent that
+  started it.
 - **One writer.** `forest intake` is the only program that appends to a lane. It takes turns from an
   adapter, skips a turn whose `id` the lane already holds, and masks numbers and sign-in values at the door
   by the contract's rules for them. A tool turn records that the tool ran, not what it printed, unless
@@ -339,9 +352,13 @@ that agent's own job.
   before its context is compacted), the hook runs `forest intake --from <tool>`. The command reads from its
   cursor to the end of the transcript, so a hook that did not fire loses nothing: the next hook, the next
   session start and the nightly run each catch up. No hook is ever the only path.
-- **Consent.** Which conversations are taken in is the owner's choice, asked at setup and never defaulted:
-  every session of the tool or only named folders (`intake.include`, `intake.exclude`), and whether sessions
-  from before the setup are imported.
+- **Consent.** Which conversations are taken in is the owner's choice, asked at setup and never defaulted.
+  Per tool, `[intake.tools.<adapter>]` holds `include` and `exclude` (folders the session ran in) and
+  `import_earlier` (false until the owner says otherwise: the first run places cursors at the end of what
+  already exists). Automatic intake stays off until `enabled` is true. `forest intake --from <adapter>`
+  then says so and takes nothing, unless `--once` is given. A session a forest stage started, carrying
+  `MEMORY_FOREST_INTERNAL`, is not taken in. A hosted assistant has no transcript to read. Its
+  `memory_log` path belongs to the MCP server, not to intake.
 - **An agent with no transcript and no hooks** has three ways in, strongest last: the MCP tool `memory_log`,
   with which it appends its own turn (it depends on the agent calling it, and the setup says so); an export
   folder read by the `jsonl` adapter; an adapter for that product, kept outside the core.

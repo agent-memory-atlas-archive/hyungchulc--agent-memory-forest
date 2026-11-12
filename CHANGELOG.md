@@ -5,17 +5,23 @@ All notable changes to Memory Forest are documented in this file. The project fo
 ## Unreleased — 1.0.0a1
 
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones. The
-`forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests;
-milestone 2 (connecting and finding: intake, the time index, search, the MCP server, setup by the
-owner's agent) and milestone 3 (growing: the stage programs
-and the nightly upkeep) are not built yet. Nothing is released. The 0.3 `memory-forest` command stays in
-the tree until the version 1 commands replace it.
+`forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests.
+Milestone 2 has begun: `forest intake` and its adapters are in the tree. The time index, search, the MCP
+server and setup are not, and neither are milestone 3's stage programs and nightly upkeep. Nothing is
+released. The 0.3 `memory-forest` command stays in the tree until the version 1 commands replace it.
 
 ### Added
 
+- `forest intake` writes one turn per line to an agent's raw lane (`06 istm/<agent>/<YYYY-MM-DD>.jsonl`),
+  from the adapters `claude-code`, `codex`, `grok` and `jsonl`. A second run adds nothing. The cursor
+  moves only after the line is synced. A hook that cannot take the short lock exits 0 and leaves its
+  cursor. Numbers and sign-in values are masked at the door. Tool output is left out unless
+  `intake.tool_output` is `keep`. Intake stays off until `[intake.tools.<adapter>] enabled` is true,
+  unless `--once` is given. `forest intake status` counts lines the adapter did not understand
 - `docs/v1-design.md` section 15, connecting agents: the turn record and `forest intake` with per-tool
   adapters and cursors, the MCP server and skill an agent uses, and setup that the owner's agent drives
-  through `forest setup` and `forest doctor` (designed, not built); milestone 2 is widened to hold it
+  through `forest setup` and `forest doctor` (the intake command is built; search, the MCP server and
+  setup are not); milestone 2 is widened to hold it
 
 - the `forest` command (milestone 1): `init`; `registry build | check | show`; `move` with `leaf`,
   `rename`, `promote`, `merge`, `archive`, `move-branch`, `new-tree`, `new-agent`, `retire-tree`,

@@ -19,9 +19,27 @@ number, the setting that holds it is given with its default.
 ## 1. Layers
 
 - Two **lanes** sit below the forest:
-  - `06 istm` is the raw record: append-only, in the order things arrived, with where each came from. It
-    is where provenance lives, not where meaning is decided. Full tool input, output and patch bodies stay
-    here and are never copied upward.
+  - `06 istm` is the raw record: append-only, in the order turns were taken in, with where each came
+    from. It is where provenance lives, not where meaning is decided. What a tool printed stays here only
+    when the forest keeps it, and is never copied upward.
+    One turn is one JSON line in `06 istm/<agent>/<YYYY-MM-DD>.jsonl`. The day is the forest's time zone.
+    The line has `id` (the agent, the session and the turn's own id, or a hash of its place and text),
+    `at` (with its offset), `session`, `role` (`owner`, `agent`, `tool`, or `other:<name>`), `text`,
+    `origin` (`interactive`, `headless` or `subagent`) and `source` (the adapter, the transcript and the
+    place in it). A tool turn also has `name`. Where the tool marks a span the owner pasted, attached or
+    quoted, `text` stays whole and `parts` names each span and its kind (`paste`, `file` or `quote`).
+    That span is evidence, not the owner's own words. A turn is the owner speaking only when its role is
+    `owner` and its origin is `interactive`. `headless` is a run another program started. A sub-agent's
+    work is a tool turn of the agent that started it, with origin `subagent`.
+    `forest intake` is the only writer of a lane. It appends a line, flushes it and syncs it, and only
+    then moves its cursor, so a crash can repeat work and cannot lose a turn. It does not write a turn
+    whose `id` the lane already holds. An index under `.forest/intake/` remembers those ids and is rebuilt
+    from the lane files. The lane is the truth. The cursors beside that index are the writer's place in
+    each transcript and are not rebuilt from the lane. Numbers and sign-in values are masked, by section 4,
+    before the line is written. A tool turn records that the tool ran, not what it printed, unless
+    `intake.tool_output` is `keep`. A session a forest stage started, carrying `MEMORY_FOREST_INTERNAL`,
+    is not taken in. The writer holds a short lock. A second intake that cannot take the lock within a
+    moment stops without moving a cursor, so a hook never holds up the agent that fired it.
   - `05 daily` is the readable record of each day: one page per local date. It keeps what the owner, the
     agents and other people wrote close to the original, and turns work, tool use and results into short
     causal episodes per request or run, keeping every failure and every change and closing routine
@@ -45,8 +63,9 @@ number, the setting that holds it is given with its default.
 - Only `.md` files live in the four layers, and no symlinks. Every file and folder name is a slug,
   `[a-z0-9][a-z0-9-]*`, apart from the fixed names `XLTM.md`, `<tree>_LTM.md` and `<tree>_MTM.md`.
 - `.forest/` holds derived and kept state (design, section 3). Everything in it except the move log, the
-  archive, the judged ledger of repeated lines (section 3, One home for each fact) and the judged ledger of
-  sign-in values (section 4, Sign-in values) can be deleted and rebuilt.
+  archive, the judged ledger of repeated lines (section 3, One home for each fact), the judged ledger of
+  sign-in values (section 4, Sign-in values) and the intake cursors (`.forest/intake/`, the writer's place
+  in each transcript) can be deleted and rebuilt. The id index beside those cursors is rebuilt from the lane.
 
 ## 2. Subjects and the registry
 

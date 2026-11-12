@@ -161,6 +161,19 @@ This keeps every page change in one place in time, which is what lets the move l
 the lint baseline stay exact. The stage programs that do this arrive in milestone 3; the lock and the move
 tool in milestone 1.
 
+## Intake
+
+The raw lane is not edited by the agent. `forest intake` is the only writer. Each tool has an adapter,
+which knows where that tool keeps transcripts and how a turn is shaped. A hook runs
+`forest intake --from <tool>`. The command reads from its cursor to the end of the transcript, so a hook
+that did not fire loses nothing: the next hook and the next sweep catch up.
+
+Which conversations are taken in is set per tool, and intake stays off until that tool is enabled. The
+folders a session ran in can be included or excluded, and turns from before the adapter was first enabled
+are left where they are unless earlier import is turned on. A session another program started is
+`headless`, and a sub-agent's work is a tool turn of the agent that started it, so a later stage does not
+read either as the owner speaking. The record and the writer's rules are in the contract, section 1.
+
 Two rules hold for whoever files with a model. A line the model writes to state what quoted turns say is
 filed only after a second reading of the same turns has kept, corrected or dropped it: code can check that
 its names and numbers stand in the source, never what it means. And a subject is named from its own
