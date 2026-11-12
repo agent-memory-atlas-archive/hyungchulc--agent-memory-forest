@@ -23,8 +23,9 @@ number, the setting that holds it is given with its default.
     from. It is where provenance lives, not where meaning is decided. What a tool printed stays here only
     when the forest keeps it, and is never copied upward.
     One turn is one JSON line in `06 istm/<agent>/<YYYY-MM-DD>.jsonl`. The day is the forest's time zone.
-    The line has `id` (the agent, the session and the turn's own id where the transcript has them, or
-    a hash of the turn's content and time where it has none), `at` (with its offset), `session`, `role`
+    The line has `id` (the turn's own id where that id is unique by itself, otherwise the session and
+    that id, or a hash of the turn's content and time where it has none; the agent is not in the id,
+    because the lane names the agent), `at` (with its offset), `session`, `role`
     (`owner`, `agent`, `tool`, `system`, or `other:<name>`), `text`, `origin` (`interactive`, `headless`,
     `subagent` or `unknown`) and `source` (the adapter, the transcript and the place in it). The transcript
     in `source` is relative to that tool's own transcript root. A tool turn also has `name`. Where the tool
@@ -41,25 +42,55 @@ number, the setting that holds it is given with its default.
     then moves its cursor, so a crash can repeat work and cannot lose a turn. Before an append, a lane
     file that does not end in a newline is cut back to its last newline, and the write is repeated until
     every byte is stored. It does not write a turn whose `id` the lane already holds. The ids are one
-    append-only file per lane file under `.forest/intake/`, rebuilt from that lane file when missing.
-    The lane is the truth. The cursors beside those files are the writer's place in each transcript,
-    keyed by the agent, the adapter and the source, and are not rebuilt from the lane. A cursor holds
-    the file's device and inode, the size it saw, and a hash of the bytes just before its offset. When
-    those no longer match, the source is read again from the start and the ids keep what was already
-    taken. A text that cannot be encoded is stored with the unencodable part replaced, and the line is
-    marked `repaired`. One transcript's failure does not stop the others. A line that cannot be taken
-    at all is skipped, its place and error class are recorded, and the cursor moves past it.
+    append-only file per lane file under `.forest/intake/`, and the check reads that file together with
+    the lane bytes after its end mark, once per day per run. The lane is the truth. The cursors beside
+    those files are the writer's place in each transcript, keyed by the agent, the adapter and the
+    source, and are not rebuilt from the lane. A cursor holds the file's device and inode, the size it
+    saw, and a hash of the bytes just before its offset. When those no longer match, the source is read
+    again from the start and the ids keep what was already taken. A text that cannot be encoded is
+    stored with the unencodable part replaced, and the line is marked `repaired`. A session or turn id
+    that cannot be encoded, holds a line break or is longer than 200 characters is replaced by a hash
+    of its exact code points, so the stored id is the one the next run computes. One transcript's
+    failure does not stop the others, and one turn's failure does not stop its transcript: the turn is
+    counted, its class and place are recorded, and `forest intake reread --from <adapter>` reads that
+    transcript from the start once the cause is fixed. The ids keep the turns already stored.
     Numbers and sign-in values are masked, by section 4, before the line is written, in every string of
-    the line. A tool turn records that the tool ran, not what it printed, unless `intake.tool_output` is
-    `keep`. While a source is excluded, its cursor follows the file's end and nothing is written; that
-    past is not taken by lifting the exclude. A session a forest stage started is not taken in: the
-    stage records the session id under `.forest/intake/`, the prompt opens with the line
-    `MEMORY_FOREST_INTERNAL`, and a hook still sees that name in its environment. The writer holds a
-    short lock. A second intake that cannot take the lock within a moment stops without moving a cursor.
-    In hook mode every failure is caught, the exit code is 0, nothing is written to standard output or
-    standard error, and the failure is one line under `.forest/intake/` (its class and its place).
-    `forest intake status` shows the count and the last few. A cursor file that is not valid is renamed
-    aside and the source is read again; it is not a permanent failure.
+    the line, including the name in `other:<name>`. The `id` is not masked: after the rule above it holds
+    no raw text of a turn. A home-folder path inside a turn's text, or inside a tool argument that is
+    kept, is written with `~` in place of that folder. That does not cover the session, the role, the
+    id, or `source` (the transcript path there is already relative to the tool's own root). A tool turn
+    records that the tool ran, not what it printed, unless `intake.tool_output` is `keep`. While a
+    source is excluded, its cursor follows the file's end and nothing is written; that past is not taken
+    by lifting the exclude. The exclude is the transcript's own working folder. The hook payload's
+    folder counts only when the transcript states none, and a session whose folder is not known is not
+    taken while `include` is set.
+    A session a forest stage started is not taken in. The decision is made once, in intake, on the
+    first turn of role `owner`: if that turn's text opens with the line `MEMORY_FOREST_INTERNAL`, the
+    session is internal and no line of it is written. Until that turn has been read the cursor stays at
+    the start and nothing is written. A session whose first 12 turns hold no owner turn is ordinary
+    (12 is past a short harness preamble and short of holding a whole session unread). The decision is
+    kept on the cursor. A field of the source can still mark the session internal. The stage also
+    records the session id under `.forest/intake/`, and a hook still sees the marker name in its
+    environment. `forest intake status` counts the internal sessions of each tool.
+    Turns from before intake was turned on are not taken. The first sweep places each cursor at the end
+    of what already exists, unless `import_earlier` is on. A hook that meets a transcript with no cursor
+    before that placement does the same for that one file. The turn that called that hook is not taken;
+    setting intake up runs a sweep first. After the placement, a transcript with no cursor is a new one
+    and is read from its start.
+    The writer holds a short lock. A second intake that cannot take the lock within a moment stops
+    without moving a cursor. A hook that finds the lock held appends one short line, without taking the
+    lock, and `status` counts those lines since the last run that took the lock. In hook mode every
+    failure is caught, the exit code is 0, nothing is written to standard output or standard error,
+    including a bad argument, and the failure is one line under `.forest/intake/` (its class and its
+    place). A hook reads at most 256 KiB of a transcript per call and leaves the rest for the next call
+    or a sweep, which `status` shows as ahead. Its stdin is bounded in bytes and in time; a payload that
+    does not arrive is a failure and the hook ends. `forest intake status` shows the unknown count, the
+    turn faults, the internal sessions, what is ahead, and the last few hook failures. A cursor file that
+    is not valid is renamed aside and the source is read again; it is not a permanent failure. A plugin
+    that fails to load, or that claims a built-in adapter's name, is off and named in `status`; the
+    built-in adapter stays. `forest intake rename-agent OLD NEW` moves that agent's lane, id index and
+    cursors together. When a tool's configured agent has no cursors and another agent holds them, intake
+    takes nothing for that tool and names the command.
   - `05 daily` is the readable record of each day: one page per local date. It keeps what the owner, the
     agents and other people wrote close to the original, and turns work, tool use and results into short
     causal episodes per request or run, keeping every failure and every change and closing routine
@@ -744,15 +775,27 @@ When the owner says that something is not to be remembered:
    card's security code, a door or gate code) is never written on a page, not even starred. The page keeps
    that a value was sent, who sent it, to whom and for which account, and `[REDACTED]` in the value's place:
    `- 2042-05-13 16:40 America/Halifax — Idris Mallow: gave Juno the yard gate code [REDACTED].`
-2. A value is recognised by the word before it, one of `credentials.label_words` (English words by default,
-   including token, API key, secret, bearer and authorization; a forest adds the words of its other
-   languages there). After a colon or an equals sign any value that holds a letter or a digit counts
-   (`PIN: -` says there is none); without one, a run of 3 to 64 characters that holds a digit and is no
-   date, time, path or mail address, and that no word of `credentials.count_words` follows ("a password
-   of 12 characters" is a rule, not a value). A value is also recognised by its shape, in any string that
-   is written: the published key prefixes of large providers, an `Authorization` header of bearer or
-   basic, a private-key block, and a long mixed token beside a word that names access. A git hash, a
-   UUID and the head of a base64 image are not those shapes and are left as written.
+2. A value is recognised by its shape first, in any string that is written, and then by the word before
+   it. The label words are `credentials.label_words` (English words by default, including token, API key,
+   secret, bearer and authorization; a forest adds the words of its other languages there). After a colon
+   or an equals sign any value that holds a letter or a digit counts (`PIN: -` says there is none). A
+   value that is only a scheme word (`Bearer`, `Basic`, `Token`, `Digest`) is not the value: the token
+   after it is. Without a colon, a run of 3 to 64 characters that holds a digit and is no date, time,
+   path or mail address, and that no word of `credentials.count_words` follows ("a password of 12
+   characters" is a rule, not a value). The shapes are the published prefixes of the large model
+   providers (`sk-`, `sk-proj-`, `sk-svcacct-`, `sk-admin-`, `sk-ant-`, `sk-or-`, `gsk_`, `xai-`,
+   `pplx-`, `fw_`, `hf_`, `AIza`), the code hosts (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`,
+   `glpat-`, `gldt-`, `glrt-`), the cloud consoles (`AKIA`, `ASIA`, `AIza`, `GOCSPX-`, `dop_v1_`), the
+   payment and chat services (`sk_live_`, `sk_test_`, `rk_live_`, `rk_test_`, `whsec_`, `xoxb-`, `xoxp-`,
+   `xoxa-`, `xoxr-`, `xoxs-`, `sq0atp-`, `sq0csp-`, `SG.`, `shpat_`), the package registries (`npm_`,
+   `pypi-`), an `Authorization` header of bearer, basic or digest, a JWT (`eyJ…`.`eyJ…`.`…`), and a
+   private-key block. Each prefix has a floor on its length, so an ordinary word with the same head is
+   left alone. An assignment whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD` or
+   `CREDENTIAL` as its own word (`OPENAI_API_KEY=…`, `db_password: …`, `"client_secret": "…"`) is a
+   labelled value. A long token beside a word that names access is one too. A git hash, a UUID and the
+   head of a base64 image are not those shapes and are left as written, unless a label stands before
+   them: after a label the value is masked whatever its shape. A tag that marks a pasted, attached or
+   quoted span is not a value.
 3. Every record line a tool writes is masked this way (section 4, What a record line is), the writer of the
    daily record and the version 0.3 writer mask the text a model hands them, and everything a tool prints
    is masked and its numbers starred: a page, an archive copy, record lines read back from a history file,

@@ -11,6 +11,23 @@ Milestone 2 now has intake, the search index, timeline, reader scopes and the MC
 programs and nightly upkeep. Nothing is released. The 0.3 `memory-forest` command stays in the tree until
 the version 1 commands replace it.
 
+### Fixed
+
+- Intake masks a sign-in value by its shape before a label, including a token after `Bearer`, `Basic`
+  or `Digest`, a value after a label that looks like a hash or a UUID, and the published key prefixes
+  of the model providers, code hosts, cloud consoles, payment and chat services and package registries,
+  plus a JWT. An assignment whose name contains KEY, TOKEN, SECRET, PASSWORD, PASSWD or CREDENTIAL is
+  a labelled value. The masking fingerprint moves with that change, so an index built under the old
+  rules is rebuilt.
+- A turn is stored once. The id check reads the day's id file and the lane bytes after its end mark.
+  A session or turn id that cannot be written as it is becomes a hash of its exact code points. One
+  turn that raises does not stop the transcript; `forest intake reread` reads it again. A copied turn
+  whose id is unique by itself is the same turn in a forked session. A dry run writes nothing.
+- The stage marker is read once, on the first owner turn. A hook before the first placement does not
+  import history. Compaction, local-command output and instruction blocks are not the owner. A hook
+  reads at most 256 KiB per call, counts a held lock, and cannot be ended by a plugin. `forest intake
+  rename-agent` moves a lane with its cursors and ids.
+
 ### Added
 
 - `forest index build | status` writes `.forest/index.sqlite`, one row per page section, collection

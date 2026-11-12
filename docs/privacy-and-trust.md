@@ -40,9 +40,14 @@ and it does not show a turn that has not been filed onto the daily page. `forest
   removed: a page keeps that a value was sent, by whom, to whom and for which account, and `[REDACTED]` in
   its place. The value is recognised by a label word before it (`credentials.label_words`, English by
   default, including token, API key, secret, bearer and authorization; add the words of the other
-  languages your forest records) and by its shape: the published key prefixes of large providers, an
-  `Authorization` header of bearer or basic, a private-key block, and a long mixed token beside a word
-  that names access. A git hash, a UUID and the head of a base64 image are not masked by that rule.
+  languages your forest records). A shape is masked first, whatever stands before it, and the label
+  step runs after. The shapes are the published prefixes listed in the contract (section 4): the large
+  model providers, the code hosts, the cloud consoles, the payment and chat services, the package
+  registries, a JWT, an `Authorization` header of bearer, basic or digest, and a private-key block.
+  Each prefix has a length floor. A scheme word alone is not the value. An assignment whose name
+  contains KEY, TOKEN, SECRET, PASSWORD, PASSWD or CREDENTIAL as its own word is a labelled value.
+  A git hash, a UUID and the head of a base64 image are not masked by that rule unless a label stands
+  before them.
   Every record line a tool writes is masked, the daily writer masks the text a model hands it, and the
   tools mask what they show; the lint reports a page line that still holds one (`credential_in_full`) and
   `forest credentials fix` masks it after archiving the page. **What is kept:** the raw lane `06 istm`

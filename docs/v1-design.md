@@ -467,8 +467,9 @@ that agent's own job.
 ### 15.1 Intake: how a conversation reaches the raw lane
 
 - **The record.** One line per turn in `06 istm/<agent>/<YYYY-MM-DD>.jsonl`: `id` (stable for the turn:
-  the agent, the session and the turn's own id where the transcript has them, or a hash of the turn's
-  content and time where it has none), `at` (with its offset), `session`, `role` (`owner`, `agent`,
+  the turn's own id where that id is unique by itself, the session and that id where it is not, or a
+  hash of the turn's content and time where it has none; the lane, not the id, names the agent), `at`
+  (with its offset), `session`, `role` (`owner`, `agent`,
   `tool`, `system`, or `other:<name>`), `text`, `origin` (`interactive`, `headless`, `subagent` or
   `unknown`), `source` (the adapter, the transcript relative to the tool's own root, and the place in
   it) and, for a tool turn, the tool's `name`. Where the tool marks a span the owner pasted, attached or
@@ -489,10 +490,13 @@ that agent's own job.
   session, before its context is compacted), the hook runs `forest intake --from <tool> --hook`. The hook
   reads only the transcript it was called for, from its cursor to the end of that file. A missed hook on
   that same transcript is caught by the next hook of it. Other transcripts are caught by a sweep,
-  `forest intake --from <tool>`, not by a different session's hook. No hook is ever the only path. In
-  hook mode the process exits 0 and prints nothing: clients treat a hook's exit 2 as a block and may
+  `forest intake --from <tool>`, not by a different session's hook. No hook is ever the only path. A hook
+  reads at most 256 KiB of that transcript per call (about 50 ms to read and mask that much on the
+  machine this was measured on) and leaves the rest waiting, which `status` shows as ahead. In hook mode
+  the process exits 0 and prints nothing, on every path: clients treat a hook's exit 2 as a block and may
   show its stderr to the model, and may add its stdout to the model's context. A failure is one line in
   `.forest/intake/`, class and place only, and `forest intake status` shows the count and the last few.
+  A hook that finds the intake lock held is counted the same way, by one appended line that needs no lock.
 - **Consent.** Which conversations are taken in is the owner's choice, asked at setup and never defaulted.
   Per tool, `[intake.tools.<adapter>]` holds `include` and `exclude` (folders the session ran in) and
   `import_earlier` (false until the owner says otherwise: the first run places cursors at the end of what

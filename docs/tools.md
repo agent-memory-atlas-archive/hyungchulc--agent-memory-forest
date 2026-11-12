@@ -419,17 +419,23 @@ Intake for a tool stays off until `[intake.tools.<adapter>] enabled` is true. Un
 so and takes nothing, unless `--once` is given. The agent is `--as`, or `agent` in that table. Without
 either, the command stops and says how to set it. `include` and `exclude` are folders the session ran in.
 `import_earlier` is false until set: the first run places each cursor at the end of what already exists,
-and later runs take only turns that arrived after that. `--dry-run` prints a count per transcript and
-writes nothing.
+and later runs take only turns that arrived after that. A hook that meets a transcript before that
+first placement does the same for that file, so the turn that called it is not taken; setting intake
+up runs a sweep first. `--dry-run` prints a count per transcript and writes nothing under the forest.
+`forest intake reread --from <adapter>` sets that adapter's cursors back to the start, and
+`forest intake rename-agent OLD NEW` moves the lane, the id index and the cursors together.
 
 A hook runs the same command with `--hook` and the tool's JSON on stdin, and reads only that transcript.
 A missed hook on the same transcript is caught by its next hook. Other transcripts are caught by a sweep.
-In hook mode the process exits 0 and prints nothing, because a client can treat exit 2 as a block and
-can add stdout to the model's context. A failure is one line under `.forest/intake/` (its class and its
-place). If the intake lock is already held, the command stops at once and leaves the cursor. A line the
-adapter does not understand is skipped and counted by its type. `forest intake status` shows that count,
-the tool version where the transcript states it, sources whose file is ahead of their cursor, and the
-last few hook failures. A cursor file that is not valid is renamed aside and the source is read again.
+In hook mode the process exits 0 and prints nothing, on every path, because a client can treat exit 2
+as a block and can add stdout to the model's context. A failure is one line under `.forest/intake/`
+(its class and its place). If the intake lock is already held, the command stops at once and leaves
+the cursor; a hook that finds it held is counted in `status`. A line the adapter does not understand
+is skipped and counted by its type. One turn that raises is counted and does not stop the transcript.
+`forest intake status` shows that count, the turn faults, the internal sessions, the tool version
+where the transcript states it, sources whose file is ahead of their cursor, hooks that found the lock
+held, and the last few hook failures. A cursor file that is not valid is renamed aside and the source
+is read again. A plugin that claims a built-in name is off and named here; the built-in stays.
 
 ```sh
 # Turn intake on for the till bot's exported records, and take what is already there.
