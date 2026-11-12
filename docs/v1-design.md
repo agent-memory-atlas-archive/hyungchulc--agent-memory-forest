@@ -186,15 +186,73 @@ every upkeep hit its own pages added, and it is never blocked by what was alread
 
 `## Timeline` lines are indexed by instant and by the time zone the line was written in, so "yesterday
 evening" matches each entry's own local date and "the last three hours" is a window of instants.
-`forest timeline query "<when>"` and `forest timeline subject <id>` read it.
+`forest timeline query "<when>"` and `forest timeline subject <id>` read that index. A relative phrase
+comes from a language table (English is built in; `memory_forest/phrases/ko.json` is a second table
+shipped as an example), not from a sentence written into the matcher. A raw-lane turn is included whether
+or not a daily block or a leaf has filed it yet.
 
 ## 10. Retrieval
 
-A question is first matched to subjects through the registry's aliases, then to the likely tree and
-branch, then to leaves: coarse to fine, stopping at the level that answers. A global word search and, when
-an embedding provider is set, a vector search run beside it. A subject named in the question also brings
-the leaves that name it in `about:`. Results are page sections as written, never generated summaries.
-The MCP server (`forest mcp`) offers search, read, navigate and timeline with the reader's scope.
+Finding is `forest index`, `forest search`, `forest read` and `forest timeline`, over one rebuildable
+index, `.forest/index.sqlite`. The lanes themselves still hold no index. The derived file does, so an
+hour that has not been filed can be found, and deleting the file and building again makes the same index.
+
+`forest index build` holds the `index` lock and publishes by replacing the file, so a reader opens
+whatever is already published and never waits. A second build that finds the lock held returns at once.
+A file whose size and time are unchanged is left; when either has changed, the file is hashed and
+rewritten only when the hash has changed. `forest index status` reports the tokenizer, the counts and
+which files have changed since the build.
+
+One row is one page section (a leaf, a board, a tree page or the root index, including the lines before
+the first heading), one collection entry (`<page>#<entry id>`), one marked block of a daily page
+(`<!-- block: <agent> <time> -->`), or one raw-lane turn. The row keeps the path and address, the layer,
+the tree, the subjects it is about, the times and the text.
+
+SQLite FTS5 indexes the text. Where the linked SQLite has the trigram tokenizer, a run of three or more
+characters is findable inside unspaced text, which is what makes Japanese and Chinese findable, and a
+unicode61 index beside it finds spaced words of any length, which is how Korean is usually written. A
+word of one or two characters is found only when unicode61 split it out as its own word. Where trigram is
+absent, only unicode61 is built, and unspaced text in those scripts is one token: a query has to name
+that whole token. `forest index status` says which tokenizer was built.
+
+`forest search "<words>" [--as <reader>] [--limit N] [--json]` matches registry names and aliases first.
+A subject named in the question brings its home and the leaves that name it in `about:`. Word matches
+follow. Vector matches run only when `[embeddings] provider` is not `none` and a provider of that name
+is registered in the process. The package ships no provider and contains no network client;
+`openai-compatible` records the intention and does nothing until something registers a provider. (The
+design's `[embeddings]` table is the switch; there is no separate `[search.embeddings]` table.) Results
+are one per page. Each matching section is included as written, with the lines to read and why it
+matched.
+
+`forest read <path>[#address] [--lines A-B] [--as <reader>]` prints that page or section. Numbers are
+starred and sign-in values are masked, as on every other read. A path or address outside the reader's
+trees or lane is refused, and the refusal does not include the text.
+
+Every search, read, timeline and MCP call takes its reader from `--as` or from the connection, never
+from the question. Results come only from `agents.readable_trees`. An agent also reads its own raw lane;
+an orchestrator reads every lane. The daily record and the root index are shared. `--named <agent>` is
+the task naming another agent, and it is not an MCP argument, so a tool call cannot widen its scope.
+The answer names the trees that answered.
+
+`forest timeline query "<when>"` and `forest timeline subject <id>` read the same index. A day-part
+phrase is evaluated in each entry's own time zone. A duration, and a range written
+`YYYY-MM-DD..YYYY-MM-DD`, is one window of instants in the forest's zone.
+
+`forest mcp --as <agent> [--http HOST:PORT]` serves `memory_search`, `memory_read`, `memory_timeline`,
+`memory_navigate` and `memory_log`. `memory_navigate` walks one level down from the root index and
+returns the lines the reader may follow, each line as written. `memory_log` appends the caller's own
+turn through the intake writer; the server sets the role to `agent` and the origin from the transport
+(`interactive` on stdio, `headless` on HTTP). A caller-supplied role or origin is refused. The server's
+instructions are under 2,048 characters.
+
+The clients checked here (`claude mcp`, `codex mcp`, `grok mcp`) speak protocol versions 2024-11-05,
+2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also offer the
+older SSE transport; this server does not. The server answers with the newest of those versions that
+the client names. `--http PORT` binds to loopback. Any other host needs `.forest/mcp/token` in mode
+0600, sent as a bearer token, and the token is never printed. Reaching that port from outside the
+machine is the owner's own network decision. The first tool call of each agent is recorded in
+`.forest/mcp/seen.json` (the agent, the time, the tool and the transport, not the question) so
+`forest doctor` can later prove use.
 
 ## 11. The pipeline
 

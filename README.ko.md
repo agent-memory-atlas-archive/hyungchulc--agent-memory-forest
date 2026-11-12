@@ -123,8 +123,8 @@ python -m pip install -e .
 
 버전 1의 명령은 [설계 문서의 package map](docs/v1-design.md#13-package-map)에 있는 `forest …` 명령들입니다.
 **버전 1.0.0a1은 이 트리의 alpha이며, 안정 배포는 아닙니다.** 아래 milestone 1 명령은 이 저장소에 들어 있고 함께 설치됩니다.
-milestone 2는 시작되었습니다. `forest intake`는 이 저장소에 있습니다. 검색, MCP server, setup은 아직 없고,
-milestone 3의 명령도 아직 없습니다. 0.3의 `memory-forest` 명령([`docs/archive-0.3/`](docs/archive-0.3/cli.md)에
+milestone 2에서는 intake, 검색 index, timeline, 읽기 범위, MCP server가 이 저장소에 있습니다. setup은
+아직 없고, milestone 3의 명령도 아직 없습니다. 0.3의 `memory-forest` 명령([`docs/archive-0.3/`](docs/archive-0.3/cli.md)에
 설명)도 나란히 설치된 채로 남아 있습니다.
 
 `forest init`만 새 forest를 만듭니다. 다른 명령은 `--root`를 주면 그 폴더를 쓰고, 아니면 현재 폴더와 그
@@ -145,14 +145,15 @@ forest repeats check                           # 한 subject의 두 leaf가 함�
 forest record kinds                            # update record의 줄을 종류별로
 forest numbers check --all                     # 가리지 않고 다 적힌 계좌·카드·신분증·전화번호
 
-# Milestone 2: intake는 이 저장소에 있음. 검색, MCP server, setup은 아직 없음
+# Milestone 2: intake, index, 검색, timeline, MCP server는 이 저장소에 있음. setup은 아직 없음
 forest intake --from jsonl --once              # 그 도구의 대화 기록에서 새 턴만 raw lane으로
 forest intake status                           # 어댑터가 알아보지 못한 줄의 수
+forest index build                             # .forest/index.sqlite, 지우고 다시 만들 수 있음
+forest search "the old oven" --as till-bot     # 별칭을 먼저, 그다음 단어, 읽는 쪽의 범위 안에서
+forest timeline query "yesterday evening" --as till-bot
+forest mcp --as till-bot                       # search, read, timeline, navigate, memory_log
 forest setup                                   # 아직 없음: 에이전트가 실행
 forest doctor                                  # 아직 없음: 턴이 들어오고 MCP server가 답하는지 확인
-forest search "the big kiln"                   # 아직 없음
-forest timeline query "yesterday evening"      # 아직 없음
-forest mcp                                     # 아직 없음
 
 # Milestone 3: 자라기 (아직 없음)
 forest stage …                                 # 원하는 model을 둘러싼 daily, 정리, 관리 단계
@@ -182,7 +183,7 @@ forest stage …                                 # 원하는 model을 둘러싼 
 | [Contract](docs/contract.md) | forest가 지켜야 할 모든 규칙을 한 번씩 |
 | [Agents](docs/multi-agent.md) | agent tree, 두 가지 정리 방식, 읽기 범위, writer 하나 원칙 |
 | [Design](docs/v1-design.md) | 패키지: 디스크 구조, 설정, package map, milestone |
-| [Structure tools](docs/tools.md) | `forest move`, `levels`, `collections`, `check`, `lint`, `record`, `numbers`, 명령마다 예시 하나 |
+| [Tools](docs/tools.md) | `forest move`, `levels`, `collections`, `check`, `lint`, `record`, `numbers`, `intake`, `index`, `search`, `timeline`, `mcp` |
 | [Comparison](docs/comparison.md) | Mem0, GBrain, LLM Wiki 아이디어, 일반 vector RAG와 무엇이 다른지 |
 | [Privacy and trust](docs/privacy-and-trust.md) | 무엇이 로컬에 남는지, 읽는 쪽이 무엇을 볼 수 있는지, 신뢰할 수 없는 데이터로서의 메모리 |
 | [Roadmap](docs/roadmap.md) | 세 milestone과 그 다음 |
@@ -200,11 +201,12 @@ Agent Memory Forest는 alpha 단계이며, 이 트리의 버전은 1.0.0a1입니
   history 파일을 쓰는 record, archive, `check`, `lint`, 번호 가리기, `recover`), lane이나 설정에서 만들어지는
   agent tree, 모든 commit의 되돌리기 journal. 가상 forest로 하는 테스트가 있고, synthetic forest는 모든
   검사를 통과합니다.
-- **Milestone 2, 연결하고 찾기 (intake는 이 저장소에 있음):** `forest intake`가 각 도구의 대화 기록을
-  그 agent의 raw lane으로 받습니다. 시간 index, 읽기 범위가 적용되는 검색, MCP server, 주인의 agent가
-  직접 하는 설치는 아직 없습니다
-  ([design 15장](docs/v1-design.md#15-connecting-agents)). 읽기 범위 규칙 자체(`agents.readable_trees`)는
-  milestone 1에 있습니다.
+- **Milestone 2, 연결하고 찾기 (intake, index, 검색, MCP server는 이 저장소에 있음):** `forest intake`가
+  각 도구의 대화 기록을 그 agent의 raw lane으로 받습니다. `forest index`가 `.forest/index.sqlite`를 만들고,
+  `forest search`, `forest read`, `forest timeline`이 그 index에서 `agents.readable_trees` 범위로 답합니다.
+  `forest mcp`는 search, read, timeline, navigate, `memory_log`를 제공합니다. 주인의 agent가 직접 하는
+  설치(`forest setup`, `forest doctor`, 안내, plugin)는 아직 없습니다
+  ([design 15장](docs/v1-design.md#15-connecting-agents)).
 - **Milestone 3, 자라기 (아직 없음):** 단계별 프로그램과 prompt, 야간 관리.
 
 0.3 코드(`memory-forest`)는 버전 1 명령이 대신할 때까지 저장소에 남아 있습니다. 평가하고 응용해 보기에는

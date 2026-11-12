@@ -13,18 +13,20 @@ the forest is stored, which reader asks, which pages are opened, and what the ca
 | search results | page sections as written | do not log them broadly |
 | the synthetic example | public | keep it visibly invented and run the release audit |
 
-The package holds no credentials and makes no network request in normal operation. The one optional network
-use is vector search through an embedding provider (`[embeddings] provider`), which is `none` by default.
-The stage programs call a model of your choice; what you send that model is processed under its provider's
-account, retention and regional rules, so review those before connecting private sources.
+The package holds no credentials and makes no network request. `[embeddings] provider` defaults to `none`.
+Setting it to `openai-compatible` records that a provider is wanted. The package ships no provider and
+will not open a connection on its own; vector search runs only when a provider has been registered in the
+process. The stage programs call a model of your choice; what you send that model is processed under its
+provider's account, retention and regional rules, so review those before connecting private sources.
 
 ## What a reader can see
 
 Every reader of a forest has an id, taken from its connection and never from the text of its question. An
-orchestrator reads the whole forest; any other agent reads the shared trees and its own tree, and another
-agent's tree only when the forest's settings or its task allow it. Each tool call records which trees
-answered. See [the contract](contract.md), section 3, "Agent trees", and [Agents](multi-agent.md). Reader scopes
-arrive with milestone 2.
+orchestrator reads the whole forest and every raw lane; any other agent reads the shared trees, its own
+tree and its own raw lane, and another agent's tree only when the forest's settings or its task allow it.
+The daily record is shared. `forest search`, `forest read`, `forest timeline` and `forest mcp` apply that
+rule, and each answer names the trees that answered. See [the contract](contract.md), section 3, "Agent
+trees", and [Agents](multi-agent.md).
 
 ## What the forest keeps out
 

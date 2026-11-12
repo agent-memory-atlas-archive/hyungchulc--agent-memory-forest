@@ -449,4 +449,101 @@ forest levels check
 
 A tool turn records that the tool ran (`ran <name>`), not what it printed, unless `intake.tool_output` is
 `keep`. A session whose environment carries `MEMORY_FOREST_INTERNAL` is a forest stage's own run and is
-not taken in. Search, the MCP server and setup are not part of this command.
+not taken in. Setup is not part of this command. Search, read, timeline and the MCP server are the next
+sections.
+
+## `forest index`
+
+`forest index build` writes `.forest/index.sqlite`. The file is derived: delete it and build again and
+the same rows come back. One row is one page section, one collection entry, one marked block of a daily
+page, or one raw-lane turn. The build holds the `index` lock and publishes the file by replacing it, so
+a search that is already running does not wait. A second build that finds the lock held says so and
+returns. A file whose size and time are unchanged is skipped; if either changed, the file is hashed and
+rewritten only when the bytes changed.
+
+`forest index status` prints the tokenizer, the counts and how many files have changed since the build.
+Where this machine's SQLite has the trigram tokenizer, the line says `trigram+unicode61`: a run of three
+or more characters is found inside unspaced text, and spaced words of any length are found too. Where it
+does not, the line says `unicode61`, and unspaced text is one token.
+
+```sh
+forest index build
+# index: .forest/index.sqlite
+# tokenizer: trigram+unicode61
+# files: 40  units: 180  updated: 40
+forest index status
+# stale: 0
+```
+
+## `forest search` and `forest read`
+
+`forest search` tries registry names and aliases first. A subject named in the question brings its home
+and every leaf that names it in `about:`. Word matches come after that. A vector match is added only
+when `[embeddings] provider` is not `none` and a provider of that name has been registered in the
+process. This package registers none and never opens a network connection.
+
+Results are one per page. Each matching section is printed as written, with why it matched and the lines
+to read. `--as` is the reader. Omit it and the reader is not an agent: shared trees only, and no raw
+lane. `--named` is an agent the task names. It is how one agent is allowed into another's tree. It does
+not open that agent's raw lane.
+
+`forest read` prints a page, or the section an address names. `--lines A-B` keeps that range. The text
+is masked the same way as every other read. A path outside the reader's trees or lane is refused, and
+the refusal does not quote the page.
+
+```sh
+forest search "the old oven" --as till-bot
+# 04 stm/bakery/ovens/deck-oven.md
+#   why: alias: "the old oven" names deck-oven
+#   ...
+# trees: bakery
+forest read "04 stm/bakery/ovens/deck-oven.md#head" --as till-bot --lines 1-12
+```
+
+The answer ends with the trees that produced a result.
+
+## `forest timeline`
+
+`forest timeline query` takes a phrase or a range. English phrases are built in (`yesterday evening`,
+`the last 3 hours`, `yesterday`, a bare date). Korean phrases ship as an example table,
+`memory_forest/phrases/ko.json` (`어제 저녁`, `지난 3시간`). A day-part phrase is judged in each
+entry's own time zone. A duration, and a range written `2051-03-01..2051-03-02`, is one window of
+instants. Hours that are still only in a raw lane are included.
+
+`forest timeline subject <id>` lists the indexed sections of that subject, in time order, inside the
+same scope.
+
+```sh
+forest timeline query "yesterday evening" --as front-desk
+forest timeline query "지난 3시간" --as front-desk
+forest timeline subject deck-oven --as till-bot
+```
+
+## `forest mcp`
+
+`forest mcp --as <agent>` speaks MCP on stdio. The tools are `memory_search`, `memory_read`,
+`memory_timeline`, `memory_navigate` and `memory_log`. Each description says when to use it. The
+server's own instructions stay under 2,048 characters. The reader is `--as`. A tool argument cannot
+set it, and cannot set the role or origin of `memory_log`.
+
+`memory_navigate` starts at the root index and walks one level down. `memory_log` appends the caller's
+own turn through the intake writer. The server sets the role to `agent` and the origin from the
+connection: `interactive` on stdio, `headless` on HTTP.
+
+`--http 8765` binds to loopback. `--http HOST:PORT` on any other address needs `.forest/mcp/token` in
+mode 0600. The client sends that token as a bearer token. The token is never printed. Reaching the port
+from outside the machine is the owner's own network decision; the server does not open that path itself.
+
+The clients checked here, `claude mcp`, `codex mcp` and `grok mcp`, speak protocol versions
+2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also
+offer the older SSE transport. This server does not. It answers with the newest of those versions that
+the client names.
+
+The first tool call of each agent is recorded in `.forest/mcp/seen.json`, with the agent, the time, the
+tool and the transport. The question is not stored. `forest doctor` can later use that file to prove
+the server was called. `forest doctor` itself is not built yet.
+
+```sh
+forest mcp --as till-bot
+forest mcp --as till-bot --http 8765
+```
