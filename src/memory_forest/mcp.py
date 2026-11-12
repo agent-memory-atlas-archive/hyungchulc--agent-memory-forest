@@ -20,12 +20,17 @@ What each protocol revision says, and this server does:
   ("Invalid arguments" are protocol errors). An unknown tool, or arguments that
   are not an object, is ``-32602`` under every revision.
 - An error answering a message whose id could not be read has no ``id`` under
-  2025-11-25 and on HTTP from 2025-03-26 on, which allow that; elsewhere its
-  ``id`` is null, as JSON-RPC 2.0 requires.
+  2025-11-25 on stdio, and on an HTTP error status from 2025-03-26 on. The
+  sentence that allows a body with no ``id`` covers an error status only. A
+  200 payload keeps ``id: null``, as JSON-RPC 2.0 requires when the id could
+  not be read. Elsewhere the ``id`` is null as well.
 - A stdio line is read at most ``MESSAGE_LIMIT`` bytes at a time. A longer line
   is answered with one error and skipped to its end; the next line is read.
-- A batch is refused before ``initialize`` (no revision is agreed yet) and when
-  it holds ``initialize``, which 2025-03-26 says must not be part of a batch.
+- On stdio a batch is refused before ``initialize`` (no revision is agreed yet)
+  and when it holds ``initialize``, which 2025-03-26 says must not be part of a
+  batch. HTTP has no session: the revision is the ``MCP-Protocol-Version``
+  header, and a 2025-03-26 batch that does not contain ``initialize`` is
+  answered. A batch that contains ``initialize`` is refused on both transports.
 
 The clients checked on a development machine (``claude mcp``, ``codex mcp``,
 ``grok mcp``) speak protocol versions 2024-11-05, 2025-03-26, 2025-06-18 and
@@ -427,8 +432,8 @@ def _dispatch_one(
         return None, negotiated
     msg_id = message["id"]
     if not _valid_id(msg_id):
-        # MCP: a request id is a string or an integer, never null.
-        return _unread_error(-32600, "A request id is a string or a number.", negotiated, transport), negotiated
+        # A string or an integer. A boolean, a fraction and null are not.
+        return _unread_error(-32600, "A request id is a string or an integer.", negotiated, transport), negotiated
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
     try:
         if method == "initialize":
@@ -481,6 +486,8 @@ def _call(
     except _BadArguments:
         raise
     except MemoryForestError as exc:
+        if exc.next_step:
+            return _tool_error(json.dumps(exc.as_dict(), ensure_ascii=False, sort_keys=True))
         return _tool_error(exc.message)
     except Exception:
         return _tool_error("The tool could not answer.")
@@ -661,7 +668,9 @@ def _handler(
             try:
                 message = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                broken = _unread_error(-32700, "Parse error.", version, "http")
+                broken = _unread_error(
+                    -32700, "Parse error.", version, "http", omit_id=_http_error_omits_id(version)
+                )
                 self._send(400, json.dumps(broken).encode("utf-8"), version)
                 return
             if isinstance(message, list) and version not in BATCH_VERSIONS:
@@ -854,7 +863,14 @@ def _write_safely(stream: Any, payload: Mapping[str, Any] | list[Any]) -> bool:
 
 
 def _error_body(message: str, version: str | None) -> bytes:
-    return json.dumps(_unread_error(-32600, message, version, "http"), ensure_ascii=False).encode("utf-8")
+    """An HTTP error status. The body may omit ``id``; a 200 payload may not."""
+    reply = _unread_error(-32600, message, version, "http", omit_id=_http_error_omits_id(version))
+    return json.dumps(reply, ensure_ascii=False).encode("utf-8")
+
+
+def _http_error_omits_id(version: str | None) -> bool:
+    """True when this revision allows an error-status body to leave ``id`` out."""
+    return version in NO_ID_VERSIONS or version in NO_ID_HTTP_VERSIONS
 
 
 def _batch_refusal(negotiated: str | None, message: list[Any]) -> str | None:
@@ -871,7 +887,12 @@ def _batch_refusal(negotiated: str | None, message: list[Any]) -> str | None:
 
 
 def _valid_id(value: Any) -> bool:
-    return isinstance(value, str) or (isinstance(value, (int, float)) and not isinstance(value, bool))
+    """A request id is a string or an integer. A boolean is not an integer, and neither is a fraction.
+
+    Every revision this server speaks says a request id is a string or an integer, and that it is never
+    null. JSON ``1`` is an integer. JSON ``1.5`` and ``1.0`` are not.
+    """
+    return isinstance(value, str) or (isinstance(value, int) and not isinstance(value, bool))
 
 
 def _reply_error(message: Any, code: int, text: str, version: str | None, transport: str) -> dict[str, Any]:
@@ -881,10 +902,17 @@ def _reply_error(message: Any, code: int, text: str, version: str | None, transp
     return _unread_error(code, text, version, transport)
 
 
-def _unread_error(code: int, text: str, version: str | None, transport: str) -> dict[str, Any]:
-    """An error for a message whose id could not be read: no ``id`` where the revision allows that, else null."""
+def _unread_error(
+    code: int, text: str, version: str | None, transport: str, *, omit_id: bool = False
+) -> dict[str, Any]:
+    """An error whose id could not be read.
+
+    ``id`` is left out on stdio under 2025-11-25, and on an HTTP error status when ``omit_id`` is set.
+    A 200 payload keeps ``id: null``.
+    """
     reply = _error(None, code, text)
-    if version in NO_ID_VERSIONS or (transport == "http" and version in NO_ID_HTTP_VERSIONS):
+    drop = omit_id or (transport != "http" and version in NO_ID_VERSIONS)
+    if drop:
         del reply["id"]
     return reply
 

@@ -16,9 +16,15 @@ the version 1 commands replace it.
 - `forest index build | status` writes `.forest/index.sqlite`, one row per page section, collection
   entry, daily block and raw-lane turn. The stored text is what a read prints. The build holds the
   `index` lock and writes the file in place in WAL mode, in one transaction, so a reader never waits and
-  no journal file is unlinked under one. A lane that only grew is read from its last indexed line. The
-  index keeps a fingerprint of the masking; when settings, the ledger or the masking rules change, every
-  file is indexed again before a search answers. A file is skipped when its
+  no journal file is unlinked under one. A lane that only grew has the bytes already indexed read and
+  hashed again, to prove the file was only appended to (about 1.3 GiB/s from disk on a development
+  machine); only the new complete lines are parsed. The
+  index keeps a fingerprint of the masking; when settings, the ledger or the masking rules change, or the
+  stored fingerprint cannot be read, every
+  file is indexed again before a search answers. When the fingerprint is the same, a busy open answers
+  from the rows already on file. `forest index reset` removes that derived file and its `-wal` and `-shm`
+  files under the index lock, and nothing else; the refusal `index_unreadable` names that command as its
+  next move. A file is skipped when its
   size and time are unchanged, and hashed when either changed, when `build --verify` is given, or when
   the stored hash is more than a day old. A CJK word of one or two characters is found inside a longer
   word. A page that is not valid UTF-8 is read with replacement characters and named in the status.
@@ -39,8 +45,10 @@ the version 1 commands replace it.
   the trees that answered. `--named` is not an MCP argument
 - `forest mcp --as <agent> [--http HOST:PORT]` serves `memory_search`, `memory_read`, `memory_timeline`,
   `memory_navigate` and `memory_log` over newline-delimited stdio and streamable HTTP, for protocol
-  versions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25. A JSON-RPC batch is accepted for 2025-03-26
-  only, after `initialize` and without it. A tool's input validation error is `isError: true` under
+  versions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25. On stdio a JSON-RPC batch is accepted for
+  2025-03-26 only, after `initialize`, and a batch that holds `initialize` is refused. HTTP keeps no
+  session, so a 2025-03-26 batch that does not contain `initialize` is answered from the protocol header.
+  An HTTP error status may omit `id` where the revision allows it; a 200 payload keeps `id: null`. A tool's input validation error is `isError: true` under
   2025-11-25 and `-32602` before it. A stdio line is bounded while it is read. The server's instructions stay under 2,048 characters. `memory_log` appends through the intake
   writer and reports whether that line was indexed; the server sets the role and the origin. Every HTTP
   bind, loopback included, uses `.forest/mcp/token` in mode 0600. The first start creates it and the

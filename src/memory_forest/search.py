@@ -14,9 +14,12 @@ fingerprint of the masking it was built under (the settings, the ledger's
 judged values, the masking code's version); when the forest's fingerprint
 differs, every file is indexed again before a query is answered.
 
-A raw lane only grows: the index keeps the end of its last complete line and a
-hash of the bytes before it, and when those bytes are unchanged only the new
-complete lines are read. A half-written last line waits for its newline.
+A raw lane only grows. The index keeps the end of its last complete line and a
+hash of the bytes before it. On an update those bytes are read and hashed
+again, in 1 MiB pieces, to prove the file was only appended to. Measured on a
+development machine, that read from disk runs at about 1.3 GiB/s (8 MiB in
+6.3 ms). Only the new complete lines are parsed. A half-written last line
+waits for its newline.
 
 Word search uses FTS5. Where this SQLite has the trigram tokenizer, a run of
 three or more characters is findable inside unspaced text, and a unicode61
@@ -145,14 +148,15 @@ def build(
     The published file is written in place, in one transaction: a reader keeps the snapshot it opened and sees
     the new one after the commit. ``verify`` hashes every file whose size and time are unchanged.
     """
-    try:
-        with _index_writer(root, wait_seconds):
-            result = _write_held(require_real_root(root), None if only is None else list(only), verify=verify)
-    except MemoryForestError as exc:
-        if exc.code not in _BUSY_CODES:
-            raise
-        return _busy_result("an index build is already running")
-    result["indexed"] = True
+    result = _attempt_write(
+        require_real_root(root),
+        None if only is None else list(only),
+        verify=verify,
+        wait_seconds=wait_seconds,
+        busy_message="an index build is already running",
+    )
+    if not result.get("busy"):
+        result["indexed"] = True
     return result
 
 
@@ -165,54 +169,92 @@ def update_files(
 ) -> dict[str, Any]:
     """Update those files in the published index. This does not copy the database.
 
-    ``indexed`` is false when the index lock is already held. The turns are still
-    on disk; the next query brings them in.
+    ``indexed`` is false when the index lock is already held, or when the file cannot be opened for writing.
+    The turns are still on disk; the next query brings them in.
+    """
+    safe = require_real_root(root)
+    result = _attempt_write(
+        safe,
+        [layout.normalize(item) for item in paths],
+        verify=verify,
+        wait_seconds=wait_seconds,
+        busy_message="",
+    )
+    if not result.get("busy"):
+        result["indexed"] = True
+    return result
+
+
+def reset(root: str | os.PathLike[str], *, dry_run: bool = False) -> dict[str, Any]:
+    """Remove the derived index and its ``-wal`` and ``-shm`` files, and nothing else.
+
+    The index lock is held for the removal. Pages, lanes and every other file stay. The next query or
+    ``forest index build`` makes the index again. ``dry_run`` names the files and leaves them.
     """
     safe = require_real_root(root)
     try:
-        with _index_writer(safe, wait_seconds):
-            result = _write_held(safe, [layout.normalize(item) for item in paths], verify=verify)
+        with _index_writer(safe, 0):
+            removed = _unlink_index(safe, dry_run=dry_run)
     except MemoryForestError as exc:
         if exc.code not in _BUSY_CODES:
             raise
-        return _busy_result("")
-    result["indexed"] = True
-    return result
+        return {
+            "busy": True,
+            "dry_run": dry_run,
+            "message": "The index lock is held, so nothing was removed.",
+            "ok": True,
+            "path": INDEX_RELATIVE,
+            "removed": [],
+        }
+    return {"busy": False, "dry_run": dry_run, "ok": True, "path": INDEX_RELATIVE, "removed": removed}
+
+
+_MASKING_BUSY = (
+    "The masking fingerprint differs from the index, or it could not be read, and the index could not be "
+    "rebuilt. Nothing was answered from rows masked under other rules; ask again when the index is free."
+)
 
 
 def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
     """Make the index fit to answer from. Returns how many changed files could not be brought in.
 
-    When the masking (``credentials.fingerprint``) differs from the one the index was built under, every file
-    is indexed again first, waiting up to ``MASKING_WAIT_SECONDS`` for another build; a query never answers
-    from text masked under other rules. Otherwise the changed lane files and daily pages are brought in, by the
-    sizes and times of one listing of their folders.
+    When the masking fingerprint differs from the stored one, or the stored one cannot be read, every file
+    is indexed again first, waiting up to ``MASKING_WAIT_SECONDS``. A query then refuses rather than answer
+    from text masked under other rules. When the fingerprint is the same, a busy index answers from the rows
+    already on file. Otherwise the changed lane files and daily pages are brought in, by the sizes and times
+    of one listing of their folders.
     """
     safe = require_real_root(root)
     listing = _lane_daily_listing(safe)
+    published = _index_path(safe)
     connection = connect(safe)
     if connection is None:
+        # No file yet: a busy build has no rows to answer from. A file whose fingerprint cannot be read
+        # is not answered as stale.
+        if published.is_file():
+            if build(safe, wait_seconds=MASKING_WAIT_SECONDS).get("busy"):
+                raise MemoryForestError("index_busy", _MASKING_BUSY)
+            return 0
         if build(safe, wait_seconds=0).get("busy"):
             return len(listing)
         return 0
     try:
-        meta = _metadata(connection)
-        stored = {
-            row[0]: (row[1], row[2])
-            for row in connection.execute(
-                "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
-                (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
-            )
-        }
+        try:
+            meta = _metadata(connection)
+            stored = {
+                row[0]: (row[1], row[2])
+                for row in connection.execute(
+                    "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
+                    (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
+                )
+            }
+        except sqlite3.DatabaseError as exc:
+            raise index_unreadable_error() from exc
     finally:
         connection.close()
-    if meta.get("masking") != masking_fingerprint(safe):
+    if "masking" not in meta or meta.get("masking") != masking_fingerprint(safe):
         if build(safe, wait_seconds=MASKING_WAIT_SECONDS).get("busy"):
-            raise MemoryForestError(
-                "index_busy",
-                "The masking rules changed and another build still holds the index. Nothing was answered from "
-                "text masked under the old rules; ask again when the build is done.",
-            )
+            raise MemoryForestError("index_busy", _MASKING_BUSY)
         return 0
     changed = sorted(
         {
@@ -242,13 +284,16 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
             "path": INDEX_RELATIVE,
         }
     try:
-        meta = _metadata(connection)
-        files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
-        stale = _stale_files(safe, connection)
-        undecodable = _flagged(connection, "undecodable")
-        torn = _flagged(connection, "torn")
-        verify_due = _verify_due(connection)
+        try:
+            meta = _metadata(connection)
+            files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
+            stale = _stale_files(safe, connection)
+            undecodable = _flagged(connection, "undecodable")
+            torn = _flagged(connection, "torn")
+            verify_due = _verify_due(connection)
+        except sqlite3.DatabaseError as exc:
+            raise index_unreadable_error() from exc
     finally:
         connection.close()
     return {
@@ -283,15 +328,17 @@ def connect(root: str | os.PathLike[str]) -> sqlite3.Connection | None:
             connection = sqlite3.connect(path, timeout=READER_TIMEOUT_SECONDS)
         except sqlite3.OperationalError:
             continue
+        except sqlite3.DatabaseError as exc:
+            raise index_unreadable_error() from exc
         connection.row_factory = sqlite3.Row
         try:
             connection.execute("PRAGMA query_only = ON")
             schema = connection.execute(
                 "SELECT value FROM metadata WHERE key = 'schema'"
             ).fetchone()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
             connection.close()
-            continue
+            raise index_unreadable_error() from exc
         if schema is None or schema[0] != SCHEMA:
             connection.close()
             return None
@@ -314,6 +361,82 @@ def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
 # first, so a second thread waits like a second process instead of meeting ``lock_already_held``.
 _WRITERS = threading.Lock()
 _BUSY_CODES = frozenset({"lock_busy", "lock_already_held"})
+# Tests set this to a path. A build touches it inside the write transaction and waits until it is removed.
+_PAUSE_ENV = "MEMORY_FOREST_INDEX_PAUSE"
+_RESET_COMMAND = "forest index reset"
+
+
+def index_unreadable_error() -> MemoryForestError:
+    """The index is not a database SQLite can read. The next move is ``forest index reset``."""
+    return MemoryForestError(
+        "index_unreadable",
+        "The search index is not a database SQLite can read. Run `forest index reset`.",
+        details={"path": INDEX_RELATIVE},
+        next_step="run",
+        command=_RESET_COMMAND,
+    )
+
+
+def _attempt_write(
+    root: Path,
+    paths: list[str] | None,
+    *,
+    verify: bool,
+    wait_seconds: float,
+    busy_message: str,
+) -> dict[str, Any]:
+    """Write the index, or return a busy result.
+
+    A held index lock, and ``index_busy`` from opening the file (WAL mode cannot be set while an old reader
+    holds it), are both busy. With ``wait_seconds`` above zero an ``index_busy`` open waits out that budget
+    and tries once more before reporting busy. A caller that may answer from the rows on file passes zero
+    and hears about the busy open at once.
+    """
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    retried = False
+    while True:
+        remaining = deadline - time.monotonic()
+        try:
+            with _index_writer(root, remaining if wait_seconds > 0 else 0.0):
+                return _write_held(root, paths, verify=verify)
+        except MemoryForestError as exc:
+            if exc.code not in _BUSY_CODES and exc.code != "index_busy":
+                raise
+            if exc.code != "index_busy" or wait_seconds <= 0 or retried or remaining <= 0:
+                return _busy_result(busy_message)
+            retried = True
+            threading.Event().wait(max(0.0, deadline - time.monotonic()))
+
+
+def _unlink_index(root: Path, *, dry_run: bool) -> list[str]:
+    """The index database and its ``-wal`` and ``-shm`` files. Nothing else, and no symlink is followed."""
+    published = _index_path(root)
+    removed: list[str] = []
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(str(published) + suffix)
+        relative = INDEX_RELATIVE + suffix
+        if path.is_symlink():
+            raise MemoryForestError("symlink_forbidden", "Symlinks are not allowed inside a Memory Forest.")
+        if not path.is_file():
+            continue
+        if not dry_run:
+            path.unlink()
+        removed.append(relative)
+    return removed
+
+
+def _pause_in_transaction() -> None:
+    """Touch the test marker, when one is set, and wait until the test removes it."""
+    raw = os.environ.get(_PAUSE_ENV)
+    if not raw:
+        return
+    path = Path(raw)
+    path.write_text("in-transaction\n", encoding="utf-8")
+    deadline = time.monotonic() + 60
+    while path.exists():
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.02)
 
 
 @contextmanager
@@ -397,10 +520,17 @@ def _write_held(root: Path, paths: list[str] | None, *, verify: bool) -> dict[st
         _set_meta(connection, "tokenizer", tokenizer)
         _set_meta(connection, "masking", masker.fingerprint)
         _set_meta(connection, "built_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        _pause_in_transaction()
         connection.commit()
         files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
         _checkpoint(connection)
+    except sqlite3.DatabaseError as exc:
+        try:
+            connection.rollback()
+        except sqlite3.Error:
+            pass
+        raise index_unreadable_error() from exc
     except BaseException:
         try:
             connection.rollback()
@@ -443,12 +573,7 @@ def _open_writer(published: Path) -> sqlite3.Connection:
         ) from exc
     except sqlite3.DatabaseError as exc:
         connection.close()
-        raise MemoryForestError(
-            "index_unreadable",
-            "The search index is not a database SQLite can read. Stop every forest process, delete "
-            f"{INDEX_RELATIVE} with its -wal and -shm files, and build again.",
-            details={"path": INDEX_RELATIVE},
-        ) from exc
+        raise index_unreadable_error() from exc
     if str(mode).lower() != "wal":
         connection.close()
         raise MemoryForestError(
@@ -685,11 +810,12 @@ def _index_lane(
     info: os.stat_result,
     tokenizer: str,
 ) -> None:
-    """A raw lane only grows. When the bytes already indexed are unchanged, only the new complete lines are read.
+    """A raw lane only grows. The bytes already indexed are read and hashed; only the new complete lines are parsed.
 
     ``indexed_bytes`` is the end of the last complete line indexed and ``prefix_sha256`` the hash of the bytes
-    before it. A half-written last line (no newline yet) is left for the next update. A file that shrank or whose
-    indexed bytes changed is indexed again whole.
+    before it. Those bytes are read again, in 1 MiB pieces, to prove the file was only appended to. A
+    half-written last line (no newline yet) is left for the next update. A file that shrank or whose indexed
+    bytes changed is indexed again whole.
     """
     row = connection.execute(
         "SELECT sha256, undecodable, torn, indexed_bytes, indexed_lines, prefix_sha256 FROM files WHERE path = ?",
@@ -1435,15 +1561,18 @@ def query(
     scope = for_reader(config, built, reader, named=named, root=safe)
     connection = require_index(safe)
     try:
-        pages: dict[str, dict[str, Any]] = {}
-        _add_alias_hits(connection, pages, words, built, scope)
-        _add_word_hits(connection, pages, words, scope)
-        vector_note = _add_vector_hits(connection, pages, words, config, scope)
-        ordered = sorted(pages.values(), key=lambda item: (item["tier"], -item["score"], item["path"]))[:limit]
-        payload = _envelope(scope, ordered, vectors=vector_note, question=words)
-        if stale:
-            payload["stale"] = stale
-        return payload
+        try:
+            pages: dict[str, dict[str, Any]] = {}
+            _add_alias_hits(connection, pages, words, built, scope)
+            _add_word_hits(connection, pages, words, scope)
+            vector_note = _add_vector_hits(connection, pages, words, config, scope)
+            ordered = sorted(pages.values(), key=lambda item: (item["tier"], -item["score"], item["path"]))[:limit]
+            payload = _envelope(scope, ordered, vectors=vector_note, question=words)
+            if stale:
+                payload["stale"] = stale
+            return payload
+        except sqlite3.DatabaseError as exc:
+            raise index_unreadable_error() from exc
     finally:
         connection.close()
 

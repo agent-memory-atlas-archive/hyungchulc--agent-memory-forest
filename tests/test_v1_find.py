@@ -367,20 +367,23 @@ class IndexSearchTests(ForestTestCase):
         self.assertIn("rye crumb", _texts(search.query(self.root, "rye crumb", reader="till-bot")))
 
         started = threading.Event()
+        release = threading.Event()
 
         def hold() -> None:
             with hold_lock(self.root, "index", wait_seconds=2, label="test"):
                 started.set()
-                time.sleep(0.8)
+                release.wait(5)
 
         thread = threading.Thread(target=hold)
         thread.start()
         self.assertTrue(started.wait(2))
-        began = time.monotonic()
         found = search.query(self.root, "유약", reader="till-bot")
-        elapsed = time.monotonic() - began
-        thread.join()
-        self.assertLess(elapsed, 0.4)
+        with self.assertRaises(MemoryForestError) as still_held:
+            with hold_lock(self.root, "index", wait_seconds=0, label="test"):
+                pass
+        self.assertEqual(still_held.exception.code, "lock_already_held")
+        release.set()
+        thread.join(5)
         self.assertIn("유약", _texts(found))
 
     def test_read_masks_a_sign_in_value_and_the_command_prints_json(self) -> None:
@@ -824,8 +827,18 @@ class ReviewPathTests(ForestTestCase):
             self.assertEqual(status, 202)
             self.assertEqual(body, b"")
             sock = socket.create_connection(("127.0.0.1", port), timeout=2)
-            time.sleep(0.7)
+            sock.settimeout(1)
+            closed = False
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    chunk = sock.recv(16)
+                except socket.timeout:
+                    continue
+                closed = chunk == b""
+                break
             sock.close()
+            self.assertTrue(closed)
             status, _body = _post(port, {"jsonrpc": "2.0", "id": 9, "method": "ping"}, token=token)
             self.assertEqual(status, 200)
             probe = socket.create_connection(("127.0.0.1", port), timeout=2)
@@ -973,11 +986,12 @@ class ReviewPathTests(ForestTestCase):
 
     def test_a_second_build_waits_for_nobody_and_a_half_written_file_is_not_what_a_reader_sees(self) -> None:
         started = threading.Event()
+        release = threading.Event()
 
         def hold() -> None:
             with hold_lock(self.root, "index", wait_seconds=2, label="test"):
                 started.set()
-                time.sleep(0.6)
+                release.wait(10)
 
         thread = threading.Thread(target=hold)
         thread.start()
@@ -996,7 +1010,8 @@ class ReviewPathTests(ForestTestCase):
             capture_output=True,
             text=True,
         )
-        thread.join()
+        release.set()
+        thread.join(5)
         self.assertEqual(busy.returncode, 0, busy.stderr)
         self.assertIn("already running", busy.stdout)
         seen = _cli(self, ["search", "유약", "--as", "till-bot", "--json"])
@@ -1193,11 +1208,12 @@ class ReviewPathTests(ForestTestCase):
         with _stdio(self.root) as proc:
             _rpc(proc, _initialize("2025-11-25"))
             started = threading.Event()
+            release = threading.Event()
 
             def hold() -> None:
                 with hold_lock(self.root, "index", wait_seconds=2, label="test"):
                     started.set()
-                    time.sleep(0.8)
+                    release.wait(10)
 
             thread = threading.Thread(target=hold)
             thread.start()
@@ -1211,7 +1227,12 @@ class ReviewPathTests(ForestTestCase):
                     "params": {"name": "memory_log", "arguments": {"text": "the till logged a held index"}},
                 },
             )
-            thread.join()
+            with self.assertRaises(MemoryForestError) as still_held:
+                with hold_lock(self.root, "index", wait_seconds=0, label="test"):
+                    pass
+            self.assertEqual(still_held.exception.code, "lock_already_held")
+            release.set()
+            thread.join(5)
             body = json.loads(logged["result"]["content"][0]["text"])
             self.assertTrue(body["wrote"])
             self.assertFalse(body["indexed"])
@@ -1258,12 +1279,15 @@ def _http(
     host: str | None = None,
     content_type: str = "application/json",
     raw: bytes | None = None,
+    protocol: str | None = None,
 ) -> _Response:
     body = raw if raw is not None else json.dumps(payload).encode("utf-8")
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     headers = {"Content-Type": content_type, "Authorization": "Bearer " + token}
     if host:
         headers["Host"] = host
+    if protocol:
+        headers["MCP-Protocol-Version"] = protocol
     connection.request("POST", "/mcp", body=body, headers=headers)
     response = connection.getresponse()
     data = response.read()

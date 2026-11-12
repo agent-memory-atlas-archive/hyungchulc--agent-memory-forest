@@ -661,6 +661,10 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(_shown(f"forest: {exc.code}: {exc.message}\n"))
             for key, value in sorted(exc.details.items()):
                 sys.stderr.write(_shown(f"  {key}: {value}\n"))
+            if exc.next_step:
+                sys.stderr.write(_shown(f"  next: {exc.next_step}\n"))
+            if exc.command:
+                sys.stderr.write(_shown(f"  command: {exc.command}\n"))
         return 2
     except UnicodeError:
         sys.stderr.write("forest: read_failed: a file could not be read as text\n")

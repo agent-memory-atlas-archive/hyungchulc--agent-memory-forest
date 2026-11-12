@@ -22,6 +22,20 @@ def cmd_index_status(arguments: Any) -> int:
     return 0
 
 
+def cmd_index_reset(arguments: Any) -> int:
+    result = search.reset(forest_root(arguments), dry_run=bool(arguments.dry_run))
+    if arguments.json:
+        _print_json(result)
+        return 0
+    if result.get("busy"):
+        _print_lines([result["message"]])
+        return 0
+    verb = "would remove" if result.get("dry_run") else "removed"
+    removed = result.get("removed") or []
+    _print_lines([f"{verb}: {path}" for path in removed] or [f"{verb}: (nothing)"])
+    return 0
+
+
 def cmd_search(arguments: Any) -> int:
     result = search.query(
         forest_root(arguments),
@@ -161,6 +175,18 @@ COMMANDS: list[ForestCommand] = [
         ),
     ),
     ForestCommand(("index", "status"), cmd_index_status, "Show the index tokenizer, counts and files changed since the build."),
+    ForestCommand(
+        ("index", "reset"),
+        cmd_index_reset,
+        "Remove the derived index and its -wal and -shm files, and nothing else. The next query builds it again.",
+        (
+            arg(
+                "--dry-run",
+                action="store_true",
+                help="Name the files that would be removed, and remove nothing.",
+            ),
+        ),
+    ),
     ForestCommand(
         ("search",),
         cmd_search,

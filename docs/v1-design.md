@@ -211,16 +211,20 @@ snapshot and sees the new one after the commit. A build that must index everythi
 tokenizer or masking) empties the tables and fills them inside that same transaction. Nothing replaces,
 renames or unlinks the database or its `-wal` and `-shm` files: SQLite's notes on how to corrupt a
 database (sections 1.3 and 2.5) warn that a process holding the old file can then share a journal with a
-new one. A file SQLite cannot read is refused (`index_unreadable`) rather than replaced; the owner deletes
-it with its journal files when no forest process runs, and builds again. Publishing a fresh copy by an
-atomic rename was the other model; it was not chosen because it copies the whole database for every
-appended line.
+new one. A build, an update and a `memory_log` do not unlink those files. A file SQLite cannot read is
+refused (`index_unreadable`) rather than replaced. The refusal's next move is `run` with the command
+`forest index reset`: under the index lock that command removes the database and its `-wal` and `-shm`
+files and nothing else, and the next query or `forest index build` makes the index again. Publishing a
+fresh copy by an atomic rename was the other model; it was not chosen because it copies the whole
+database for every appended line.
 
 **Appends.** A raw lane only grows. For each lane file the index keeps `indexed_bytes`, the end of its
-last complete line, and the hash of the bytes before it. When the file has only grown and that hash still
-matches, only the new complete lines are parsed and inserted; anything else indexes the file again whole.
-A last line with no newline yet is not indexed; the next update takes it when it is complete. The masking
-settings and the ledger are loaded once per build or update, not once per row.
+last complete line, and the hash of the bytes before it. When the file has only grown, those bytes are
+read and hashed again, in 1 MiB pieces, to prove they are unchanged. Measured on a development machine,
+that read from disk runs at about 1.3 GiB/s (8 MiB in 6.3 ms). Only the new complete lines are parsed
+and inserted; anything else indexes the file again whole. A last line with no newline yet is not indexed;
+the next update takes it when it is complete. The masking settings and the ledger are loaded once per
+build or update, not once per row.
 
 `forest index status` reports the
 tokenizer, the counts, which files have changed, and any page that was not valid UTF-8. Such a page is
@@ -237,10 +241,13 @@ confirm a guess at a value the read would hide. What a read hides can change aft
 new `credentials.label_words` entry, another number setting, a value judged into the ledger, or a new
 masking rule in the code. So the index keeps one fingerprint of everything that masking reads (the
 `[credentials]` and `[numbers]` settings, the set of judged sign-in digests, and the masking code's
-`MASKING_VERSION`). When the forest's fingerprint differs from the stored one, at a build, at an update
-or at a query, every file is indexed again before anything is answered. A query that finds another build
-holding the lock waits for it, and refuses (`index_busy`) rather than answer from text masked under the
-old rules. `forest index status` says `masking: current` or `changed`.
+`MASKING_VERSION`). When the forest's fingerprint differs from the stored one, or the stored one cannot
+be read, at a build, at an update or at a query, every file is indexed again before anything is answered.
+A query that cannot rebuild waits for the other build, and refuses (`index_busy`) rather than answer from
+text masked under the old rules. When the fingerprint is the same, a busy open answers from the rows
+already on file and says `stale`. The fingerprint check and the answer are two snapshots: a masking
+change that lands in the milliseconds between them is answered under the old rules, the same as a query
+that arrived a moment earlier. `forest index status` says `masking: current` or `changed`.
 
 Where the linked SQLite has the trigram tokenizer, a run
 of three or more characters is findable inside unspaced text, and a unicode61 index beside it finds
@@ -284,19 +291,23 @@ turn through the intake writer; the server sets the role to `agent` and the orig
 instructions are under 2,048 characters.
 
 `memory_log` answers `indexed: true` when the new line is in the index and `indexed: false` when the
-index lock was busy. The line is in the lane either way. The update parses only the new line and writes
+index lock was busy. The line is in the lane either way. The update reads and hashes the bytes already indexed, parses only the new line, and writes
 it into the published index; it does not copy the database.
 
 The clients checked here (`claude mcp`, `codex mcp`, `grok mcp`) speak protocol versions 2024-11-05,
 2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also offer the
 older SSE transport; this server does not. Stdio is one JSON-RPC message per line. A batch is accepted
 for 2025-03-26, the revision that added batches, and refused for the others. The server answers with
-the newest of those versions that the client names. A batch before `initialize`, or one that holds
-`initialize`, is refused. An argument that fails a tool's input schema is a tool result with
+the newest of those versions that the client names. On stdio, a batch before `initialize`, or one that
+holds `initialize`, is refused. HTTP keeps no session: the revision is the `MCP-Protocol-Version`
+header, and a 2025-03-26 batch that does not contain `initialize` is answered. A batch that contains
+`initialize` is refused on both transports. The other revisions have no batches, so a batch is refused
+on both. An argument that fails a tool's input schema is a tool result with
 `isError: true` under 2025-11-25 and JSON-RPC `-32602` under the earlier versions, as each version's
 tools page says; an unknown tool is `-32602` under all of them. An error for a message whose id could
-not be read has no `id` where the version allows that (2025-11-25, and HTTP error bodies from
-2025-03-26) and a null `id` elsewhere, as JSON-RPC 2.0 says. A stdio line longer than 1,000,000 bytes is
+not be read has no `id` on stdio under 2025-11-25, and on an HTTP error status from 2025-03-26. A 200
+payload keeps `id: null`, and so does every other case, as JSON-RPC 2.0 says. A request id is a string
+or an integer. A stdio line longer than 1,000,000 bytes is
 read in bounded pieces, answered with one error and skipped. `--http PORT` binds to loopback. Every bind,
 loopback included, uses `.forest/mcp/token` in mode 0600. The first start creates the file and never
 prints it. The client sends it as a bearer token. A request whose `Origin` is present and is not a

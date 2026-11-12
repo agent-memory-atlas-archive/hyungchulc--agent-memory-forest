@@ -6,6 +6,7 @@ real person, shop, code or transcript.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -19,7 +20,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
-from memory_forest import credential_ledger, layout, mcp, search
+from memory_forest import credential_ledger, credentials, layout, mcp, search
 from memory_forest.errors import MemoryForestError
 from memory_forest.locking import hold_lock
 
@@ -54,6 +55,35 @@ def _mcp_search(proc: subprocess.Popen, words: str, msg_id: int) -> list[dict]:
     )
     assert not reply["result"]["isError"], reply
     return json.loads(reply["result"]["content"][0]["text"])["results"]
+
+
+def _delete_reader(path: Path, schema: str | None = None) -> sqlite3.Connection:
+    """A reader that keeps the file out of WAL mode, so a writer cannot set it."""
+    connection = sqlite3.connect(path)
+    mode = connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0]
+    if mode != "delete":
+        connection.close()
+        raise AssertionError(mode)
+    if schema is not None:
+        connection.execute("UPDATE metadata SET value = ? WHERE key = 'schema'", (schema,))
+        connection.commit()
+    connection.execute("BEGIN")
+    connection.execute("SELECT COUNT(*) FROM units").fetchone()
+    return connection
+
+
+def _corrupt_pages(path: Path) -> None:
+    """Keep the SQLite header and destroy the pages. Sidecars go, so the bad pages are what is read."""
+    data = bytearray(path.read_bytes())
+    if not bytes(data).startswith(b"SQLite format 3\x00"):
+        raise AssertionError("not a database header")
+    for index in range(100, len(data)):
+        data[index] = 0xA5
+    path.write_bytes(data)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(path) + suffix)
+        if sidecar.is_file() and not sidecar.is_symlink():
+            sidecar.unlink()
 
 
 def _holds(result: dict, text: str) -> bool:
@@ -165,13 +195,72 @@ class MaskingFingerprintTests(ForestTestCase):
 
     def test_a_query_refuses_rather_than_answer_under_old_masking_when_it_cannot_rebuild(self) -> None:
         self._settings('\n[credentials]\nlabel_words = ["password", "combo"]\n')
-        with mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.2), mock.patch.object(
-            search, "build", return_value={"busy": True, "indexed": False}
-        ):
-            with self.assertRaises(MemoryForestError) as refused:
-                search.query(self.root, "zebra99", reader="till-bot")
+        started, release = threading.Event(), threading.Event()
+
+        def hold() -> None:
+            with search._index_writer(self.root, 2):
+                started.set()
+                release.wait(5)
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        self.assertTrue(started.wait(2))
+        try:
+            with mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.2):
+                began = time.monotonic()
+                with self.assertRaises(MemoryForestError) as refused:
+                    search.query(self.root, "zebra99", reader="till-bot")
+                waited = time.monotonic() - began
+            self.assertFalse(search._WRITERS.acquire(blocking=False))
+        finally:
+            release.set()
+            thread.join(5)
+        self.assertGreaterEqual(waited, 0.15)
         self.assertEqual(refused.exception.code, "index_busy")
         self.assertNotIn("zebra99", refused.exception.message)
+
+    def test_a_busy_open_answers_stale_when_the_fingerprint_matches(self) -> None:
+        held = _delete_reader(self.root / layout.STATE_DIR / "index.sqlite")
+        try:
+            lane = self.root / TILL
+            with lane.open("a", encoding="utf-8") as handle:
+                handle.write(_turn(9, "the till noted a fresh tray"))
+            found = search.query(self.root, "zebra99", reader="till-bot")
+        finally:
+            held.close()
+        self.assertGreater(found.get("stale", 0), 0)
+        self.assertIn(LOCKER, [page["path"] for page in found["results"]])
+        self.assertIn("zebra99", json.dumps(found))
+
+    def test_a_busy_open_refuses_when_the_fingerprint_differs(self) -> None:
+        self._settings('\n[credentials]\nlabel_words = ["password", "combo"]\n')
+        held = _delete_reader(self.root / layout.STATE_DIR / "index.sqlite")
+        try:
+            with mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.2):
+                began = time.monotonic()
+                with self.assertRaises(MemoryForestError) as refused:
+                    search.query(self.root, "zebra99", reader="till-bot")
+                waited = time.monotonic() - began
+        finally:
+            held.close()
+        self.assertGreaterEqual(waited, 0.15)
+        self.assertEqual(refused.exception.code, "index_busy")
+        self.assertNotIn("zebra99", refused.exception.message)
+
+    def test_a_busy_open_refuses_when_the_fingerprint_cannot_be_read(self) -> None:
+        path = self.root / layout.STATE_DIR / "index.sqlite"
+        held = _delete_reader(path, schema="9")
+        try:
+            with mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.2):
+                began = time.monotonic()
+                with self.assertRaises(MemoryForestError) as refused:
+                    search.query(self.root, "zebra99", reader="till-bot")
+                waited = time.monotonic() - began
+        finally:
+            held.close()
+        self.assertGreaterEqual(waited, 0.15)
+        self.assertEqual(refused.exception.code, "index_busy")
+        self.assertNotIn("zebra99", str(refused.exception))
 
 
 class LaneAppendTests(ForestTestCase):
@@ -272,32 +361,34 @@ class PublishingTests(ForestTestCase):
         self.assertIsNotNone(cursor.fetchone())  # a read transaction is open across the build
         lane = self.root / TILL
         lane.write_text(lane.read_text(encoding="utf-8").replace("went out", "came back"), encoding="utf-8")
+        marker = self.root / layout.STATE_DIR / "index-pause"
         builder = subprocess.Popen(
             [sys.executable, "-c",
              "import sys; from memory_forest import search; search.build(sys.argv[1], wait_seconds=30)",
              str(self.root)],
-            env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(sys.path),
+                search._PAUSE_ENV: str(marker),
+            },
         )
         try:
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline and builder.poll() is None:
-                try:
-                    with hold_lock(self.root, "index", wait_seconds=0, label="test"):
-                        pass
-                except MemoryForestError as exc:
-                    self.assertEqual(exc.code, "lock_busy")
-                    break
-                time.sleep(0.005)
+            deadline = time.monotonic() + 60
+            while not marker.is_file() and time.monotonic() < deadline and builder.poll() is None:
+                time.sleep(0.02)
+            self.assertTrue(marker.is_file(), "the build did not reach its transaction")
             failures: list[BaseException] = []
             answered = 0
-            while builder.poll() is None:
-                try:
-                    search.query(self.root, "counter", reader="till-bot", limit=3)
-                    answered += 1
-                except BaseException as exc:  # the assertion is that nothing is raised
-                    failures.append(exc)
+            try:
+                search.query(self.root, "counter", reader="till-bot", limit=3)
+                answered += 1
+            except BaseException as exc:  # the assertion is that nothing is raised
+                failures.append(exc)
+            marker.unlink()
             self.assertEqual(builder.wait(timeout=60), 0)
         finally:
+            if marker.exists():
+                marker.unlink()
             if builder.poll() is None:
                 builder.kill()
                 builder.wait()
@@ -315,7 +406,81 @@ class PublishingTests(ForestTestCase):
         with self.assertRaises(MemoryForestError) as refused:
             search.build(self.root)
         self.assertEqual(refused.exception.code, "index_unreadable")
+        self.assertEqual(refused.exception.next_step, "run")
+        self.assertEqual(refused.exception.command, "forest index reset")
         self.assertTrue(self.index.exists())
+
+    def test_malformed_pages_are_the_same_refusal_and_reset_removes_only_the_index(self) -> None:
+        page = self.root / LOCKER
+        page_text = page.read_text(encoding="utf-8")
+        decoy = self.root / layout.STATE_DIR / "kept.txt"
+        decoy.write_bytes(b"leave this")
+        note = self.root / layout.STATE_DIR / "notes.txt"
+        note.write_text("leave this too\n", encoding="utf-8")
+        wal = Path(str(self.index) + "-wal")
+        shm = Path(str(self.index) + "-shm")
+        wal.write_bytes(b"wal")
+        shm.write_bytes(b"shm")
+        preview = _cli(self, ["index", "reset", "--dry-run"])
+        self.assertEqual(preview[0], 0, preview[2])
+        self.assertIn("would remove: .forest/index.sqlite", preview[1])
+        self.assertIn("would remove: .forest/index.sqlite-wal", preview[1])
+        self.assertIn("would remove: .forest/index.sqlite-shm", preview[1])
+        self.assertTrue(self.index.is_file())
+        self.assertEqual(decoy.read_bytes(), b"leave this")
+        _corrupt_pages(self.index)
+        with self.assertRaises(MemoryForestError) as refused:
+            search.query(self.root, "counter", reader="till-bot")
+        self.assertEqual(refused.exception.code, "index_unreadable")
+        self.assertEqual(refused.exception.as_dict()["next"], "run")
+        self.assertEqual(refused.exception.as_dict()["command"], "forest index reset")
+        self.assertTrue(self.index.is_file())
+        cli = _cli(self, ["search", "counter", "--as", "till-bot", "--json"])
+        self.assertEqual(cli[0], 2, cli[1] + cli[2])
+        payload = json.loads(cli[1])
+        self.assertEqual(payload["error"]["code"], "index_unreadable")
+        self.assertEqual(payload["error"]["next"], "run")
+        self.assertEqual(payload["error"]["command"], "forest index reset")
+        with _stdio(self.root) as proc:
+            _rpc(proc, _initialize("2025-11-25"))
+            reply = _rpc(
+                proc,
+                {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                 "params": {"name": "memory_search", "arguments": {"words": "counter"}}},
+            )
+        self.assertTrue(reply["result"]["isError"])
+        body = json.loads(reply["result"]["content"][0]["text"])
+        self.assertEqual(body["next"], "run")
+        self.assertEqual(body["command"], "forest index reset")
+        token = mcp.ensure_token(self.root).decode("ascii")
+        server = mcp.serve_http(self.root, "till-bot", "127.0.0.1", 0, token=token.encode("ascii"))
+        try:
+            response = _http(
+                server.server_address[1],
+                {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                 "params": {"name": "memory_search", "arguments": {"words": "counter"}}},
+                token=token,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(response.status, 200)
+        http_body = json.loads(response.body)
+        self.assertTrue(http_body["result"]["isError"])
+        self.assertEqual(json.loads(http_body["result"]["content"][0]["text"])["command"], "forest index reset")
+        wal.write_bytes(b"wal")
+        shm.write_bytes(b"shm")
+        removed = _cli(self, ["index", "reset"])
+        self.assertEqual(removed[0], 0, removed[2])
+        self.assertIn("removed: .forest/index.sqlite", removed[1])
+        self.assertFalse(self.index.exists())
+        self.assertFalse(wal.exists())
+        self.assertFalse(shm.exists())
+        self.assertEqual(decoy.read_bytes(), b"leave this")
+        self.assertEqual(note.read_text(encoding="utf-8"), "leave this too\n")
+        self.assertEqual(page.read_text(encoding="utf-8"), page_text)
+        again = search.query(self.root, "counter", reader="till-bot")
+        self.assertIn(TILL, [item["path"] for item in again["results"]])
 
 
 class ProtocolTests(ForestTestCase):
@@ -427,6 +592,45 @@ class ProtocolTests(ForestTestCase):
             self.assertEqual(again["error"]["code"], -32600)
             accepted = _rpc(proc, [{"jsonrpc": "2.0", "id": 3, "method": "ping"}])
             self.assertEqual([item["id"] for item in accepted], [3])
+            fraction = _rpc(proc, {"jsonrpc": "2.0", "id": 1.5, "method": "ping"})
+            self.assertEqual(fraction["error"]["code"], -32600)
+            self.assertIsNone(fraction["id"])
+        token = mcp.ensure_token(self.root).decode("ascii")
+        server = mcp.serve_http(self.root, "till-bot", "127.0.0.1", 0, token=token.encode("ascii"))
+        try:
+            early = _http(
+                server.server_address[1],
+                [{"jsonrpc": "2.0", "id": 7, "method": "ping"}],
+                token=token,
+                protocol="2025-03-26",
+            )
+            self.assertEqual(early.status, 200)
+            self.assertEqual(json.loads(early.body)[0]["id"], 7)
+            folded = _http(
+                server.server_address[1],
+                [{"jsonrpc": "2.0", "id": 8, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}}],
+                token=token,
+                protocol="2025-03-26",
+            )
+            self.assertEqual(folded.status, 200)
+            folded_body = json.loads(folded.body)
+            self.assertEqual(folded_body["error"]["code"], -32600)
+            self.assertIn("id", folded_body)
+            self.assertIsNone(folded_body["id"])
+            mixed = _http(
+                server.server_address[1],
+                [{"jsonrpc": "2.0", "id": 9, "method": "ping"}, "not-an-object"],
+                token=token,
+                protocol="2025-03-26",
+            )
+            self.assertEqual(mixed.status, 200)
+            items = json.loads(mixed.body)
+            self.assertEqual(items[0]["id"], 9)
+            self.assertIsNone(items[1]["id"])
+            self.assertEqual(items[1]["error"]["code"], -32600)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 class QuerySizeTests(ForestTestCase):
@@ -458,6 +662,48 @@ class QuerySizeTests(ForestTestCase):
         with _counting(layout, "resolve") as walked:
             self.assertEqual(search.refresh_lanes_and_daily(self.root), 0)
         self.assertLessEqual(walked["n"], 4)
+
+
+# One digest of MASKING_VERSION and the sources a read runs. Raise the version when those sources change,
+# then replace this pin with the digest the failure prints.
+_MASKING_PIN = "d5d949f50d61f7655b190dc9942ada8b01139db1af496bfcd716d30e21edbee1"
+_MASKING_SOURCES = (
+    ("numbers.py", "star_numbers: the code a read runs on a number"),
+    ("credentials.py", "the sign-in rules, shown, and MASKING_VERSION"),
+    ("credential_ledger.py", "mask_known: the judged digests a read applies"),
+)
+
+
+def _masking_digest() -> str:
+    root = Path(__file__).resolve().parents[1] / "src" / "memory_forest"
+    digest = hashlib.sha256()
+    digest.update(credentials.MASKING_VERSION.encode())
+    digest.update(b"\0")
+    for name, _why in _MASKING_SOURCES:
+        data = (root / name).read_bytes()
+        digest.update(name.encode())
+        digest.update(b"\0")
+        digest.update(data)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+class MaskingSourcePinTests(unittest.TestCase):
+    """MASKING_VERSION moves when the code a read runs on changes."""
+
+    def test_the_pin_covers_the_masking_sources_and_the_version(self) -> None:
+        digest = _masking_digest()
+        covered = "\n".join(f"- {name}: {why}" for name, why in _MASKING_SOURCES)
+        self.assertEqual(
+            digest,
+            _MASKING_PIN,
+            "MASKING_VERSION is "
+            f"{credentials.MASKING_VERSION!r} and the pinned digest does not match the sources.\n"
+            "If the masking behavior changed, raise MASKING_VERSION in credentials.py.\n"
+            "Then set _MASKING_PIN in this test to the new digest.\n"
+            f"Covered files:\n{covered}\n"
+            f"digest: {digest}",
+        )
 
 
 if __name__ == "__main__":

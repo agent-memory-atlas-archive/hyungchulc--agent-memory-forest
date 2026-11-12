@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -151,29 +152,32 @@ def subject(
     scope = for_reader(config, built, reader, named=named, root=safe)
     connection = search.require_index(safe)
     try:
-        earliest = {
-            int(row[0]): row[1]
-            for row in connection.execute("SELECT unit_id, MIN(start_utc) FROM times GROUP BY unit_id")
-        }
-        pages: dict[str, dict[str, Any]] = {}
-        page_stamp: dict[str, str] = {}
-        for row in connection.execute("SELECT * FROM units"):
-            unit = search._row_dict(row)
-            if subject_id not in unit["subjects"] or not search._visible(scope, unit["path"]):
-                continue
-            stamp = earliest.get(int(row["id"])) or "9999"
-            current = page_stamp.get(unit["path"])
-            if current is None or stamp < current:
-                page_stamp[unit["path"]] = stamp
-            search._add_row(
-                pages, unit, f"subject: {subject_id}", tier=0, score=0, scope=scope,
-            )
-        ranked = sorted(pages.values(), key=lambda item: (page_stamp.get(item["path"], "9999"), item["path"]))
-        payload = search._envelope(scope, ranked[:limit])
-        payload["subject"] = subject_id
-        if stale:
-            payload["stale"] = stale
-        return payload
+        try:
+            earliest = {
+                int(row[0]): row[1]
+                for row in connection.execute("SELECT unit_id, MIN(start_utc) FROM times GROUP BY unit_id")
+            }
+            pages: dict[str, dict[str, Any]] = {}
+            page_stamp: dict[str, str] = {}
+            for row in connection.execute("SELECT * FROM units"):
+                unit = search._row_dict(row)
+                if subject_id not in unit["subjects"] or not search._visible(scope, unit["path"]):
+                    continue
+                stamp = earliest.get(int(row["id"])) or "9999"
+                current = page_stamp.get(unit["path"])
+                if current is None or stamp < current:
+                    page_stamp[unit["path"]] = stamp
+                search._add_row(
+                    pages, unit, f"subject: {subject_id}", tier=0, score=0, scope=scope,
+                )
+            ranked = sorted(pages.values(), key=lambda item: (page_stamp.get(item["path"], "9999"), item["path"]))
+            payload = search._envelope(scope, ranked[:limit])
+            payload["subject"] = subject_id
+            if stale:
+                payload["stale"] = stale
+            return payload
+        except sqlite3.DatabaseError as exc:
+            raise search.index_unreadable_error() from exc
     finally:
         connection.close()
 
@@ -232,34 +236,37 @@ def _collect(
     scope = for_reader(config, built, reader, named=named, root=root)
     connection = search.require_index(root)
     try:
-        pages: dict[str, dict[str, Any]] = {}
-        stamps: dict[str, str] = {}
-        rows = connection.execute(
-            "SELECT units.*, times.start_utc, times.end_utc, times.zone AS time_zone "
-            "FROM times JOIN units ON units.id = times.unit_id"
-        ).fetchall()
-        for row in rows:
-            start = search._parse_stamp(row["start_utc"])
-            end = search._parse_stamp(row["end_utc"])
-            if not _in_when(start, end, row["time_zone"] or "UTC", when, config.zone):
-                continue
-            unit = search._row_dict(row)
-            if not search._visible(scope, unit["path"]):
-                continue
-            page_zone = _page_zone(row["page_zone"] if "page_zone" in row.keys() else "", config)
-            matched_lines = _matching_lines(unit["text"], when, config, page_zone)
-            if matched_lines:
-                unit = {**unit, "text": "\n".join(matched_lines)}
-            why = f"time: {row['start_utc']} falls in {phrase}"
-            search._add_row(pages, unit, why, tier=0, score=0, scope=scope)
-            stamps.setdefault(unit["path"], row["start_utc"])
-            if row["start_utc"] < stamps[unit["path"]]:
-                stamps[unit["path"]] = row["start_utc"]
-        ordered = sorted(pages.values(), key=lambda item: stamps.get(item["path"], ""))[:limit]
-        payload = search._envelope(scope, ordered)
-        payload["phrase"] = phrase
-        payload["when"] = _when_dict(when)
-        return payload
+        try:
+            pages: dict[str, dict[str, Any]] = {}
+            stamps: dict[str, str] = {}
+            rows = connection.execute(
+                "SELECT units.*, times.start_utc, times.end_utc, times.zone AS time_zone "
+                "FROM times JOIN units ON units.id = times.unit_id"
+            ).fetchall()
+            for row in rows:
+                start = search._parse_stamp(row["start_utc"])
+                end = search._parse_stamp(row["end_utc"])
+                if not _in_when(start, end, row["time_zone"] or "UTC", when, config.zone):
+                    continue
+                unit = search._row_dict(row)
+                if not search._visible(scope, unit["path"]):
+                    continue
+                page_zone = _page_zone(row["page_zone"] if "page_zone" in row.keys() else "", config)
+                matched_lines = _matching_lines(unit["text"], when, config, page_zone)
+                if matched_lines:
+                    unit = {**unit, "text": "\n".join(matched_lines)}
+                why = f"time: {row['start_utc']} falls in {phrase}"
+                search._add_row(pages, unit, why, tier=0, score=0, scope=scope)
+                stamps.setdefault(unit["path"], row["start_utc"])
+                if row["start_utc"] < stamps[unit["path"]]:
+                    stamps[unit["path"]] = row["start_utc"]
+            ordered = sorted(pages.values(), key=lambda item: stamps.get(item["path"], ""))[:limit]
+            payload = search._envelope(scope, ordered)
+            payload["phrase"] = phrase
+            payload["when"] = _when_dict(when)
+            return payload
+        except sqlite3.DatabaseError as exc:
+            raise search.index_unreadable_error() from exc
     finally:
         connection.close()
 
