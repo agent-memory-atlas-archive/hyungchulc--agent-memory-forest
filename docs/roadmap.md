@@ -10,8 +10,10 @@ is being ported in three milestones.
    the lint, and the structure tools: `forest init`, `forest registry`, `forest move`, `forest levels`,
    `forest collections`, `forest record`, `forest archive`, `forest check` and `forest lint`, with tests on
    made-up forests.
-2. **Finding.** The time index (`forest timeline`), search with reader scopes (`forest search`,
-   `forest read`), and the MCP server (`forest mcp`).
+2. **Connecting and finding.** Intake from each agent's own transcripts into its raw lane
+   (`forest intake` and the adapters), the time index (`forest timeline`), search with reader scopes
+   (`forest search`, `forest read`), the MCP server (`forest mcp`), and setup that the owner's agent
+   carries out itself (`forest setup`, `forest doctor`, the guide for agents, one plugin per tool).
 3. **Growing.** The stage programs and their prompts (`forest stage`): the daily record from the raw lanes,
    the bounded filing run, and the nightly upkeep that applies levels, works the lint's upkeep list down,
    trims records and re-checks stale current-state lines.

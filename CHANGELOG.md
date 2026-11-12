@@ -6,11 +6,16 @@ All notable changes to Memory Forest are documented in this file. The project fo
 
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones. The
 `forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests;
-milestone 2 (finding: the time index, search, the MCP server) and milestone 3 (growing: the stage programs
+milestone 2 (connecting and finding: intake, the time index, search, the MCP server, setup by the
+owner's agent) and milestone 3 (growing: the stage programs
 and the nightly upkeep) are not built yet. Nothing is released. The 0.3 `memory-forest` command stays in
 the tree until the version 1 commands replace it.
 
 ### Added
+
+- `docs/v1-design.md` section 15, connecting agents: the turn record and `forest intake` with per-tool
+  adapters and cursors, the MCP server and skill an agent uses, and setup that the owner's agent drives
+  through `forest setup` and `forest doctor` (designed, not built); milestone 2 is widened to hold it
 
 - the `forest` command (milestone 1): `init`; `registry build | check | show`; `move` with `leaf`,
   `rename`, `promote`, `merge`, `archive`, `move-branch`, `new-tree`, `new-agent`, `retire-tree`,

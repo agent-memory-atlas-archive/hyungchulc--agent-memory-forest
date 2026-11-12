@@ -297,15 +297,99 @@ provider = "none"               # none | openai-compatible
 | `repeats` | fact lines, the index leaf, the judged ledger; repeated lines to their one home | `forest repeats` |
 | `view` | a read-only view of one forest that the checks share: settings, registry, pages read once | |
 | `cli_upkeep` | the record, numbers, check and lint commands | `forest record`, `forest numbers`, `forest check`, `forest lint` |
+| `intake`, `adapters` | the turn record, the one writer of a raw lane, per-tool transcript readers and their cursors | `forest intake` |
 | `timeline` | the time index and time phrases | `forest timeline` |
 | `search`, `scope` | the search index, coarse-to-fine retrieval, reader scopes | `forest search`, `forest read` |
 | `mcp` | the MCP server | `forest mcp` |
 | `stage` | daily store, bounded filing interval, cursors, receipts | `forest stage` |
+| `setup`, `doctor` | setup driven by the agent, the connection proof, the guide for agents | `forest setup`, `forest doctor`, `forest guide` |
 
 ## 14. Milestones
 
 1. **Skeleton.** The contract, this design, a synthetic forest with shared trees and agent trees that
    passes the lint, and the structure tools: registry, move, levels, collections, record, archive, maps,
    validate, lint, with tests on made-up forests.
-2. **Finding.** The time index, search with scopes, the MCP server.
+2. **Connecting and finding.** Intake (the turn record, `forest intake`, the adapters), the time index,
+   search with scopes, the MCP server, and setup (`forest setup`, `forest doctor`, the guide, the plugins):
+   section 15.
 3. **Growing.** The stage programs and their prompts, the nightly upkeep.
+
+## 15. Connecting agents
+
+A forest is used by agents that already exist: a coding agent in a terminal, a desktop assistant, a bot in
+a chat app. Every connected agent gets the same three doors (intake, use, upkeep), and setting them up is
+that agent's own job.
+
+### 15.1 Intake: how a conversation reaches the raw lane
+
+- **The record.** One line per turn in `06 istm/<agent>/<YYYY-MM-DD>.jsonl`: `id` (stable for the turn:
+  the agent, the session and the turn's own id, or a hash of its place and text where the tool gives none),
+  `at` (with its offset), `session`, `role` (`owner`, `agent`, `tool`, or `other:<name>`), `text`, `source`
+  (the transcript and the place in it the turn came from) and, for a tool turn, the tool's `name`.
+- **One writer.** `forest intake` is the only program that appends to a lane. It takes turns from an
+  adapter, skips a turn whose `id` the lane already holds, and masks numbers and sign-in values at the door
+  by the contract's rules for them. A tool turn records that the tool ran, not what it printed, unless
+  `intake.tool_output = "keep"`: tool output is where keys and tokens leak.
+- **Adapters.** An adapter knows one thing: how to read one tool's own transcript (where the files are, how
+  a turn is shaped, how to go on from a cursor). The package ships one for each coding agent it has a plugin
+  for and a generic one, `jsonl`, that reads a folder of files already in the record's shape, for any tool
+  that can export or write them. An adapter is a small module behind the entry point group
+  `memory_forest.adapters`, so one more tool is one more module and no change to the core.
+- **A hook signals, a cursor reads.** Where a tool has hooks (the end of a turn, the end of a session,
+  before its context is compacted), the hook runs `forest intake --from <tool>`. The command reads from its
+  cursor to the end of the transcript, so a hook that did not fire loses nothing: the next hook, the next
+  session start and the nightly run each catch up. No hook is ever the only path.
+- **Consent.** Which conversations are taken in is the owner's choice, asked at setup and never defaulted:
+  every session of the tool or only named folders (`intake.include`, `intake.exclude`), and whether sessions
+  from before the setup are imported.
+- **An agent with no transcript and no hooks** has three ways in, strongest last: the MCP tool `memory_log`,
+  with which it appends its own turn (it depends on the agent calling it, and the setup says so); an export
+  folder read by the `jsonl` adapter; an adapter for that product, kept outside the core.
+- **An agent that runs somewhere else** (a hosted assistant) reaches the forest over `forest mcp --http` on
+  the owner's machine, inside the owner's own private network, and writes its lane with `memory_log` or
+  through an export the owner's machine reads. A lane belongs to one agent and is append-only, so two
+  machines never write the same file.
+
+### 15.2 Use: how an agent finds what it needs
+
+- `forest mcp --as <agent>` (section 10): search, read, navigate, timeline. The reader's id comes from the
+  connection, so the scope rule of section 6 holds without the agent saying who it is.
+- A skill says when to look: when the owner names something, when a question reaches into the past, and
+  before asking the owner something the forest may already hold.
+- A session may open with a short card (who the owner is, what is in progress, the newest daily lines);
+  `connect.session_card` turns it off.
+
+### 15.3 Upkeep
+
+`forest nightly` runs the stage programs of section 11 with the model command the owner chose
+(`stages.runner`). It is asked at setup, because it spends the owner's model budget.
+
+### 15.4 Setup is the agent's job
+
+- The owner says one sentence to their agent. The agent runs `forest setup`, which is written to be driven
+  by an agent: every output is one JSON object whose `next` is `ask_owner` (the question, the choices, and
+  why only the owner can answer), `run` (a command), `report` (what to tell the owner) or `done`. The agent
+  asks, runs the command again with `--answer key=value`, and is finished when `forest doctor` passes. An
+  agent that never read a guide, or lost its place, still ends in the right state by following the output.
+- **Asked** (only what the owner alone can decide): where the forest lives, or which forest to join; this
+  agent's name; which conversations are taken in and whether earlier ones are imported; which model command
+  the nightly upkeep may spend; whether the machine's other agents are connected too. **Detected and shown
+  as a proposal**: the timezone, the language, the installed tools, the paths.
+- Every write is previewed (`--dry-run` prints each file and block it would write), repeatable (a second
+  run changes nothing), bounded (one marked block in an instruction file, one hook entry, one MCP entry, one
+  plugin folder) and removable (`forest setup --remove <tool>`).
+- `forest doctor` proves the connection instead of describing it: it sends a test turn through the tool's
+  real path and finds it in the lane, calls the MCP server as that agent and gets an answer, and shows when
+  the nightly upkeep will run.
+- The guide travels with the package: `forest guide` prints the setup guide for agents, and each plugin
+  carries it as its setup skill. A page on the web is for people to read; an agent is never asked to fetch
+  instructions from an address and follow them.
+- The guide is tested like code: for each supported tool, a new agent in an empty sandbox is given the one
+  sentence, and the run passes only when `forest doctor` does.
+
+### 15.5 Plugins
+
+One plugin folder with a manifest for each supported tool, and shared `skills/`, `hooks/hooks.json` and
+`.mcp.json`: the hooks call `forest intake`, the MCP entry starts `forest mcp --as <agent>`, and the setup
+skill is the guide. Installing the plugin and running `forest setup` are one path: with the plugin installed
+and no forest set up, the first session says so and names the command.

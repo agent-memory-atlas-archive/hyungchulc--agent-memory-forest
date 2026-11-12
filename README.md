@@ -141,7 +141,10 @@ forest repeats check                           # fact lines two leaves of one su
 forest record kinds                            # the update records' lines by kind
 forest numbers check --all                     # account, card, identity and phone numbers in full
 
-# Milestone 2: finding (not built yet)
+# Milestone 2: connecting and finding (not built yet)
+forest setup                                   # run by your agent: it asks you, previews, writes, checks
+forest intake --from <tool>                    # new turns of that tool's transcript into its raw lane
+forest doctor                                  # proves a turn arrives and the MCP server answers
 forest search "the big kiln"                   # registry aliases first, then words (and vectors if set)
 forest timeline query "yesterday evening"
 forest mcp                                     # search, read, navigate, timeline with the reader's scope
@@ -191,8 +194,10 @@ Agent Memory Forest is alpha software. Version 1.0.0 is unreleased.
   levels, collections, record with its history files, archive, `check`, `lint`, number starring,
   `recover`), agents' trees made from their lanes or settings, and an undo journal for every commit, with
   tests on made-up forests and the synthetic forest passing every check.
-- **Milestone 2, finding (not built yet):** the time index, search with reader scopes, the MCP server. The
-  reader-scope rule itself (`agents.readable_trees`) is in milestone 1.
+- **Milestone 2, connecting and finding (not built yet):** intake from each agent's own transcripts, the
+  time index, search with reader scopes, the MCP server, and setup carried out by the owner's agent
+  ([design, section 15](docs/v1-design.md#15-connecting-agents)). Until it is built nothing reaches a raw
+  lane by itself. The reader-scope rule itself (`agents.readable_trees`) is in milestone 1.
 - **Milestone 3, growing (not built yet):** the stage programs and their prompts, the nightly upkeep.
 
 The 0.3 code (`memory-forest`) stays in this tree until the version 1 commands replace it. It is suitable
