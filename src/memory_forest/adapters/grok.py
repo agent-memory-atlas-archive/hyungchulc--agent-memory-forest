@@ -18,8 +18,8 @@ with no newline is left for the next read.
 client. Anything else is ``unknown``. ``parent_session_id`` is kept and does not
 by itself make a sub-agent; a hook event that names a sub-agent does. Each
 message keeps its own id. The files do not store the process environment. A hook
-sees ``MEMORY_FOREST_INTERNAL`` in its own environment. A sweep sees it when
-``summary.json``, ``prompt_context.json`` or a line carries it as a key. A hook
+sees ``MEMORY_FOREST_INTERNAL`` in its own environment. A sweep sees a stage
+session by its first owner turn, which opens with the marker line. A hook
 sends ``sessionId`` and ``cwd`` and not a transcript path; the session directory
 is the encoded working directory, or a directory of that session id.
 """
@@ -45,7 +45,6 @@ from .common import (
     find_marks,
     harness_only,
     harness_parts,
-    marked_internal,
     parse_object,
     parse_time,
     place_of,
@@ -62,8 +61,13 @@ _SUBAGENT_TOOLS = frozenset({"spawn_subagent", "spawn_agent", "Agent", "Task"})
 
 class GrokAdapter:
     name = "grok"
-    # ``eventId`` and ``toolCallId`` are opaque tokens, unique without the session.
+    # ``eventId`` and ``toolCallId`` were opaque tokens of 33 characters or more, unique across sessions, in
+    # the transcripts read on a development machine. An id of another form is composed with the session.
     ids_stand_alone = True
+
+    def id_stands_alone(self, turn_id: str) -> bool:
+        """An id of 20 characters or more holding letters and digits is opaque and unique by itself."""
+        return len(turn_id) >= 20 and any(c.isdigit() for c in turn_id) and any(c.isalpha() for c in turn_id)
 
     def discover(self, settings: IntakeToolSettings) -> list[Transcript]:
         root = _sessions_root(settings)
@@ -145,8 +149,6 @@ class GrokAdapter:
                     unknown += 1
                     dropped["invalid"] = dropped.get("invalid", 0) + 1
                     continue
-                if marked_internal(value):
-                    internal = True
                 update = _update(value)
                 if update is None:
                     unknown += 1
@@ -211,7 +213,6 @@ class GrokAdapter:
                 origin = "interactive"
             if isinstance(summary.get("parent_session_id"), str):
                 parent = summary["parent_session_id"]
-            internal = marked_internal(summary)
             version = stated_version(summary)
         context = _read_json(folder / "prompt_context.json")
         if isinstance(context, dict):
@@ -223,7 +224,6 @@ class GrokAdapter:
                 raw = raw or "interactive"
             if not cwd and isinstance(context.get("working_directory"), str):
                 cwd = context["working_directory"]
-            internal = internal or marked_internal(context)
             if not version:
                 version = stated_version(context)
         return Transcript(relative_key(path, root), path, session, cwd, origin, internal, raw, version, True, parent)

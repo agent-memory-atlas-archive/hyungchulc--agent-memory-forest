@@ -20,9 +20,8 @@ carries ``agent_id``, are a sub-agent: each line keeps its own id and is a tool
 turn, not the owner. A ``parentUuid`` is the previous line, not a parent session.
 The transcript does not store the process environment. A hook
 sees ``MEMORY_FOREST_INTERNAL`` in its own environment, because the hook is a
-child of the session. A sweep sees the marker only when a line carries it as a
-key (it is not in the environment attachment, which holds the platform and the
-working directory, not the process environment).
+child of the session. A sweep sees a stage session by its first owner turn,
+which opens with the marker line; the marker's name anywhere else is text.
 """
 
 from __future__ import annotations
@@ -43,9 +42,7 @@ from .common import (
     find_marks,
     harness_only,
     harness_parts,
-    head_internal,
     head_objects,
-    marked_internal,
     parse_object,
     parse_time,
     place_of,
@@ -160,8 +157,6 @@ class ClaudeCodeAdapter:
                     unknown += 1
                     dropped["invalid"] = dropped.get("invalid", 0) + 1
                     continue
-                if marked_internal(value):
-                    internal = True
                 kind = value.get("type")
                 if not isinstance(kind, str):
                     unknown += 1
@@ -261,7 +256,7 @@ class ClaudeCodeAdapter:
             session,
             cwd,
             origin,
-            head_internal(path),
+            False,
             raw,
             version,
             True,

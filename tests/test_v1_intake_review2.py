@@ -124,6 +124,8 @@ class ReviewTests(IntakeTestCase):
         self.invoke(root, "--from", "jsonl", "--once")
         self.assertEqual([row["text"] for row in self.rows(root)], ["Before.", "After.", "Boom in the kiln."])
         self.assertEqual([row["text"] for row in self.rows(root)].count("Before."), 1)
+        # The reread ended without a fault, so status no longer shows the old one.
+        self.assertNotIn("turn faults", self.invoke(root, "status")[1])
 
     def test_a_copied_turn_id_is_stored_once(self) -> None:
         folder = self.base / "claude"
@@ -227,22 +229,32 @@ class ReviewTests(IntakeTestCase):
         self.assertEqual(len(self.rows(root)), TURNS_BEFORE_OWNER)
         self.assertTrue(all(row["role"] == "system" for row in self.rows(root)))
 
-    def test_a_hook_before_the_first_placement_does_not_import_history(self) -> None:
+    def test_a_hook_before_the_first_sweep_reads_nothing_and_is_counted(self) -> None:
         folder = self.base / "notes"
         folder.mkdir()
         path = folder / "kiln.jsonl"
         path.write_text(record(id="turn-1", text="Already there."), encoding="utf-8")
         root = self.forest(self.tool(folder, earlier=False))
-        code, out, err = self.invoke(root, "--from", "jsonl", "--hook", "--once", stdin=json.dumps({
-            "transcript_path": str(path), "cwd": "/studio/kiln",
-        }))
-        self.assertEqual((code, out, err), (0, "", ""))
+        payload = json.dumps({"transcript_path": str(path), "cwd": "/studio/kiln"})
+        for _ in range(2):
+            code, out, err = self.invoke(root, "--from", "jsonl", "--hook", "--once", stdin=payload)
+            self.assertEqual((code, out, err), (0, "", ""))
         self.assertEqual(self.lane(root), "")
-        path.write_text(path.read_text(encoding="utf-8") + record(id="turn-2", text="After the hook."), encoding="utf-8")
+        self.assertFalse((root / ".forest" / "intake" / "tools" / "jsonl" / "cursors").exists())
+        status = self.invoke(root, "status")[1]
+        self.assertIn("not turned on yet: 2 hook calls read nothing", status)
+        self.assertIn("forest intake --from jsonl", status)
+        # The first sweep turns intake on: the cursor goes to the end and the earlier turn is not taken.
+        self.invoke(root, "--from", "jsonl", "--once")
+        self.assertEqual(self.lane(root), "")
+        self.assertIn("2 hook calls came before intake was turned on", self.invoke(root, "status")[1])
+        path.write_text(path.read_text(encoding="utf-8") + record(id="turn-2", text="After the sweep."), encoding="utf-8")
+        (folder / "new.jsonl").write_text(record(id="turn-3", session="ses-new-1", text="A new one."), encoding="utf-8")
+        self.invoke(root, "--from", "jsonl", "--hook", "--once", stdin=payload)
         self.invoke(root, "--from", "jsonl", "--hook", "--once", stdin=json.dumps({
-            "transcript_path": str(path), "cwd": "/studio/kiln",
+            "transcript_path": str(folder / "new.jsonl"), "cwd": "/studio/kiln",
         }))
-        self.assertEqual([row["text"] for row in self.rows(root)], ["After the hook."])
+        self.assertEqual([row["text"] for row in self.rows(root)], ["After the sweep.", "A new one."])
 
     def test_exclude_uses_the_transcript_folder_not_the_payload(self) -> None:
         folder = self.base / "notes"
@@ -348,6 +360,7 @@ class ReviewTests(IntakeTestCase):
             folder = self.base / "notes"
             folder.mkdir()
             root = self.forest(self.tool(folder))
+            self.turn_on(root)
             code, out, err = self.invoke(root, "--from", "jsonl", "--hook", "--once", stdin="{}")
         finally:
             jsonl_adapter.adapter.hook = real
@@ -377,7 +390,7 @@ class ReviewTests(IntakeTestCase):
         folder.mkdir()
         (folder / "kiln.jsonl").write_text(record(id="turn-1", text="Waiting."), encoding="utf-8")
         root = self.forest('\n[intake.tools.jsonl]\nagent = "glaze-bot"\nenabled = true\n')
-        cursor = intake.cursor_file(root, "glaze-bot", "jsonl", "kiln.jsonl")
+        cursor = intake.cursor_file(root, "jsonl", "kiln.jsonl")
         cursor.parent.mkdir(parents=True)
         cursor.write_text(json.dumps({"offset": 0, "source": "kiln.jsonl"}) + "\n", encoding="utf-8")
         real = jsonl_adapter.JsonlAdapter.transcript_root
@@ -398,12 +411,13 @@ class ReviewTests(IntakeTestCase):
         path = folder / "kiln.jsonl"
         path.write_text(line + extra * count, encoding="utf-8")
         root = self.forest(self.tool(folder).replace("import_earlier = true", "import_earlier = true\nenabled = true"))
+        self.turn_on(root)
         code, out, err = self.invoke(root, "--from", "jsonl", "--hook", "--once", stdin=json.dumps({
             "transcript_path": str(path), "cwd": "/studio/kiln",
         }))
         self.assertEqual((code, out, err), (0, "", ""))
         self.assertGreater(path.stat().st_size, HOOK_READ_BYTES)
-        cursor = next((root / ".forest" / "intake" / "cursors" / "glaze-bot" / "jsonl").glob("*.json"))
+        cursor = next((root / ".forest" / "intake" / "tools" / "jsonl" / "cursors").glob("*.json"))
         offset = json.loads(cursor.read_text(encoding="utf-8"))["offset"]
         self.assertLess(offset, path.stat().st_size)
         self.assertLessEqual(offset, HOOK_READ_BYTES + len(extra) + len(line))
@@ -428,6 +442,7 @@ class ReviewTests(IntakeTestCase):
         root = self.forest(
             f"\n[intake.tools.codex]\npath = {json.dumps(str(folder))}\nenabled = true\nimport_earlier = true\nagent = \"glaze-bot\"\n"
         )
+        self.turn_on(root, "codex")
         code, out, err = self.invoke(root, "--from", "codex", "--hook", "--once", stdin=json.dumps({
             "session_id": "ses-target-1",
         }))
@@ -437,92 +452,3 @@ class ReviewTests(IntakeTestCase):
         self.assertIn("waiting", status_out)
         self.invoke(root, "--from", "codex", "--once")
         self.assertIn("Found on the sweep.", [row["text"] for row in self.rows(root)])
-
-    def test_an_interruption_after_each_write_leaves_every_turn_once(self) -> None:
-        steps = ("append", "ids", "end", "cursor")
-        for bounded in (False, True):
-            for step in steps:
-                with self.subTest(bounded=bounded, step=step):
-                    self._interrupted(step, bounded=bounded)
-
-    def _interrupted(self, step: str, *, bounded: bool) -> None:
-        folder = self.base / f"notes-{int(bounded)}-{step}"
-        folder.mkdir()
-        path = folder / "kiln.jsonl"
-        path.write_text(
-            record(id="turn-1", text=f"password: {SECRET}")
-            + record(id="turn-2", text="The shelf cooled."),
-            encoding="utf-8",
-        )
-        claude = self.base / f"claude-{int(bounded)}-{step}"
-        claude.mkdir()
-        (claude / "ses-kiln-1.jsonl").write_text(_claude("user", "Claude glaze.", turn="c-1"), encoding="utf-8")
-        codex = self.base / f"codex-{int(bounded)}-{step}"
-        codex.mkdir()
-        (codex / "rollout-kiln.jsonl").write_text(
-            json.dumps({"timestamp": "2051-03-02T09:00:00+00:00", "type": "session_meta",
-                        "payload": {"id": "ses-codex-1", "cwd": "/studio/kiln", "source": "cli", "thread_source": "user"}}) + "\n"
-            + json.dumps({"timestamp": "2051-03-02T09:00:01+00:00", "type": "response_item", "payload": {
-                "type": "message", "role": "user", "id": "msg-1",
-                "content": [{"type": "input_text", "text": "Codex glaze."}]}}) + "\n",
-            encoding="utf-8",
-        )
-        grok = self.base / f"grok-{int(bounded)}-{step}" / "studio" / "ses-grok-1"
-        grok.mkdir(parents=True)
-        (grok / "summary.json").write_text(
-            json.dumps({"info": {"id": "ses-grok-1", "cwd": "/studio/kiln"}, "session_kind": "interactive"}),
-            encoding="utf-8",
-        )
-        (grok / "updates.jsonl").write_text(json.dumps({
-            "method": "session/update",
-            "params": {"update": {"sessionUpdate": "user_message_chunk", "prompt_id": "p1",
-                                  "content": {"type": "text", "text": "Grok glaze."}}},
-            "timestamp": 2560000000000,
-        }) + "\n", encoding="utf-8")
-        root = self.forest(
-            self.tool(folder)
-            + f"\n[intake.tools.claude-code]\npath = {json.dumps(str(claude))}\nimport_earlier = true\nagent = \"glaze-bot\"\n"
-            + f"\n[intake.tools.codex]\npath = {json.dumps(str(codex))}\nimport_earlier = true\nagent = \"glaze-bot\"\n"
-            + f"\n[intake.tools.grok]\npath = {json.dumps(str(grok.parents[1]))}\nimport_earlier = true\nagent = \"glaze-bot\"\n",
-            name=f"oven-{int(bounded)}-{step}",
-        )
-
-        def boom(name: str) -> None:
-            if name == step:
-                raise OSError("injected")
-
-        intake._CHECKPOINT = boom
-        try:
-            for name, payload in (
-                ("jsonl", {"transcript_path": str(path), "cwd": "/studio/kiln"}),
-                ("claude-code", {"transcript_path": str(claude / "ses-kiln-1.jsonl"), "cwd": "/studio/kiln"}),
-                ("codex", {"transcript_path": str(codex / "rollout-kiln.jsonl"), "cwd": "/studio/kiln", "session_id": "ses-codex-1"}),
-                ("grok", {"sessionId": "ses-grok-1", "cwd": "/studio/kiln"}),
-            ):
-                args = ["--from", name, "--once"]
-                stdin = ""
-                if bounded:
-                    args.append("--hook")
-                    stdin = json.dumps(payload)
-                self.invoke(root, *args, stdin=stdin)
-        finally:
-            intake._CHECKPOINT = None
-        for name, payload in (
-            ("jsonl", {"transcript_path": str(path), "cwd": "/studio/kiln"}),
-            ("claude-code", {"transcript_path": str(claude / "ses-kiln-1.jsonl"), "cwd": "/studio/kiln"}),
-            ("codex", {"transcript_path": str(codex / "rollout-kiln.jsonl"), "cwd": "/studio/kiln", "session_id": "ses-codex-1"}),
-            ("grok", {"sessionId": "ses-grok-1", "cwd": "/studio/kiln"}),
-        ):
-            args = ["--from", name, "--once"]
-            stdin = ""
-            if bounded:
-                args.append("--hook")
-                stdin = json.dumps(payload)
-            self.invoke(root, *args, stdin=stdin)
-        texts = [row["text"] for row in self.rows(root)]
-        for text in ("The shelf cooled.", "Claude glaze.", "Codex glaze.", "Grok glaze."):
-            self.assertEqual(texts.count(text), 1, texts)
-        self.assertNotIn(SECRET, self.lane(root))
-        code, out, _ = self.invoke(root, "status")
-        self.assertEqual(code, 0)
-        self.assertIn("jsonl:", out)

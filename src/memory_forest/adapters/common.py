@@ -60,12 +60,13 @@ _HARNESS_TAGS: tuple[str, ...] = (
     "scheduled-task",
     "user_instructions",
     "environment_context",
+    "subagent_notification",
+    "turn_aborted",
 )
 _HARNESS_RE = re.compile(
     "|".join(rf"<{tag}\b[^>]*>.*?</{tag}>" for tag in _HARNESS_TAGS),
     re.DOTALL,
 )
-_HEAD_LINES = 40
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,26 +249,6 @@ def counts_of(items: dict[str, int]) -> tuple[tuple[str, int], ...]:
     return tuple(sorted((key, value) for key, value in items.items() if value))
 
 
-def marked_internal(value: object, *, record: bool = False, depth: int = 0) -> bool:
-    """Whether a JSON value carries the forest-stage marker.
-
-    The marker is the key ``MEMORY_FOREST_INTERNAL`` with a true value. A
-    ``jsonl`` record may also say ``internal: true`` at its top. String values
-    are not searched: a conversation that mentions the name is not the marker.
-    """
-    if depth > 8:
-        return False
-    if isinstance(value, dict):
-        if _truthy(value.get(MARKER)):
-            return True
-        if record and depth == 0 and value.get("internal") is True:
-            return True
-        return any(marked_internal(item, record=record, depth=depth + 1) for item in value.values())
-    if isinstance(value, list):
-        return any(marked_internal(item, record=record, depth=depth + 1) for item in value[:40])
-    return False
-
-
 def _truthy(value: object) -> bool:
     if isinstance(value, bool):
         return value
@@ -347,18 +328,13 @@ def complete_lines(
 
     The returned offset is the start of a trailing line that has no newline,
     or the end of the file when every line is complete. The trailing line is
-    not returned. ``max_bytes`` stops the read after that many bytes, or after
-    the one line that crosses the limit, so a hook's work stays bounded and the
-    cursor can still move.
+    not returned. ``max_bytes`` stops the read after that many bytes, so a
+    hook's work stays bounded. A line longer than that gives no line and no
+    progress: it is the sweep's, which reads without a bound.
     """
     with path.open("rb") as handle:
         handle.seek(max(0, offset))
-        if max_bytes is None:
-            data = handle.read()
-        else:
-            data = handle.read(max(0, max_bytes))
-            if b"\n" not in data:
-                data += handle.readline(1024 * 1024)
+        data = handle.read() if max_bytes is None else handle.read(max(0, max_bytes))
     if not data:
         return [], offset
     lines: list[tuple[int, bytes]] = []
@@ -408,28 +384,6 @@ def head_objects(path: Path, limit: int = 20) -> list[dict[str, Any]]:
         if len(found) >= limit:
             break
     return found
-
-
-def head_internal(path: Path, *, record: bool = False) -> bool:
-    """Whether the first lines of a transcript carry the forest-stage marker.
-
-    Only the head of the file is read. A marker that first appears further in is
-    seen when that part of the file is read.
-    """
-    with path.open("rb") as handle:
-        data = handle.read(256 * 1024)
-    end = data.rfind(b"\n")
-    if end < 0:
-        return False
-    count = 0
-    for raw in data[: end + 1].splitlines():
-        count += 1
-        if count > _HEAD_LINES:
-            break
-        value = parse_object(raw)
-        if isinstance(value, dict) and marked_internal(value, record=record):
-            return True
-    return False
 
 
 def find_marks(text: str) -> tuple[Part, ...]:

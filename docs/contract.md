@@ -43,17 +43,24 @@ number, the setting that holds it is given with its default.
     file that does not end in a newline is cut back to its last newline, and the write is repeated until
     every byte is stored. It does not write a turn whose `id` the lane already holds. The ids are one
     append-only file per lane file under `.forest/intake/`, and the check reads that file together with
-    the lane bytes after its end mark, once per day per run. The lane is the truth. The cursors beside
-    those files are the writer's place in each transcript, keyed by the agent, the adapter and the
-    source, and are not rebuilt from the lane. A cursor holds the file's device and inode, the size it
+    the lane bytes after its end mark, once per day per run. The lane is the truth. The cursors are the
+    writer's place in each transcript, kept by tool and transcript (`.forest/intake/tools/<adapter>/`),
+    each naming the agent whose lane its turns went to, and are not rebuilt from the lane. What belongs to
+    a tool's transcripts (the cursors, the mark that intake was turned on for it, the counters of its
+    hooks) is kept by tool; what belongs to an agent (its lane and the lane's ids) is kept by agent. A cursor holds the file's device and inode, the size it
     saw, and a hash of the bytes just before its offset. When those no longer match, the source is read
     again from the start and the ids keep what was already taken. A text that cannot be encoded is
-    stored with the unencodable part replaced, and the line is marked `repaired`. A session or turn id
-    that cannot be encoded, holds a line break or is longer than 200 characters is replaced by a hash
-    of its exact code points, so the stored id is the one the next run computes. One transcript's
+    stored with the unencodable part replaced, and the line is marked `repaired`. The parts of an id
+    are escaped before they are joined (`%`, the separator `:` and every character at which a line can
+    break), so two different raw ids never become one, and the day's id file is read by `\n` alone. A
+    part that cannot be encoded or is longer than 200 characters is replaced by a hash of its exact code
+    points, so the stored id is the one the next run computes. One transcript's
     failure does not stop the others, and one turn's failure does not stop its transcript: the turn is
     counted, its class and place are recorded, and `forest intake reread --from <adapter>` reads that
-    transcript from the start once the cause is fixed. The ids keep the turns already stored.
+    transcript again once the cause is fixed, from the point intake first placed its cursor and never
+    from before it; an excluded cursor is left alone, what a read carried over is cleared, and a reread
+    that ends without a fault clears the transcript's fault count. The ids keep the turns already
+    stored. A failure after a line is in the lane, of any kind, reports how many turns were stored.
     Numbers and sign-in values are masked, by section 4, before the line is written, in every string of
     the line, including the name in `other:<name>`. The `id` is not masked: after the rule above it holds
     no raw text of a turn. A home-folder path inside a turn's text, or inside a tool argument that is
@@ -71,28 +78,37 @@ number, the setting that holds it is given with its default.
     session is internal and no line of it is written. Until that turn has been read the cursor stays at
     the start and nothing is written. A session whose first 12 turns hold no owner turn is ordinary
     (12 is past a short harness preamble and short of holding a whole session unread). The decision is
-    kept on the cursor. A field of the source can still mark the session internal. The stage also
-    records the session id under `.forest/intake/`, and a hook still sees the marker name in its
-    environment. `forest intake status` counts the internal sessions of each tool.
-    Turns from before intake was turned on are not taken. The first sweep places each cursor at the end
-    of what already exists, unless `import_earlier` is on. A hook that meets a transcript with no cursor
-    before that placement does the same for that one file. The turn that called that hook is not taken;
-    setting intake up runs a sweep first. After the placement, a transcript with no cursor is a new one
-    and is read from its start.
+    kept on the cursor. Only that turn's own text marks the session: the marker's name in a tool's input,
+    in a nested value or in any later line is text. The stage also records the session as one small
+    file named by a hash of its id (`.forest/intake/stage-sessions/`), which intake looks for with one
+    `stat` while the session's decision is open; a sweep removes those older than 30 days. A hook still
+    sees the marker name in its environment. `forest intake status` counts the internal sessions of each
+    tool.
+    Turns from before intake was turned on are not taken. The first sweep of a tool turns intake on for
+    it: it places each cursor at the end of what already exists, unless `import_earlier` is on, and
+    records that it did. A hook never turns intake on: before that sweep it reads nothing and adds one
+    line to a counter that needs no lock, and `status` shows how many hook calls came before it and the
+    command that turns intake on. Setting a tool up includes that first sweep. After the placement, a
+    transcript with no cursor is a new one and is read from its start.
     The writer holds a short lock. A second intake that cannot take the lock within a moment stops
-    without moving a cursor. A hook that finds the lock held appends one short line, without taking the
-    lock, and `status` counts those lines since the last run that took the lock. In hook mode every
+    without moving a cursor. A hook that finds the lock held leaves one small marker for its transcript,
+    without the lock; the run that reads that transcript removes it, and `status` counts the markers. In hook mode every
     failure is caught, the exit code is 0, nothing is written to standard output or standard error,
     including a bad argument, and the failure is one line under `.forest/intake/` (its class and its
     place). A hook reads at most 256 KiB of a transcript per call and leaves the rest for the next call
-    or a sweep, which `status` shows as ahead. Its stdin is bounded in bytes and in time; a payload that
-    does not arrive is a failure and the hook ends. `forest intake status` shows the unknown count, the
+    or a sweep, which `status` shows as ahead. A line longer than that is the sweep's: the hook notes once,
+    on the cursor, that the transcript waits for a sweep, and returns at once on later calls. A hook reads
+    no cursor but its own transcript's. Its stdin is read as it arrives, bounded in bytes and by one
+    deadline for the whole payload; a payload that does not arrive is a failure and the hook ends. `forest intake status` shows the unknown count, the
     turn faults, the internal sessions, what is ahead, and the last few hook failures. A cursor file that
     is not valid is renamed aside and the source is read again; it is not a permanent failure. A plugin
     that fails to load, or that claims a built-in adapter's name, is off and named in `status`; the
-    built-in adapter stays. `forest intake rename-agent OLD NEW` moves that agent's lane, id index and
-    cursors together. When a tool's configured agent has no cursors and another agent holds them, intake
-    takes nothing for that tool and names the command.
+    built-in adapter stays. A plugin's `discover` is consumed inside that guard, and at most 100,000
+    transcripts are taken from it. A transcript whose cursor names another agent than the one now set
+    is not read, by a hook or a sweep; `status` counts those transcripts for each pair of names and
+    names the command. `forest intake rename-agent OLD NEW` moves that agent's lane and id index and the
+    name in each cursor, in an order that a second run completes after an interruption at any step. A
+    second agent that reads other transcripts of the same tool needs no rename.
   - `05 daily` is the readable record of each day: one page per local date. It keeps what the owner, the
     agents and other people wrote close to the original, and turns work, tool use and results into short
     causal episodes per request or run, keeping every failure and every change and closing routine

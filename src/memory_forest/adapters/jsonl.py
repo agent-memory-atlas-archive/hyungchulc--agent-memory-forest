@@ -22,9 +22,7 @@ from .common import (
     confine_file,
     counts_of,
     find_marks,
-    head_internal,
     head_objects,
-    marked_internal,
     origin_or,
     parse_object,
     parse_time,
@@ -113,8 +111,6 @@ class JsonlAdapter:
                     unknown += 1
                     dropped["invalid"] = dropped.get("invalid", 0) + 1
                     continue
-                if value.get("internal") is True or marked_internal(value, record=True):
-                    internal = True
                 turn = _turn(value, start, transcript)
                 if turn is None:
                     unknown += 1
@@ -148,7 +144,7 @@ class JsonlAdapter:
             session,
             cwd,
             origin,
-            head_internal(path, record=True),
+            False,
             origin if origin != "unknown" else "",
             "",
             True,

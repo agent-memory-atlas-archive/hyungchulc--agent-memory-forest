@@ -28,6 +28,7 @@ class HookSafetyTests(IntakeTestCase):
         folder = self.base / "notes"
         folder.mkdir()
         root = self.forest(self.tool(folder))
+        self.turn_on(root)
         missing = json.dumps({"transcript_path": str(folder / "missing.jsonl"), "cwd": "/studio/kiln"})
         code, out, err = self.invoke(root, "--from", "jsonl", "--as", "glaze-bot", "--once", "--hook", stdin=missing)
         self.assertEqual((code, out, err), (0, "", ""))
@@ -62,7 +63,7 @@ class HookSafetyTests(IntakeTestCase):
         path.write_text(record(id="turn-1", text="Still here."), encoding="utf-8")
         root = self.forest(self.tool(folder))
         self.invoke(root, "--from", "jsonl", "--once")
-        cursor = cursor_file(root, "glaze-bot", "jsonl", "kiln.jsonl")
+        cursor = cursor_file(root, "jsonl", "kiln.jsonl")
         cursor.write_text("{not json", encoding="utf-8")
         code, out, err = self.invoke(root, "--from", "jsonl", "--as", "glaze-bot", "--once", "--hook", stdin=json.dumps({
             "transcript_path": str(path), "cwd": "/studio/kiln", "session_id": "ses-kiln-1",
@@ -241,8 +242,11 @@ class HookSafetyTests(IntakeTestCase):
         self.assertEqual(self.lane(root, "glaze-bot"), "")
         code, out, _ = self.invoke(root, "--from", "jsonl", "--once")
         self.assertEqual(code, 0)
-        self.assertIn("rename-agent kiln-bot glaze-bot", out)
+        self.assertIn("kept for kiln-bot", out)
         self.assertEqual(self.lane(root, "glaze-bot"), "")
+        code, out, _ = self.invoke(root, "status")
+        self.assertIn("1 transcripts kept for kiln-bot", out)
+        self.assertIn("rename-agent kiln-bot glaze-bot", out)
 
     def test_ids_survive_a_rewind_a_resume_and_a_fork(self) -> None:
         folder = self.base / "notes"
@@ -398,6 +402,7 @@ class HookSafetyTests(IntakeTestCase):
 
     def test_each_adapter_hook_runs_when_intake_is_enabled(self) -> None:
         root = self.forest(self._enabled_adapters())
+        self.turn_on(root, "claude-code", "codex", "grok")
         self._claude_file()
         self._codex_file()
         self._grok_file()
@@ -457,6 +462,7 @@ class HookSafetyTests(IntakeTestCase):
             encoding="utf-8",
         )
         root = self.forest(self.tool(folder))
+        self.turn_on(root)
         env, prompt = prepare(root, "ses-stage-1", "Look at the kiln.")
         self.assertEqual(env["MEMORY_FOREST_INTERNAL"], "1")
         self.assertTrue(prompt.startswith("MEMORY_FOREST_INTERNAL\n"))

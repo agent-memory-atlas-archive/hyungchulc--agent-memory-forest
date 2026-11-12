@@ -170,9 +170,13 @@ The raw lane is not edited by the agent. `forest intake` is the only writer. Eac
 which knows where that tool keeps transcripts and how a turn is shaped. A hook runs
 `forest intake --from <tool> --hook` and reads only the transcript it was called for. A missed hook on
 that same transcript is caught by the next hook of it. Any other transcript is caught by a sweep,
-`forest intake --from <tool>`. `forest intake status` names a source whose file is ahead of its cursor, the internal sessions, and
-how many hooks found the intake lock held. `forest intake rename-agent OLD NEW` moves one agent's
-lane and its intake state together when the configured name and the stored name are not the same.
+`forest intake --from <tool>`. The first sweep of a tool turns intake on for it; a hook never does.
+`forest intake status` names a source whose file is ahead of its cursor, the internal sessions, the hooks
+that found the intake lock held, and the hook calls that came before intake was turned on. A tool's
+cursors are kept by tool and each names the agent whose lane its turns went to, so two agents can read
+different transcripts of one tool. A transcript whose cursor names another agent than the one now set
+is not read, and `forest intake rename-agent OLD NEW` moves that agent's lane and ids and the name in its
+cursors when the configured name was changed.
 
 A hook exits 0 and prints nothing. What the clients on this machine do with a hook's exit code and
 output, from their own help text and Grok's user guide (Hooks, Exit Codes):
@@ -203,9 +207,10 @@ What a transcript marks, and what it does not. Claude Code marks a side chain, a
 `isCompactSummary` line, a `system-reminder` block, local-command and shell output (`local-command-stdout`,
 `bash-stdout`, `bash-stderr`), and a summary or compaction line; those are `system` or a `harness` span.
 A reminder with none of those marks cannot be told from the owner. Codex marks provenance
-(`user` against `harness`, `developer_instructions`, `agents_md`) and a developer message. A user item
-with no provenance is taken as the owner, except an instruction or environment block
-(`user_instructions`, `environment_context`), which is harness. A compacted line is `system`. Grok's
+(`user` against `harness`, `developer_instructions`, `agents_md`, `tool`) and a developer message. Only
+a user item of `user` provenance, or of none, is taken as the owner, except an instruction or
+environment block (`user_instructions`, `environment_context`, `subagent_notification`,
+`turn_aborted`), which is harness. A compacted line is `system`. Grok's
 update lines carry no per-span provenance. A `system-reminder` tag inside a user chunk is a harness span;
 an untagged reminder cannot be separated. The record and the writer's rules are in the contract, section 1.
 

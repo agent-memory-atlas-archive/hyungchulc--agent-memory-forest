@@ -504,20 +504,24 @@ that agent's own job.
   that same transcript is caught by the next hook of it. Other transcripts are caught by a sweep,
   `forest intake --from <tool>`, not by a different session's hook. No hook is ever the only path. A hook
   reads at most 256 KiB of that transcript per call (about 50 ms to read and mask that much on the
-  machine this was measured on) and leaves the rest waiting, which `status` shows as ahead. In hook mode
+  machine this was measured on) and leaves the rest waiting, which `status` shows as ahead; a line longer
+  than that is the sweep's. A hook never turns intake on: the first sweep of a tool does, and a hook
+  before it reads nothing and is counted. A hook reads only its own transcript's cursor. In hook mode
   the process exits 0 and prints nothing, on every path: clients treat a hook's exit 2 as a block and may
   show its stderr to the model, and may add its stdout to the model's context. A failure is one line in
   `.forest/intake/`, class and place only, and `forest intake status` shows the count and the last few.
-  A hook that finds the intake lock held is counted the same way, by one appended line that needs no lock.
+  A hook that finds the intake lock held leaves one marker for its transcript, which needs no lock and
+  which the run that reads that transcript removes.
 - **Consent.** Which conversations are taken in is the owner's choice, asked at setup and never defaulted.
   Per tool, `[intake.tools.<adapter>]` holds `include` and `exclude` (folders the session ran in) and
   `import_earlier` (false until the owner says otherwise: the first run places cursors at the end of what
   already exists). While a source is excluded, its cursor follows the file's end and nothing from it is
   written; lifting the exclude does not import that past. Automatic intake stays off until `enabled` is
   true. `forest intake --from <adapter>` then says so and takes nothing, unless `--once` is given. A
-  session a forest stage started is not taken in. The stage records the session id, opens the prompt
-  with the line `MEMORY_FOREST_INTERNAL`, and sets that name in the environment of the model process.
-  A hook still reads the environment. A hosted assistant has no transcript to read. Its
+  session a forest stage started is not taken in. The stage records the session id (one small file
+  named by its hash), opens the prompt with the line `MEMORY_FOREST_INTERNAL`, and sets that name in
+  the environment of the model process. Only the first owner turn's own text marks a session; a hook
+  still reads the environment. A hosted assistant has no transcript to read. Its
   `memory_log` path belongs to the MCP server, not to intake.
 - **An agent with no transcript and no hooks** has three ways in, strongest last: the MCP tool `memory_log`,
   with which it appends its own turn (it depends on the agent calling it, and the setup says so); an export

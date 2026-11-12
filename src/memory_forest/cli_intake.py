@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import select
 import sys
 import time
@@ -84,17 +85,18 @@ def read_hook_payload(
     wait: Callable[[BinaryIO, float], bool] | None = None,
     clock: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
-    """The hook's JSON object. A stream that is not a pipe is read up to ``limit``.
+    """The hook's JSON object. A stream with no descriptor is read up to ``limit``.
 
-    A pipe is read until the object is complete, the byte limit, or ``seconds``. A payload
-    that does not arrive is ``hook_timeout``.
+    A descriptor is read with ``os.read`` after each ``select``, under one deadline for the whole payload,
+    until the object is complete, the byte limit, or the end of the stream. ``os.read`` returns what is
+    there, so a client that writes the object and keeps its end open does not hold the hook. A payload that
+    does not arrive is ``hook_timeout``.
     """
     try:
-        stream.fileno()
-        piped = True
+        descriptor = stream.fileno()
     except (AttributeError, OSError, ValueError):
-        piped = False
-    if not piped:
+        descriptor = None
+    if descriptor is None:
         return _parse_hook(stream.read(limit + 1), limit)
     now = clock or time.monotonic
     deadline = now() + seconds
@@ -106,7 +108,7 @@ def read_hook_payload(
             raise MemoryForestError("hook_timeout", "The hook payload did not arrive.")
         if not waiting(stream, remaining):
             raise MemoryForestError("hook_timeout", "The hook payload did not arrive.")
-        chunk = stream.read(min(65536, limit + 1 - len(buf)))
+        chunk = os.read(descriptor, min(65536, limit + 1 - len(buf)))
         if not chunk:
             break
         buf += chunk

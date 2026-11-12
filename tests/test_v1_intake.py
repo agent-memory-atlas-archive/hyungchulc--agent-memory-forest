@@ -72,6 +72,13 @@ class IntakeTestCase(ForestTestCase):
             lines.append(f"exclude = [{json.dumps(exclude)}]")
         return "\n".join(lines) + "\n"
 
+    def turn_on(self, root: Path, *adapters: str) -> None:
+        """Intake turned on for these tools, as when their first sweep ran before these transcripts existed."""
+        from memory_forest import intake
+
+        for name in adapters or ("jsonl",):
+            intake._write_meta(root, name, {"placed": True})
+
     def invoke(self, root: Path, *args: str, stdin: str = "") -> tuple[int, str, str]:
         old = sys.stdin
         sys.stdin = io.TextIOWrapper(io.BytesIO(stdin.encode("utf-8")), encoding="utf-8")
@@ -91,7 +98,7 @@ class IntakeTestCase(ForestTestCase):
 
     def rows(self, root: Path, agent: str = "glaze-bot") -> list[dict]:
         text = self.lane(root, agent)
-        return [json.loads(line) for line in text.splitlines() if line]
+        return [json.loads(line) for line in text.split("\n") if line]
 
 
 class Redirect:
@@ -161,7 +168,7 @@ class WriterTests(IntakeTestCase):
             "session": "ses-kiln-1",
             "source": "kiln.jsonl",
         }
-        target = cursor_file(root, "glaze-bot", "jsonl", "kiln.jsonl")
+        target = cursor_file(root, "jsonl", "kiln.jsonl")
         target.parent.mkdir(parents=True)
         target.write_text(json.dumps(state), encoding="utf-8")
         self.invoke(root, "--from", "jsonl", "--once")
@@ -305,6 +312,7 @@ class WriterTests(IntakeTestCase):
         path = folder / "kiln.jsonl"
         path.write_text(record(id="turn-1", text="From the hook."), encoding="utf-8")
         root = self.forest(self.tool(folder))
+        self.turn_on(root)
         payload = json.dumps({"transcript_path": str(path), "session_id": "ses-kiln-1", "cwd": "/studio/kiln"})
         # The hook reads only this transcript. It prints nothing: a client's hook
         # treats stdout as model context and a non-zero exit as a block.
@@ -318,7 +326,9 @@ class WriterTests(IntakeTestCase):
         folder = self.base / "notes"
         folder.mkdir()
         (folder / "kiln.jsonl").write_text(record(id="turn-1"), encoding="utf-8")
+        (folder / "shelf.jsonl").write_text(record(id="turn-s", session="ses-shelf-1", text="Shelf."), encoding="utf-8")
         root = self.forest(self.tool(folder))
+        self.turn_on(root)
         holder = (
             "import sys\n"
             "from memory_forest.locking import hold_lock\n"
@@ -347,7 +357,7 @@ class WriterTests(IntakeTestCase):
             self.assertEqual((code, out, err), (0, "", ""))
             code, status_out, _ = self.invoke(root, "status")
             self.assertEqual(code, 0)
-            self.assertIn("lock busy 1", status_out)
+            self.assertIn("busy 1", status_out)
         finally:
             if proc.stdin is not None:
                 proc.stdin.write(b"\n")
@@ -355,6 +365,15 @@ class WriterTests(IntakeTestCase):
             if proc.stdout is not None:
                 proc.stdout.close()
             proc.wait(timeout=5)
+        # The marker is the transcript's: a run for another transcript leaves it, the run that reads it removes it.
+        self.invoke(root, "--from", "jsonl", "--hook", "--once", stdin=json.dumps({
+            "transcript_path": str(folder / "shelf.jsonl"), "cwd": "/studio/kiln",
+        }))
+        self.assertIn("busy 1", self.invoke(root, "status")[1])
+        self.invoke(root, "--from", "jsonl", "--hook", "--once", stdin=json.dumps({
+            "transcript_path": str(folder / "kiln.jsonl"), "cwd": "/studio/kiln",
+        }))
+        self.assertNotIn("busy", self.invoke(root, "status")[1])
 
     def test_the_index_is_rebuilt_from_the_lane(self) -> None:
         folder = self.base / "notes"
@@ -368,7 +387,7 @@ class WriterTests(IntakeTestCase):
         end = ids.with_suffix(".end")
         if end.is_file():
             end.unlink()
-        state_path = cursor_file(root, "glaze-bot", "jsonl", "kiln.jsonl")
+        state_path = cursor_file(root, "jsonl", "kiln.jsonl")
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["offset"] = 0
         state.pop("dev", None)
@@ -414,7 +433,7 @@ class WriterTests(IntakeTestCase):
         folder = self.base / "notes"
         folder.mkdir()
         (folder / "kiln.jsonl").write_text(
-            record(id="turn-1", text="A forest stage.", **{"MEMORY_FOREST_INTERNAL": "1"}),
+            record(id="turn-1", text="MEMORY_FOREST_INTERNAL\nA forest stage."),
             encoding="utf-8",
         )
         root = self.forest(self.tool(folder))

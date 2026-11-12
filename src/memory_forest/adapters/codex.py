@@ -21,8 +21,11 @@ not. ``thread_source`` ``automation``, ``exec``, ``github`` or ``mcp`` is
 headless. ``cli``, ``vscode`` and ``user`` are the owner's own client.
 Anything else is ``unknown``, and the raw value is kept. The rollout does not store the
 process environment. A hook sees ``MEMORY_FOREST_INTERNAL`` in its own
-environment. A sweep sees it when ``session_meta`` (or another line) carries it
-as a key. A hook sends ``transcript_path`` (which may be null), ``session_id``
+environment. A sweep sees a stage session by its first owner turn, which opens
+with the marker line. Read again against the rollouts on a development machine:
+every user item carries an ``id``, provenance is ``user``, ``harness``,
+``agents_md`` or ``tool``, and the blocks that open with a tag open with
+``environment_context``, ``subagent_notification`` or ``turn_aborted``. A hook sends ``transcript_path`` (which may be null), ``session_id``
 and ``cwd``; when the path is null the session id is looked up in the rollout
 file name.
 """
@@ -46,9 +49,7 @@ from .common import (
     find_marks,
     harness_only,
     harness_parts,
-    head_internal,
     head_objects,
-    marked_internal,
     name_has_id,
     parse_object,
     parse_time,
@@ -149,8 +150,6 @@ class CodexAdapter:
                     unknown += 1
                     dropped["invalid"] = dropped.get("invalid", 0) + 1
                     continue
-                if marked_internal(value):
-                    internal = True
                 kind = value.get("type")
                 if kind == "compacted":
                     moment = parse_time(value.get("timestamp"))
@@ -245,7 +244,7 @@ class CodexAdapter:
                 version = stated_version(payload)
             break
         return Transcript(
-            relative_key(path, root), path, session, cwd, origin, head_internal(path), raw, version, True, parent
+            relative_key(path, root), path, session, cwd, origin, False, raw, version, True, parent
         )
 
 
@@ -348,7 +347,9 @@ def _user_pieces(payload: dict) -> tuple[str, tuple[Part, ...], bool]:
         kind = item.get("type")
         if kind == "input_text" and isinstance(item.get("text"), str):
             text = item["text"]
-            harness = provenance in _HARNESS_PROVENANCE or harness_only(text)
+            # Only ``user`` provenance, or none, is the owner's: ``tool``, ``harness`` and any other kind is not.
+            harness = (provenance is not None and provenance != "user") or provenance in _HARNESS_PROVENANCE \
+                or harness_only(text)
             if provenance == "user" or (provenance is None and not harness):
                 owner = True
             if pieces:

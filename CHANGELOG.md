@@ -13,6 +13,24 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- A turn's id escapes its parts before they are joined, so two different raw ids never become one, and
+  the day's id file is read by `\n` alone. No release shipped the earlier form, so nothing is migrated.
+  Any failure after a line is in the lane reports how many turns it stored (`N turns, then failed`). A
+  Grok tool id of a short form is composed with the session. `forest intake reread` goes back to where
+  intake first placed a cursor and no further, leaves an excluded cursor, and clears what a read carried
+  over; a reread with no fault clears the fault count. A dry run writes nothing when the tool's state
+  cannot be read.
+- Intake state is kept by tool, and each cursor names the agent whose lane its turns went to. A
+  transcript whose cursor names another agent is not read, and `status` counts those for each pair of
+  names; a second agent needs no rename. `rename-agent` sets the name in each cursor and completes after
+  an interruption at any step. A hook that finds the lock held leaves one marker for its transcript.
+  Earlier intake state under `.forest/intake/cursors/` is not read: no release shipped it.
+- A hook never turns intake on: the first sweep does, and hook calls before it are counted. The hook's
+  stdin is read as it arrives under one deadline, so an open pipe does not hold it. A stage session is
+  one small file found by one `stat`. Only the first owner turn's own text marks a session. A line
+  longer than a hook reads is the sweep's. A plugin's `discover` is consumed inside the guard and
+  bounded. Codex `tool` provenance and the `subagent_notification` and `turn_aborted` blocks are not
+  the owner.
 - Masking finds where a value ends by one rule (white space, a tag, a closing quote, bracket, comma or
   semicolon, or the partner of an opening quote), so a value before a closing tag is masked and a part's
   tags stay whole. `[REDACTED]` is one token and is never masked again. A name is a secret name when its
