@@ -492,18 +492,25 @@ What SQLite refuses is sorted by its result code:
 
 | Code | When | Next move |
 | --- | --- | --- |
-| `index_unreadable` | the file is corrupt or is not a database | `run` `forest index reset` |
-| `index_busy` | another connection or build holds the file or the lock | `retry` after `after_seconds` |
-| `index_read_only` | the file, its `-wal` or `-shm`, or `.forest/` cannot be written | `report` |
+| `index_unreadable` | the file is corrupt, is not a database, or its schema mark matches but a table or column is missing | `run` `forest index reset` |
+| `index_busy` | the index lock is held, or another program holds the file | `retry` after `after_seconds`, stop at `stop_after_seconds` |
+| `index_read_only` | the file, its `-wal` or `-shm`, or `.forest/` cannot be written, so it cannot be read either | `report` |
 | `index_disk_full` | the disk is full | `report` |
-| `index_io_error` | the disk returned an I/O error | `report` |
+| `index_io_error` | the disk returned an I/O error, or the locking protocol failed and this call's budget is spent | `report` |
 | `index_cannot_open` | the path cannot be opened or created (a folder in its place) | `report` |
 | `index_missing` | there is no index and none could be built yet | `run` `forest index build` |
+| `index_failed` | SQLite refused for a reason this package does not classify, or a lock conflict inside this connection | `report` |
+| `index_reset_refused` | the index pointer is not a file, so a reset cannot publish a new name | `report` |
+| `symlink_forbidden` | a symlink stands where the index or its pointer would be | `report` |
 
-A build that meets a busy file says `busy` and exits 0; a search with the same masking answers `stale`.
-`report` means no command helps: the message says what a person has to do. Resetting a working index on a
-full disk would lose it and the rebuild would fail again. A file whose first build has not committed yet
-is not refused: it is no index yet.
+A build that does not build is a refusal: `index_busy`, a non-zero exit, next move `retry`. The message
+says which cause it can tell apart, the index lock or another program holding the file. On `retry`,
+`waited_seconds` is how long this call already waited and `stop_after_seconds` is the total after which
+the caller reports instead of calling again. A search with the same masking answers `stale`. `report`
+means no command helps: the message says what a person has to do. Resetting a working index on a full
+disk would lose it and the rebuild would fail again. A file whose first build has not committed yet is
+not refused: it is no index yet. A `.forest/` folder that cannot be written cannot be searched at all,
+even when the index is unchanged, because opening the file asks that folder to be writable.
 
 `forest index reset` is for an index that is corrupt or damaged. The index file's name carries a
 generation. `.forest/index.current` names the current file, and with no pointer `.forest/index.sqlite`
@@ -604,7 +611,8 @@ non-loopback port from outside the machine is the owner's own network decision; 
 that path itself.
 
 `memory_log` reports `indexed: true` or `indexed: false`. False means the line is in the lane and the
-index lock was busy.
+index was not updated. `reason` names which refusal that was: the index lock was busy, or the index was
+read-only, damaged, or full, or another refusal from the table above.
 
 Every refusal of a tool is a result with `isError: true` whose text is one JSON object, the same object
 `--json` prints under `error`:
@@ -615,7 +623,9 @@ Every refusal of a tool is a result with `isError: true` whose text is one JSON 
 ```
 
 `code`, `message` and `details` are always there. `next` is there when the refusal has a next move:
-`run` with `command`, `retry` with `after_seconds` (the same call again after that wait), or `report`
+`run` with `command`, `retry` with `after_seconds`, `waited_seconds` and `stop_after_seconds` (call again
+after `after_seconds` while the sum of each answer's `waited_seconds` and `after_seconds` is below
+`stop_after_seconds`, and report the message once that sum would reach it), or `report`
 (tell the owner the message; no command helps). A refusal with no next move, such as `search_empty`,
 has no `next`. An argument that fails a tool's schema under 2025-11-25 is `arguments_invalid` in the
 same shape. The strings are masked like every answer. A tool answer, a refusal or a result, never

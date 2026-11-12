@@ -177,7 +177,7 @@ def subject(
                 payload["stale"] = stale
             return payload
         except sqlite3.Error as exc:
-            raise search.index_error(exc) from exc
+            raise search.finish_read(exc) from exc
     finally:
         connection.close()
 
@@ -266,7 +266,7 @@ def _collect(
             payload["when"] = _when_dict(when)
             return payload
         except sqlite3.Error as exc:
-            raise search.index_error(exc) from exc
+            raise search.finish_read(exc) from exc
     finally:
         connection.close()
 

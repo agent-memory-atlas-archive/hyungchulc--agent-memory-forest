@@ -515,6 +515,8 @@ class SqliteErrorClassTests(ForestTestCase):
             self.assertEqual(held.exception.code, "index_busy")
             self.assertEqual(held.exception.next_step, "retry")
             self.assertIsNone(held.exception.command)
+            self.assertNotIn("fingerprint", held.exception.message.casefold())
+            self.assertIn("not committed", held.exception.message.casefold())
             marker.unlink()
             self.assertEqual(builder.wait(timeout=120), 0)
         finally:
@@ -550,6 +552,10 @@ class SqliteErrorClassTests(ForestTestCase):
         self.assertEqual(body["next"], "retry")
         self.assertGreater(body["after_seconds"], 0)
         self.assertNotIn("command", body)
+        self.assertIn("fingerprint", body["message"].casefold())
+        self.assertIn("another program", body["message"].casefold())
+        self.assertIn("stop_after_seconds", body)
+        self.assertIn("waited_seconds", body)
         self.assertTrue(self.index.is_file())
         self.assertIn(TILL, [page["path"] for page in search.query(self.root, "quorn", reader="till-bot")["results"]])
 

@@ -12,6 +12,12 @@ from .errors import MemoryForestError
 
 def cmd_index_build(arguments: Any) -> int:
     result = search.build(forest_root(arguments), verify=bool(arguments.verify))
+    if result.get("busy"):
+        raise search.index_busy_error(
+            str(result.get("message") or "The index was not built."),
+            waited_seconds=float(result.get("waited_seconds") or 0.0),
+            path=str(result.get("path") or search.INDEX_RELATIVE),
+        )
     _show_index(arguments, result)
     return 0
 

@@ -13,6 +13,12 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- `forest index build` that does not build exits non-zero with `index_busy` and next `retry`. The
+  message says whether the index lock is held or another program holds the file. A retry says how long
+  the call already waited and the total after which the caller reports. A lock conflict inside one
+  connection is `index_failed`. A protocol error is retried, then `index_io_error`. A schema mark that
+  matches a missing table or column is `index_unreadable`. A word search no longer hides a busy or I/O
+  error. `indexed: false` carries `reason`. A read-only `.forest/` folder cannot be searched.
 - A tool answer never carries a host name, a process id, a user name, or an absolute path. `lock_busy`
   and `lock_already_held` leave a tool as one busy refusal, next `retry`. Two `memory_log` calls in one
   server process wait their turn. The command line still shows a lock's owner.

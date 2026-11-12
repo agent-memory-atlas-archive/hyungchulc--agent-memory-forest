@@ -199,7 +199,8 @@ Finding is `forest index`, `forest search`, `forest read` and `forest timeline`,
 index, `.forest/index.sqlite`. The lanes themselves still hold no index. The derived file does, so an
 hour that has not been filed can be found, and deleting the file and building again makes the same index.
 
-`forest index build` holds the `index` lock. A second build that finds the lock held returns at once.
+`forest index build` holds the `index` lock. A second build that finds the lock held, or a file another
+program holds, does not build: it refuses with `index_busy`, a non-zero exit, and next move `retry`.
 A file whose size and time are unchanged is left, unless the build is `forest index build --verify` or
 the stored hash is more than a day old: then the file is hashed, and rewritten only when the hash has
 changed. That catches a restore that kept the size and the time.
@@ -215,7 +216,8 @@ then share a journal with a new one. A file that is still empty because the firs
 is no index yet, for a reader as before any build.
 
 **What SQLite refuses.** One function turns a SQLite error into a refusal, by its result code. Only a file
-that is corrupt or is not a database is `index_unreadable`, and it is refused rather than replaced: its
+that is corrupt or is not a database, or whose schema mark matches while a table or column is missing,
+is `index_unreadable`, and it is refused rather than replaced: its
 next move is `run` with the command `forest index reset`. The index file's name carries a generation.
 `.forest/index.current` names the current file; with no pointer, `.forest/index.sqlite` is current, so a
 forest made before this still opens. Reset holds the index lock, chooses a name that has not been used,
@@ -225,10 +227,15 @@ removed is an orphan nothing reads, named in the output, and not a failure. The 
 removes orphans of the index's own naming pattern in `.forest/`, never a symlink, a folder, or the
 current file. A call that already opened a file finishes on that file, so a server may be running. A
 held lock is the refusal `index_busy` with a non-zero exit. The next query or `forest index build`
-makes the index again at the new path. A busy or locked file is the busy path below. A read-only
+makes the index again at the new path. A busy file is the busy path below. A lock conflict inside the
+caller's own connection is `index_failed`, next `report`, because waiting does not cure it. A protocol
+error is retried inside the call like a busy file, and when that call's budget is spent it is
+`index_io_error`, next `report`. A read-only
 file or folder, a full disk, an I/O error and a path that cannot be opened have codes of their own
 (`index_read_only`, `index_disk_full`, `index_io_error`, `index_cannot_open`) whose next move is
-`report`: no command helps, and resetting a working index on a full disk would only lose it. Publishing a
+`report`: no command helps, and resetting a working index on a full disk would only lose it. A
+`.forest/` folder that cannot be written cannot be searched, from `status` or from a search, even when
+the index is unchanged: opening the file asks that folder to be writable. Publishing a
 fresh copy by an atomic rename was the other model; it was not chosen because it copies the whole
 database for every appended line.
 
@@ -259,7 +266,7 @@ masking rule in the code. So the index keeps one fingerprint of everything that 
 `MASKING_VERSION`). When the forest's fingerprint differs from the stored one, or the stored one cannot
 be read, at a build, at an update or at a query, every file is indexed again before anything is answered.
 A query that cannot rebuild waits for the other build's lock, and tries a busy file again every tenth of
-a second, until its budget (60 seconds) is spent; then it refuses (`index_busy`, next move `retry`) rather than answer from text masked under the old rules.
+a second, until its budget (60 seconds) is spent; then it refuses (`index_busy`, next move `retry`) rather than answer from text masked under the old rules. The refusal says how long this call already waited. On `retry`, the caller adds `waited_seconds` and `after_seconds` and reports once the sum reaches `stop_after_seconds`.
 When the fingerprint is the same, a busy open answers from the rows already on file and says `stale`. The fingerprint check and the answer are two snapshots: a masking
 change that lands in the milliseconds between them is answered under the old rules, the same as a query
 that arrived a moment earlier. `forest index status` says `masking: current` or `changed`.
@@ -305,8 +312,9 @@ turn through the intake writer; the server sets the role to `agent` and the orig
 (`interactive` on stdio, `headless` on HTTP). A caller-supplied role or origin is refused. The server's
 instructions are under 2,048 characters.
 
-`memory_log` answers `indexed: true` when the new line is in the index and `indexed: false` when the
-index lock was busy. The line is in the lane either way. The update reads and hashes the bytes already indexed, parses only the new line, and writes
+`memory_log` answers `indexed: true` when the new line is in the index and `indexed: false` when it is
+not, with `reason` naming the refusal (the lock was busy, or the index was read-only, damaged, or full).
+The line is in the lane either way. The update reads and hashes the bytes already indexed, parses only the new line, and writes
 it into the published index; it does not copy the database.
 
 The clients checked here (`claude mcp`, `codex mcp`, `grok mcp`) speak protocol versions 2024-11-05,
@@ -538,7 +546,9 @@ that agent's own job.
 - The owner says one sentence to their agent. The agent runs `forest setup`, which is written to be driven
   by an agent: every output is one JSON object whose `next` is `ask_owner` (the question, the choices, and
   why only the owner can answer), `run` (a command), `retry` (the same call again after `after_seconds`),
-  `report` (what to tell the owner) or `done`. A refusal of any command or tool has the same form:
+  `report` (what to tell the owner) or `done`. On `retry`, add this answer's `waited_seconds` and the
+  `after_seconds` it asks the caller to wait onto the time already spent, call again after `after_seconds`
+  while that sum is below `stop_after_seconds`, and report the message once the sum would reach it. A refusal of any command or tool has the same form:
   `code`, `message`, `details` and, when there is one, `next` with its `command` or `after_seconds`. The agent
   asks, runs the command again with `--answer key=value`, and is finished when `forest doctor` passes. An
   agent that never read a guide, or lost its place, still ends in the right state by following the output.

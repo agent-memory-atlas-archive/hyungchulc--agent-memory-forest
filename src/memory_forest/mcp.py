@@ -581,13 +581,23 @@ def _invoke(
             session=str(arguments.get("session") or "mcp"),
         )
         indexed = False
+        reason = ""
         try:
             outcome = search.update_files(root, [record["path"]], wait_seconds=0)
             indexed = bool(outcome.get("indexed"))
+            if not indexed:
+                reason = str(outcome.get("reason") or "index_busy")
+        except MemoryForestError as exc:
+            reason = exc.code
+            indexed = False
         except Exception:
             _log("forest mcp: the turn was written and the index was not updated")
+            reason = "index_failed"
             indexed = False
-        return {"id": record["id"], "indexed": indexed, "path": record["path"], "wrote": bool(record["wrote"])}
+        body = {"id": record["id"], "indexed": indexed, "path": record["path"], "wrote": bool(record["wrote"])}
+        if not indexed:
+            body["reason"] = reason
+        return body
     raise _BadArguments("That tool is not served.")
 
 

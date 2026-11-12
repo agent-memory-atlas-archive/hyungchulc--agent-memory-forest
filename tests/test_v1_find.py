@@ -974,7 +974,7 @@ class ReviewPathTests(ForestTestCase):
 
     def test_a_second_build_waits_for_nobody_and_a_half_written_file_is_not_what_a_reader_sees(self) -> None:
         with held_in_thread(lambda: hold_lock(self.root, "index", wait_seconds=60, label="test")):
-            # A second process, so the lock this process holds is "already running" rather than re-entry.
+            # A second process, so the lock this process holds is the index lock rather than re-entry.
             busy = subprocess.run(
                 [
                     sys.executable,
@@ -988,8 +988,10 @@ class ReviewPathTests(ForestTestCase):
                 capture_output=True,
                 text=True,
             )
-        self.assertEqual(busy.returncode, 0, busy.stderr)
-        self.assertIn("already running", busy.stdout)
+        self.assertEqual(busy.returncode, 2, busy.stderr)
+        self.assertIn("index_busy", busy.stderr)
+        self.assertIn("index lock", busy.stderr.casefold())
+        self.assertNotIn("already running", busy.stdout + busy.stderr)
         seen = _cli(self, ["search", "유약", "--as", "till-bot", "--json"])
         self.assertIn("유약", seen[1])
         staging = self.root / ".forest" / "index.sqlite.building"
@@ -1200,6 +1202,7 @@ class ReviewPathTests(ForestTestCase):
             body = json.loads(logged["result"]["content"][0]["text"])
             self.assertTrue(body["wrote"])
             self.assertFalse(body["indexed"])
+            self.assertEqual(body["reason"], "index_busy")
         found = _cli(self, ["search", "logged a held index", "--as", "till-bot", "--json"])
         self.assertIn("logged a held index", found[1])
 

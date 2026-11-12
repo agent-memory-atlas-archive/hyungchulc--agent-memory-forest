@@ -730,6 +730,10 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
                 sys.stderr.write(_shown(f"  command: {exc.command}\n"))
             if exc.after_seconds is not None:
                 sys.stderr.write(f"  after_seconds: {exc.after_seconds:g}\n")
+            if exc.waited_seconds is not None:
+                sys.stderr.write(f"  waited_seconds: {exc.waited_seconds:g}\n")
+            if exc.stop_after_seconds is not None:
+                sys.stderr.write(f"  stop_after_seconds: {exc.stop_after_seconds:g}\n")
         return 2
     except UnicodeError:
         if hook:
