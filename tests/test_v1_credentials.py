@@ -177,7 +177,6 @@ class MaskTests(unittest.TestCase):
             f"Authorization: Bearer {token}",
             f"authorization=Bearer {token}",
             f"Authorization: Basic {basic}",
-            f"Basic {basic}",
         )
         for text in forms:
             with self.subTest(text=text[:24]):
@@ -209,7 +208,7 @@ class MaskTests(unittest.TestCase):
 
     def test_the_masking_fingerprint_moves_when_the_rules_do(self) -> None:
         current = credentials.fingerprint(DEFAULT_CONFIG, ledger=None)
-        self.assertNotEqual(credentials.MASKING_VERSION, "2")
+        self.assertNotIn(credentials.MASKING_VERSION, ("2", "3"))
         with mock.patch.object(credentials, "MASKING_VERSION", "2"):
             previous = credentials.fingerprint(DEFAULT_CONFIG, ledger=None)
         self.assertNotEqual(current, previous)

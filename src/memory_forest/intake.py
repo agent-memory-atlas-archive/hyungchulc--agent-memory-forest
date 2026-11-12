@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
@@ -744,6 +745,10 @@ def _record(
             text = f"ran {name}"
             parts = ()
             arguments = None
+    # The home folder is folded first, so the part offsets are mapped once, onto the text that is stored.
+    text, parts = _fold_home_parts(text, parts)
+    if isinstance(arguments, str):
+        arguments = _fold_home(arguments)
     masked, parts, repaired = _mask_parts(text, parts, config)
     at = turn.at if turn.at.tzinfo is not None else turn.at.replace(tzinfo=timezone.utc)
     source = {"adapter": adapter_name, "place": turn.place, "transcript": transcript.key}
@@ -767,21 +772,48 @@ def _record(
     if parts:
         record["parts"] = [{"end": part.end, "kind": part.kind, "start": part.start} for part in parts]
     repaired = _mask_strings(record, config) or repaired
-    for key in ("text", "arguments"):
-        value = record.get(key)
-        if isinstance(value, str):
-            record[key] = _fold_home(value)
     if repaired:
         record["repaired"] = True
     return record
 
 
+def _home_pattern(home: str) -> re.Pattern[str]:
+    """The home folder where it is a whole path: ``/srv/al`` in ``/srv/al/x``, never in ``/srv/alice/x``."""
+    return re.compile(r"(?:(?<=file://)|(?<![\w.\-~/]))" + re.escape(home) + r"(?![\w\-~]|\.\w)")
+
+
 def _fold_home(text: str) -> str:
     """Write ``~`` in place of the home folder. Only a text or a kept tool argument is folded."""
-    home = str(Path.home())
-    if len(home) > 1 and home in text:
-        return text.replace(home, "~")
-    return text
+    return _fold_home_parts(text, ())[0]
+
+
+def _fold_home_parts(text: str, parts: tuple[Part, ...]) -> tuple[str, tuple[Part, ...]]:
+    """``text`` with ``~`` for the home folder, and each part moved to the characters it named."""
+    home = str(Path.home()).rstrip("/")
+    if len(home) <= 1 or home not in text:
+        return text, parts
+    matches = list(_home_pattern(home).finditer(text))
+    if not matches:
+        return text, parts
+    pieces: list[str] = []
+    cursor = 0
+    for found in matches:
+        pieces += [text[cursor:found.start()], "~"]
+        cursor = found.end()
+    pieces.append(text[cursor:])
+
+    def moved(offset: int) -> int:
+        shift = 0
+        for found in matches:
+            if offset >= found.end():
+                shift += len(found.group(0)) - 1
+            elif offset > found.start():
+                return found.start() - shift + (1 if offset == found.end() else 0)
+            else:
+                break
+        return offset - shift
+
+    return "".join(pieces), tuple(Part(moved(part.start), moved(part.end), part.kind) for part in parts)
 
 
 def _role_ok(role: str) -> bool:
@@ -1569,3 +1601,102 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         if written <= 0:
             raise OSError("a lane write made no progress")
         view = view[written:]
+
+
+# ─────────────────────────────── lanes written under earlier masking rules ───────────────────────────────
+
+
+def _mask_lane_value(value: Any, config: Config, ledger: Any) -> Any:
+    if isinstance(value, str):
+        return credentials.mask(value, config=config, ledger=ledger)
+    if isinstance(value, dict):
+        return {key: _mask_lane_value(item, config, ledger) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_lane_value(item, config, ledger) for item in value]
+    return value
+
+
+def _masked_lane_line(raw: bytes, config: Config, ledger: Any) -> bytes | None:
+    """The line as today's rules would store it, or None when they change nothing (or it is no record).
+
+    Every string of the record is masked except ``id`` and ``at``, as the writer masks them. A line the
+    writer's encoding does not reproduce byte for byte is left as written: rewriting it would change more
+    than the masked spans."""
+    record = parse_object(raw)
+    if not isinstance(record, dict):
+        return None
+    masked = {key: value if key in {"id", "at"} else _mask_lane_value(value, config, ledger)
+              for key, value in record.items()}
+    if masked == record:
+        return None
+    if _encode(record).encode("utf-8") != raw + b"\n":
+        return b""
+    return _encode(masked).encode("utf-8").rstrip(b"\n")
+
+
+def _lane_files(root) -> list[tuple[str, str, Path]]:
+    base = layout.resolve(root, layout.ISTM)
+    found: list[tuple[str, str, Path]] = []
+    if not base.is_dir() or base.is_symlink():
+        return found
+    for agent in sorted(base.iterdir(), key=lambda item: item.name):
+        if not agent.is_dir() or agent.is_symlink() or not layout.is_slug(agent.name):
+            continue
+        for path in sorted(agent.glob("*.jsonl")):
+            if path.is_file() and not path.is_symlink():
+                found.append((agent.name, path.stem, path))
+    return found
+
+
+def lane_masking(root: str | os.PathLike[str], *, fix: bool = False) -> list[dict[str, Any]]:
+    """For each lane (``06 istm/<agent>``), how many lines today's masking rules would change: a count, never a
+    value. With ``fix`` each such line is rewritten in place, under the intake lock: the file is replaced
+    atomically, it keeps its number of lines, and only the masked spans differ. The id index of a rewritten
+    file is written again from it. A line the writer's encoding does not reproduce is counted as kept."""
+    from . import credential_ledger
+
+    config = load_config(root)
+    ledger = credential_ledger.for_config(config)
+    totals: dict[str, dict[str, Any]] = {}
+
+    def scan(agent: str, path: Path) -> tuple[bytes, int, int]:
+        data = path.read_bytes()
+        complete = data[: data.rfind(b"\n") + 1] if b"\n" in data else b""
+        tail = data[len(complete):]
+        lines = complete.split(b"\n")[:-1] if complete else []
+        changed = kept = 0
+        out: list[bytes] = []
+        for raw in lines:
+            new = _masked_lane_line(raw, config, ledger)
+            if new is None:
+                out.append(raw)
+                continue
+            if new == b"":
+                kept += 1
+                out.append(raw)
+                continue
+            changed += 1
+            out.append(new)
+        rebuilt = b"".join(line + b"\n" for line in out) + tail
+        return rebuilt, changed, kept
+
+    def visit(write: bool) -> None:
+        for agent, day, path in _lane_files(root):
+            rebuilt, changed, kept = scan(agent, path)
+            row = totals.setdefault(agent, {"lane": f"{layout.ISTM}/{agent}", "lines": 0, "kept": 0, "written": 0})
+            row["lines"] += changed + kept
+            row["kept"] += kept
+            if write and changed:
+                before = path.read_bytes().count(b"\n")
+                atomic_write(path, rebuilt)
+                if path.read_bytes().count(b"\n") != before:  # pragma: no cover - atomic_write writes all or nothing
+                    raise MemoryForestError("lane_fix_lines", "A rewritten lane lost or gained a line.")
+                _write_ids(root, agent, day, _ids_in(rebuilt), len(rebuilt))
+                row["written"] += changed
+
+    if not fix:
+        visit(False)
+    else:
+        with _intake_turn(), hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest credentials fix"):
+            visit(True)
+    return [row for row in totals.values() if row["lines"] or row["kept"]]

@@ -57,7 +57,9 @@ number, the setting that holds it is given with its default.
     Numbers and sign-in values are masked, by section 4, before the line is written, in every string of
     the line, including the name in `other:<name>`. The `id` is not masked: after the rule above it holds
     no raw text of a turn. A home-folder path inside a turn's text, or inside a tool argument that is
-    kept, is written with `~` in place of that folder. That does not cover the session, the role, the
+    kept, is written with `~` in place of that folder, where it is a whole path (with the home
+    `/srv/al`, `/srv/alice` stays), before the parts are mapped, so a part names the characters it
+    names in the stored text. That does not cover the session, the role, the
     id, or `source` (the transcript path there is already relative to the tool's own root). A tool turn
     records that the tool ran, not what it printed, unless `intake.tool_output` is `keep`. While a
     source is excluded, its cursor follows the file's end and nothing is written; that past is not taken
@@ -788,21 +790,43 @@ When the owner says that something is not to be remembered:
    `glpat-`, `gldt-`, `glrt-`), the cloud consoles (`AKIA`, `ASIA`, `AIza`, `GOCSPX-`, `dop_v1_`), the
    payment and chat services (`sk_live_`, `sk_test_`, `rk_live_`, `rk_test_`, `whsec_`, `xoxb-`, `xoxp-`,
    `xoxa-`, `xoxr-`, `xoxs-`, `sq0atp-`, `sq0csp-`, `SG.`, `shpat_`), the package registries (`npm_`,
-   `pypi-`), an `Authorization` header of bearer, basic or digest, a JWT (`eyJ…`.`eyJ…`.`…`), and a
-   private-key block. Each prefix has a floor on its length, so an ordinary word with the same head is
-   left alone. An assignment whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD` or
-   `CREDENTIAL` as its own word (`OPENAI_API_KEY=…`, `db_password: …`, `"client_secret": "…"`) is a
-   labelled value. A long token beside a word that names access is one too. A git hash, a UUID and the
-   head of a base64 image are not those shapes and are left as written, unless a label stands before
-   them: after a label the value is masked whatever its shape. A tag that marks a pasted, attached or
-   quoted span is not a value.
+   `pypi-`), an `Authorization` header, a JWT (`eyJ…`.`eyJ…`.`…`), and a private-key block. Each prefix
+   has a floor on its length, so an ordinary word with the same head is left alone. A long token beside a
+   word that names access is a value too. A git hash, a UUID and the head of a base64 image are not those
+   shapes and are left as written, unless a label stands before them: after a label the value is masked
+   whatever its shape.
+
+   **Where a value ends** is one rule for every step: at white space, at `<` (the start of a tag, so a
+   pasted, attached or quoted part keeps its marks), and before any of `"` `'` `)` `]` `}` `,` `;`. A
+   value that opens with a quote ends at that quote's partner on the same line. `[REDACTED]` is one
+   token: text that holds it is never masked into `[[REDACTED]]`. No rule depends on where a line stands
+   in the text, and a line inside a JSON string (after `\n`) is read as the same line.
+
+   **What is a secret after a name.** An assignment (`=`, `:` or `=>`) whose name ends in a secret word is
+   a labelled value:
+
+   | case | rule |
+   | --- | --- |
+   | the name | the secret word (`key`, `token`, `secret`, `password`, `passwd`, `passphrase`, `credential`) is the last part of the name: `API_KEY`, `db_password`, `auth-token`, `apiKey`, `"key"`, `key` |
+   | the word elsewhere in the name | not a secret name: `TOKEN_LIMIT`, `PASSWORD_MIN_LENGTH`, `key_count`, `secret_santa` |
+   | a value that reads as code | not masked, after a name or a label: an identifier followed by `(` or `[`; a dotted name whose head holds no digit (`os.environ`, `settings.db_password`, not `ya29.A0…`); `lambda`, `None`, `null`, `true`, `false`, `undefined`; a type word (`str`, `int`, `string` …); a reference to the environment (`$X`, `${X}`, `%X%`, also quoted); the name itself (`password=password`) |
+   | after a name that ends in `key` | masked only when it reads as a literal secret: quoted, or 8 characters or more with a digit, a mix of cases or a symbol (`primary_key: id`, `foreign_key=user_id` stay; `key=hunter22`, `"key": "hunter22"` are masked) |
+   | a bare number | after the names and labels whose values are numbers (`password`, `pin`, `otp`, `passcode`, a code) it is masked; after `token`, `key`, `secret`, `credential`, `bearer` and `authorization` only with 6 digits or more (`max_token: 1024` stays) |
+   | a scheme word | `basic`, `digest` and `bearer` are a scheme after `authorization` (with `:`, `=`, quotes or white space between); `Bearer` alone is one before a mixed token of 16 characters or more. `basic understanding` and `the Digest https://…` are prose |
+   | `Authorization: Digest` | the whole parameter list to the end of the line is masked; a quoted parameter value is skipped whole, and its fields are not read |
+   | `Authorization: [REDACTED] <token>` | a line masked under an earlier rule: the mixed token after the mark is the value |
+
 3. Every record line a tool writes is masked this way (section 4, What a record line is), the writer of the
    daily record and the version 0.3 writer mask the text a model hands them, and everything a tool prints
    is masked and its numbers starred: a page, an archive copy, record lines read back from a history file,
    example lines, registry entries, check and lint messages that quote a line, entry names, and search
    bodies and context. The archive and the raw lane `06 istm` keep the bytes they were given. A page
    line that holds such a value is the violation `credential_in_full` (section 8), and `forest credentials
-   fix` masks it, archiving the page first.
+   fix` masks it, archiving the page first. A lane line written under an earlier rule keeps what that rule
+   left: `forest credentials check` counts, for each lane, the lines today's rules would change (a count,
+   never a value), and `forest credentials fix --all` rewrites them in place, under the intake lock: the
+   file is replaced whole, keeps its number of lines, and only the masked spans differ. That is the one
+   rewrite of a lane; it keeps no copy of the old bytes, which would keep the value.
 4. A code with no label word before it (a bare number in a quoted turn that only a reader can tell is a
    sign-in value) is judged once by a reader. Each code-shaped token in a quoted turn (4 to 8 digits that do
    not read as a year, or 6 to 32 letters and digits with at least two digits) that nobody has judged is

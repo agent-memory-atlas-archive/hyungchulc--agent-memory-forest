@@ -44,21 +44,29 @@ and it does not show a turn that has not been filed onto the daily page. `forest
   step runs after. The shapes are the published prefixes listed in the contract (section 4): the large
   model providers, the code hosts, the cloud consoles, the payment and chat services, the package
   registries, a JWT, an `Authorization` header of bearer, basic or digest, and a private-key block.
-  Each prefix has a length floor. A scheme word alone is not the value. An assignment whose name
-  contains KEY, TOKEN, SECRET, PASSWORD, PASSWD or CREDENTIAL as its own word is a labelled value.
-  A git hash, a UUID and the head of a base64 image are not masked by that rule unless a label stands
-  before them.
+  Each prefix has a length floor. A scheme word alone is not the value. An assignment whose name ends
+  in a secret word (KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASSPHRASE, CREDENTIAL) is a labelled value;
+  the contract's table (section 4, Sign-in values) says which values after such a name are masked and
+  which read as code and stay. A git hash, a UUID and the head of a base64 image are not masked by that
+  rule unless a label stands before them. A value ends at white space, at a tag, and before a closing
+  quote, bracket, comma or semicolon, so a pasted or quoted part keeps its tags.
   Every record line a tool writes is masked, the daily writer masks the text a model hands it, and the
   tools mask what they show; the lint reports a page line that still holds one (`credential_in_full`) and
   `forest credentials fix` masks it after archiving the page. **What is kept:** the raw lane `06 istm`
-  and the archive keep the bytes they were given, so protect them like the forest. A code with no label
+  and the archive keep the bytes they were given, so protect them like the forest. A lane line written
+  under an earlier masking rule keeps what that rule left: `forest credentials check` counts those lines
+  for each lane (never a value) and `forest credentials fix --all` rewrites them in place, changing only
+  the masked spans. A code with no label
   word and no such shape, in a quoted turn, waits for a reader's judgement (`forest credentials
   candidates | judge`); once judged a sign-in value it is masked wherever it appears, through a ledger
   that keeps only keyed digests (`.forest/credentials/`, the key readable by its owner only; protect it
   like the forest). **What the rule cannot see:** a bare code nobody has judged yet and that has none of
   those shapes, a label word your settings do not list, a value written without a digit and without a
   colon ("the password is tulip"), a value split across lines (except a private-key block, which is one
-  pattern), and a value inside an image.
+  pattern), a value inside an image, a value that reads as code (`Spring.Time` after a name reads as an
+  attribute, `abc(1)` as a call), a value that holds a quote, a bracket, a comma or a semicolon past
+  that mark, `Basic` with a token and no `Authorization` before it, and a number of fewer than 6 digits
+  after a token or key name.
 - **"Do not record."** When the owner says something is not to be remembered, the instruction is kept and the
   content is not; lines already filed are taken out, with the earlier version archived (contract,
   section 4).

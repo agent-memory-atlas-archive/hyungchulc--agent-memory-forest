@@ -13,6 +13,16 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- Masking finds where a value ends by one rule (white space, a tag, a closing quote, bracket, comma or
+  semicolon, or the partner of an opening quote), so a value before a closing tag is masked and a part's
+  tags stay whole. `[REDACTED]` is one token and is never masked again. A name is a secret name when its
+  last part is the secret word, on any line of the text; a value that reads as code stays, and after a
+  name that ends in `key` only a literal secret is masked. `basic`, `digest` and `bearer` are a scheme only
+  in a header, or `Bearer` before a mixed token; after `Authorization: Digest` the whole parameter list is
+  masked. The home folder is folded before the parts are mapped, and only where it is a whole path. The
+  masking version is 4, so an index built under an earlier one is rebuilt. `forest credentials check`
+  counts the lane lines the new rules would change and `forest credentials fix --all` rewrites them in
+  place.
 - `forest index build` that does not build exits non-zero with `index_busy` and next `retry`. The
   message says whether the index lock is held or another program holds the file. A retry says how long
   the call already waited and the total after which the caller reports. A lock conflict inside one

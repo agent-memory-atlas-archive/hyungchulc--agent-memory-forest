@@ -169,28 +169,44 @@ def cmd_numbers_star(arguments: argparse.Namespace) -> int:
 # ─────────────────────────────── forest credentials ───────────────────────────────
 
 
-def _print_credentials(found: list[forest_credentials.PageCredentials], *, json_out: bool, extra: dict) -> None:
+def _print_credentials(found: list[forest_credentials.PageCredentials], *, json_out: bool, extra: dict,
+                       lanes: list[dict] | None = None) -> None:
     if json_out:
-        _print_json({**extra, "pages": [item.as_dict() for item in found]})
+        _print_json({**extra, "lanes": lanes or [], "pages": [item.as_dict() for item in found]})
         return
     lines = []
     for item in found:
         state = f" -> masked, copy {item.archive_path}" if item.written else ""
         lines.append(f"{item.path}: a sign-in value in full (lines {', '.join(map(str, item.lines))}){state}")
     lines.append(f"{len(found)} pages")
+    for lane in lanes or []:
+        line = f"{lane['lane']}: {lane['lines']} lines that today's rules would mask"
+        if lane.get("written"):
+            line += f" -> {lane['written']} rewritten"
+        if lane.get("kept"):
+            line += f"; {lane['kept']} kept as written (not in the writer's encoding)"
+        lines.append(line)
     _print_lines(lines)
 
 
 def cmd_credentials_check(arguments: argparse.Namespace) -> int:
-    found = forest_credentials.check(forest_root(arguments), arguments.paths, all_pages=arguments.all)
-    _print_credentials(found, json_out=arguments.json, extra={"ok": not found})
-    return 1 if found else 0
+    from . import intake
+
+    root = forest_root(arguments)
+    found = forest_credentials.check(root, arguments.paths, all_pages=arguments.all)
+    lanes = intake.lane_masking(root) if arguments.all or not arguments.paths else []
+    _print_credentials(found, json_out=arguments.json, extra={"ok": not found and not lanes}, lanes=lanes)
+    return 1 if found or lanes else 0
 
 
 def cmd_credentials_fix(arguments: argparse.Namespace) -> int:
-    found = forest_credentials.fix(forest_root(arguments), _pages(arguments), all_pages=arguments.all,
+    from . import intake
+
+    root = forest_root(arguments)
+    found = forest_credentials.fix(root, _pages(arguments), all_pages=arguments.all,
                                    dry_run=arguments.dry_run, lock=arguments.lock_token)
-    _print_credentials(found, json_out=arguments.json, extra={"dry_run": arguments.dry_run, "ok": True})
+    lanes = intake.lane_masking(root, fix=not arguments.dry_run) if arguments.all else []
+    _print_credentials(found, json_out=arguments.json, extra={"dry_run": arguments.dry_run, "ok": True}, lanes=lanes)
     return 0
 
 
@@ -242,9 +258,11 @@ COMMANDS: list[ForestCommand] = [
     ForestCommand(("numbers", "star"), cmd_numbers_star, "Star the numbers written in full on the named pages, "
                   "or on every page with --all (one of the two is required), archiving each page first.", (_PATHS, _ALL, _DRY, _LOCK)),
     ForestCommand(("credentials", "check"), cmd_credentials_check, "List the pages that hold a value sent to sign in "
-                  "or to pay (line numbers, never the value); exit 1 when there is one.", (_PATHS, _ALL)),
+                  "or to pay (line numbers, never the value), and how many lane lines today's rules would mask; exit 1 "
+                  "when there is one.", (_PATHS, _ALL)),
     ForestCommand(("credentials", "fix"), cmd_credentials_fix, "Replace each sign-in value with [REDACTED] on the "
-                  "named pages, or on every page with --all (one of the two is required), archiving each page first.", (_PATHS, _ALL, _DRY, _LOCK)),
+                  "named pages, or on every page with --all (one of the two is required), archiving each page first. "
+                  "--all also rewrites the lane lines today's rules would mask, in place.", (_PATHS, _ALL, _DRY, _LOCK)),
     ForestCommand(("credentials", "candidates"), cmd_credentials_candidates, "List the codes in quoted turns that "
                   "no reader has judged, as PATH:LINE:PLACE (never the value); exit 1 when there is one."),
     ForestCommand(("credentials", "judge"), cmd_credentials_judge, "Record a reader's judgement of candidates: "

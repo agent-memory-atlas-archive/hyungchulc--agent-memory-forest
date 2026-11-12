@@ -380,11 +380,15 @@ Every record line a tool writes is masked as it is written, and everything a com
 exits 1 when there is one; `credentials fix PATH … | --all [--dry-run]` masks them, keeping a whole-page copy
 in the archive first and writing the page only after that copy reads back as the page's bytes. Like
 `numbers star`, `credentials fix` takes the pages it names or `--all` for every page, and refuses with neither.
+With no page named, or with `--all`, `check` also counts for each lane the lines that today's rules would
+mask (written under an earlier rule); `fix --all` rewrites them in place, the file replaced whole with the
+same number of lines and only the masked spans changed.
 
 ```sh
 forest credentials check --all
 # 04 stm/bakery/suppliers/millstone-flour.md: a sign-in value in full (lines 14)
 # 1 pages
+# 06 istm/front-desk: 2 lines that today's rules would mask
 forest credentials fix --all
 # the line now reads: Ilse sent the supplier portal password: [REDACTED].
 ```
