@@ -372,6 +372,23 @@ class ReviewTests(IntakeTestCase):
         self.assertTrue(log.is_file())
         self.assertIn("hook", log.read_text(encoding="utf-8"))
 
+    def test_ahead_uses_the_adapter_root_when_path_is_unset(self) -> None:
+        folder = self.base / "sessions"
+        folder.mkdir()
+        (folder / "kiln.jsonl").write_text(record(id="turn-1", text="Waiting."), encoding="utf-8")
+        root = self.forest('\n[intake.tools.jsonl]\nagent = "glaze-bot"\nenabled = true\n')
+        cursor = intake.cursor_file(root, "glaze-bot", "jsonl", "kiln.jsonl")
+        cursor.parent.mkdir(parents=True)
+        cursor.write_text(json.dumps({"offset": 0, "source": "kiln.jsonl"}) + "\n", encoding="utf-8")
+        real = jsonl_adapter.JsonlAdapter.transcript_root
+        jsonl_adapter.JsonlAdapter.transcript_root = lambda self, settings: folder
+        try:
+            code, out, _ = self.invoke(root, "status")
+        finally:
+            jsonl_adapter.JsonlAdapter.transcript_root = real
+        self.assertEqual(code, 0)
+        self.assertIn("ahead kiln.jsonl", out)
+
     def test_a_hook_on_a_large_transcript_does_bounded_work(self) -> None:
         folder = self.base / "notes"
         folder.mkdir()
