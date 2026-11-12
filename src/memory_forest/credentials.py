@@ -19,6 +19,13 @@ A value with no label word (a bare code in a quoted turn) is masked once a
 reader has judged it, through the forest's ledger of keyed digests
 (``credential_ledger``).
 
+A value is also recognised by its shape, in any string: the published key
+prefixes of large providers, an ``Authorization: Bearer`` or ``Basic`` header,
+a private-key block, and a long mixed token beside a word that names access
+(``token``, ``api key``, ``secret``, ``bearer``, ``authorization``). A git
+hash, a UUID and the head of a base64 image are not those shapes and are left
+as written.
+
 Each step runs only when the text holds what its pattern cannot match
 without (a guard that is a necessary condition of the pattern, so a guarded
 step gives what the unguarded one gives). ``mask`` is idempotent: a masked
@@ -50,7 +57,7 @@ REDACTED: Final[str] = "[REDACTED]"
 # The version of what ``shown`` does to a text (this module's rules and ``numbers.star_numbers``). Raise it with
 # any change that can make a read show less than before: text kept masked under the old rules (the search
 # index) is then masked again.
-MASKING_VERSION: Final[str] = "1"
+MASKING_VERSION: Final[str] = "2"
 FIX_REASON: Final[str] = "credential-masking"
 MIN_BARE: Final[int] = 3
 MAX_BARE: Final[int] = 64
@@ -152,13 +159,138 @@ def _step(rules: _Rules, text: str, after: re.Pattern[str], accept: Callable[[st
     return "".join(pieces)
 
 
+# A git hash (40 or 64 hex digits, with a letter so a long numeric code still counts), a UUID, and the
+# head of a base64 image. These are not sign-in values. A password that is exactly one of them is
+# indistinguishable from it, so the automatic rules leave it; a reader can still judge it.
+_HEX_HASH_RE: Final = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
+_UUID_RE: Final = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_IMAGE_HEADS: Final = ("iVBORw0KGgo", "/9j/", "R0lGODlh", "UklGR")
+# Well-known key prefixes. Each needs a long tail, so a word that merely starts the same way is left.
+_KEY_RE: Final = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"sk-ant-[A-Za-z0-9_\-]{16,}"
+    r"|sk-proj-[A-Za-z0-9_\-]{16,}"
+    r"|github_pat_[A-Za-z0-9_]{16,}"
+    r"|gh[pousr]_[A-Za-z0-9_]{16,}"
+    r"|glpat-[A-Za-z0-9_\-]{16,}"
+    r"|xox[baprs]-[A-Za-z0-9\-]{16,}"
+    r"|sk_(?:live|test)_[A-Za-z0-9]{16,}"
+    r"|rk_(?:live|test)_[A-Za-z0-9]{16,}"
+    r"|AKIA[A-Z0-9]{16}"
+    r"|ASIA[A-Z0-9]{16}"
+    r"|AIza[0-9A-Za-z_\-]{20,}"
+    r"|SG\.[A-Za-z0-9_\-]{16,}"
+    r"|npm_[A-Za-z0-9]{16,}"
+    r")(?![A-Za-z0-9])"
+)
+_AUTH_RE: Final = re.compile(
+    r"(?i)(authorization[ \t]*:[ \t]*(?:bearer|basic)[ \t]+)(?P<value>\S+)"
+)
+_PRIVATE_KEY_RE: Final = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    re.DOTALL,
+)
+_ACCESS_WORD_RE: Final = re.compile(
+    r"(?i)(?<!\w)(?:api[ \t\-]*key|access[ \t\-]*key|secret|token|bearer|authorization|credential)s?(?!\w)"
+)
+_LONG_TOKEN_RE: Final = re.compile(r"[A-Za-z0-9+/_.=-]{20,}")
+
+
+def _lookalike(core: str) -> bool:
+    """A git hash, a UUID, or the head of a base64 image. Not a sign-in value."""
+    if _UUID_RE.fullmatch(core):
+        return True
+    if _HEX_HASH_RE.fullmatch(core) and re.search(r"[a-fA-F]", core):
+        return True
+    if core.startswith(_IMAGE_HEADS) or core.startswith("data:image/") or "base64,iVBORw0KGgo" in core:
+        return True
+    return False
+
+
 def _assigned(core: str) -> bool:
-    return REDACTED not in core and any(character.isalnum() for character in core)
+    return REDACTED not in core and not _lookalike(core) and any(character.isalnum() for character in core)
 
 
 def _bare(core: str) -> bool:
     return MIN_BARE <= len(core) <= MAX_BARE and any(character.isdigit() for character in core) \
-        and not _not_a_value(core)
+        and not _not_a_value(core) and not _lookalike(core)
+
+
+def _mixed_token(token: str) -> bool:
+    """A long token that is not a word: a digit, or both cases. A look-alike is not one."""
+    if _lookalike(token) or REDACTED in token:
+        return False
+    lower = any(character.islower() for character in token)
+    upper = any(character.isupper() for character in token)
+    digit = any(character.isdigit() for character in token)
+    return digit or (lower and upper)
+
+
+def mask_shapes(text: str) -> str:
+    """Sign-in values recognised by shape, not by a label word.
+
+    The private-key block is the one pattern that crosses lines, because that is
+    how the block is written. Every other pattern stays on one line.
+    """
+    if "PRIVATE KEY" in text:
+        text = _PRIVATE_KEY_RE.sub(REDACTED, text)
+        # A block torn across a call still loses the line that names it.
+        lines = []
+        for line in text.split("\n"):
+            if "PRIVATE KEY-----" in line:
+                line = _PRIVATE_KEY_RE.sub(REDACTED, line) if "-----" in line else REDACTED
+                if "PRIVATE KEY-----" in line:
+                    line = re.sub(r"-*BEGIN [A-Z0-9 ]*PRIVATE KEY-*", REDACTED, line)
+                    line = re.sub(r"-*END [A-Z0-9 ]*PRIVATE KEY-*", REDACTED, line)
+            lines.append(line)
+        text = "\n".join(lines)
+    if _KEY_RE.search(text):
+        text = _KEY_RE.sub(REDACTED, text)
+    if _AUTH_RE.search(text):
+
+        def _auth(match: re.Match[str]) -> str:
+            value = match.group("value").strip("\"'`")
+            if not value or _lookalike(value) or REDACTED in match.group("value"):
+                return match.group(0)
+            return match.group(1) + REDACTED
+
+        text = _AUTH_RE.sub(_auth, text)
+    if _ACCESS_WORD_RE.search(text):
+        text = _mask_tokens_near_access(text)
+    return text
+
+
+def _beside(gap: str, *, word_first: bool) -> bool:
+    """The access word nearest the token shares its line, with only separators between them."""
+    line = gap.rsplit("\n", 1)[-1] if word_first else gap.split("\n", 1)[0]
+    matches = list(_ACCESS_WORD_RE.finditer(line))
+    if not matches:
+        return False
+    found = matches[-1] if word_first else matches[0]
+    between = line[found.end():] if word_first else line[:found.start()]
+    return re.fullmatch(r"[ \t:=\"'`.\-]*", between) is not None
+
+
+def _mask_tokens_near_access(text: str) -> str:
+    """A long mixed token on the same line as a word that names access, separators only between them."""
+    pieces: list[str] = []
+    cursor = 0
+    for token in _LONG_TOKEN_RE.finditer(text):
+        if token.start() < cursor or not _mixed_token(token.group(0)):
+            continue
+        before = text[max(0, token.start() - 48):token.start()]
+        after = text[token.end():token.end() + 48]
+        if not (_beside(before, word_first=True) or _beside(after, word_first=False)):
+            continue
+        pieces.append(text[cursor:token.start()])
+        pieces.append(REDACTED)
+        cursor = token.end()
+    if not pieces:
+        return text
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def mask_labelled(text: str, *, config: Config, guarded: bool = True) -> str:
@@ -190,7 +322,7 @@ def mask(text: str, *, config: Config, ledger: Any = _LOOKUP) -> str:
     looked up for each call."""
     from . import credential_ledger
 
-    text = mask_labelled(text, config=config)
+    text = mask_shapes(mask_labelled(text, config=config))
     known = credential_ledger.for_config(config) if ledger is _LOOKUP else ledger
     return credential_ledger.mask_known(text, known)
 

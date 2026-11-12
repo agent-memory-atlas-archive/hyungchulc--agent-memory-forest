@@ -13,9 +13,12 @@ type ``file`` carries ``content``. A hook's JSON on stdin carries
 A line whose ``type`` is not one of the shapes this module knows is skipped and
 counted. A last line with no newline is left for the next read.
 
-``entrypoint`` ``sdk-cli`` is a headless run. ``isSidechain`` lines, and a hook
-that carries ``agent_id``, are a sub-agent: they are recorded as one tool turn,
-not as the owner. The transcript does not store the process environment. A hook
+``entrypoint`` ``cli`` is the owner's own client. ``sdk-cli``, ``sdk``,
+``print`` and ``noninteractive`` are headless. Any other entrypoint is
+``unknown``, and the raw value is kept. ``isSidechain`` lines, and a hook that
+carries ``agent_id``, are a sub-agent: each line keeps its own id and is a tool
+turn, not the owner. A ``parentUuid`` is the previous line, not a parent session.
+The transcript does not store the process environment. A hook
 sees ``MEMORY_FOREST_INTERNAL`` in its own environment, because the hook is a
 child of the session. A sweep sees the marker only when a line carries it as a
 key (it is not in the environment attachment, which holds the platform and the
@@ -24,6 +27,7 @@ working directory, not the process environment).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ..config import IntakeToolSettings
@@ -34,15 +38,20 @@ from .common import (
     Transcript,
     Turn,
     complete_lines,
-    file_key,
+    confine_file,
+    counts_of,
     find_marks,
     harness_only,
-        head_internal,
-        head_objects,
-        parse_object,
+    harness_parts,
+    head_internal,
+    head_objects,
+    marked_internal,
+    parse_object,
     parse_time,
     place_of,
-    require_file,
+    relative_key,
+    session_token,
+    stated_version,
     tool_home,
     walk_jsonl,
 )
@@ -71,10 +80,11 @@ _SKIP = frozenset(
         "queue-operation",
         "rate-limit-info",
         "summary",
-        "system",
     }
 )
 _HEADLESS = frozenset({"sdk-cli", "sdk", "print", "noninteractive"})
+# The owner's own client. Anything else, including a value this adapter does not know, is unknown.
+_INTERACTIVE = frozenset({"cli"})
 _SUBAGENT_TOOLS = frozenset({"Agent", "Task", "spawn_agent", "spawn_subagent"})
 
 
@@ -85,14 +95,27 @@ class ClaudeCodeAdapter:
         root = tool_home(".claude", "projects", override=settings.path)
         if root is None:
             return []
-        return [self._open(path) for path in walk_jsonl(root, lambda name: name.endswith(".jsonl"))]
+        return [self._open(path, root) for path in walk_jsonl(root, lambda name: name.endswith(".jsonl"))]
 
     def open_path(self, path: Path, settings: IntakeToolSettings) -> Transcript:
-        del settings
-        return self._open(require_file(path))
+        root = tool_home(".claude", "projects", override=settings.path)
+        if root is None:
+            raise MemoryForestError(
+                "transcript_missing",
+                "The transcript root is not a directory.",
+                details={"adapter": self.name},
+            )
+        return self._open(confine_file(str(path), root), root)
 
     def hook(self, payload: dict, settings: IntakeToolSettings) -> Transcript:
-        del settings
+        """The transcript the hook names. The file body is not read."""
+        root = tool_home(".claude", "projects", override=settings.path)
+        if root is None:
+            raise MemoryForestError(
+                "transcript_missing",
+                "The transcript root is not a directory.",
+                details={"adapter": self.name},
+            )
         raw = payload.get("transcript_path") or payload.get("transcriptPath")
         if not isinstance(raw, str) or not raw:
             raise MemoryForestError(
@@ -100,103 +123,142 @@ class ClaudeCodeAdapter:
                 "The hook payload has no transcript path.",
                 details={"adapter": self.name},
             )
-        transcript = self._open(require_file(Path(raw)))
-        session = payload.get("session_id") or payload.get("sessionId") or transcript.session
-        cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else transcript.cwd
-        origin = transcript.origin
-        if payload.get("agent_id") or payload.get("agentId"):
-            origin = "subagent"
-        return Transcript(transcript.key, transcript.path, str(session), cwd, origin, transcript.internal)
+        path = confine_file(raw, root)
+        session = session_token(payload.get("session_id") or payload.get("sessionId")) or path.stem
+        cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
+        origin = "subagent" if payload.get("agent_id") or payload.get("agentId") else "unknown"
+        return Transcript(relative_key(path, root), path, session, cwd, origin, described=False)
+
+    def describe(self, transcript: Transcript, settings: IntakeToolSettings) -> Transcript:
+        root = tool_home(".claude", "projects", override=settings.path)
+        if root is None:
+            return transcript
+        return self._open(transcript.path, root)
 
     def read(self, transcript: Transcript, offset: int) -> ReadBatch:
         lines, new_offset = complete_lines(transcript.path, offset)
         unknown = 0
+        dropped: dict[str, int] = {}
+        faults: list[tuple[str, str]] = []
         pending: dict[str, Turn] = {}
         order: list[Turn] = []
-        sidechain: list[Turn] = []
-        side_name = "subagent"
-
-        def flush_sidechain() -> None:
-            if not sidechain:
-                return
-            first = sidechain[0]
-            texts = [item.text for item in sidechain if item.role == "agent" and item.text]
-            order.append(
-                Turn(
-                    first.turn_id,
-                    first.at,
-                    first.session,
-                    "tool",
-                    "\n".join(texts),
-                    first.place,
-                    "subagent",
-                    side_name or "subagent",
-                    (),
-                )
-            )
-            sidechain.clear()
+        internal = transcript.internal
 
         for start, raw in lines:
-            value = parse_object(raw)
-            if value is None:
-                continue
-            if value is False or not isinstance(value, dict):
-                unknown += 1
-                continue
-            kind = value.get("type")
-            if not isinstance(kind, str):
-                unknown += 1
-                continue
-            if kind in _SKIP:
-                continue
-            if kind == "attachment":
-                flush_sidechain()
-                turn = _attachment(value, start, transcript)
-                if turn is not None:
+            place = place_of(start)
+            try:
+                value = parse_object(raw)
+                if value is None:
+                    continue
+                if value is False or not isinstance(value, dict):
+                    unknown += 1
+                    dropped["invalid"] = dropped.get("invalid", 0) + 1
+                    continue
+                if marked_internal(value):
+                    internal = True
+                kind = value.get("type")
+                if not isinstance(kind, str):
+                    unknown += 1
+                    dropped["invalid"] = dropped.get("invalid", 0) + 1
+                    continue
+                if kind in {"summary", "compact-boundary", "compact_boundary"}:
+                    turn = _system_line(value, start, transcript, kind)
+                    if turn is None:
+                        dropped[kind] = dropped.get(kind, 0) + 1
+                    else:
+                        order.append(turn)
+                    continue
+                if kind in _SKIP:
+                    dropped[kind] = dropped.get(kind, 0) + 1
+                    continue
+                if kind == "attachment":
+                    turn = _attachment(value, start, transcript)
+                    if turn is None:
+                        label = _attachment_type(value)
+                        dropped[label] = dropped.get(label, 0) + 1
+                    else:
+                        order.append(turn)
+                    continue
+                if kind not in {"user", "assistant", "system"}:
+                    unknown += 1
+                    dropped[kind] = dropped.get(kind, 0) + 1
+                    continue
+                built = _message_turns(value, start, transcript)
+                if not built and kind != "user":
+                    dropped[kind] = dropped.get(kind, 0) + 1
+                results = _results(value)
+                side = value.get("isSidechain") is True or transcript.origin == "subagent"
+                if side:
+                    name = value.get("agentName") if isinstance(value.get("agentName"), str) and value["agentName"] else "subagent"
+                    for turn in built:
+                        order.append(
+                            Turn(
+                                turn.turn_id,
+                                turn.at,
+                                turn.session,
+                                "tool",
+                                turn.text,
+                                turn.place,
+                                "subagent",
+                                turn.name or name,
+                                turn.parts,
+                                turn.arguments,
+                            )
+                        )
+                    continue
+                for turn in built:
                     order.append(turn)
-                continue
-            if kind not in {"user", "assistant"}:
-                unknown += 1
-                continue
-            built = _message_turns(value, start, transcript)
-            results = _results(value)
-            side = value.get("isSidechain") is True or transcript.origin == "subagent"
-            if side:
-                if isinstance(value.get("agentName"), str) and value["agentName"]:
-                    side_name = value["agentName"]
-                sidechain.extend(built)
+                    if turn.role == "tool" and turn.turn_id:
+                        pending[turn.turn_id] = turn
                 for tool_id, output in results:
                     _fill(pending, order, tool_id, output)
-                continue
-            flush_sidechain()
-            for turn in built:
-                order.append(turn)
-                if turn.role == "tool" and turn.turn_id:
-                    pending[turn.turn_id] = turn
-            for tool_id, output in results:
-                _fill(pending, order, tool_id, output)
-        flush_sidechain()
-        if head_internal(transcript.path):
-            return ReadBatch((), new_offset, unknown, internal=True)
-        return ReadBatch(tuple(order), new_offset, unknown, internal=False)
+            except Exception as exc:
+                faults.append((exc.__class__.__name__, place))
+                dropped[exc.__class__.__name__] = dropped.get(exc.__class__.__name__, 0) + 1
+        if internal:
+            return ReadBatch((), new_offset, unknown, True, counts_of(dropped), tuple(faults))
+        return ReadBatch(tuple(order), new_offset, unknown, False, counts_of(dropped), tuple(faults))
 
-    def _open(self, path: Path) -> Transcript:
+    def _open(self, path: Path, root: Path) -> Transcript:
         session = path.stem
         cwd = ""
-        origin = "interactive"
+        origin = "unknown"
+        raw = ""
+        version = ""
         for value in head_objects(path):
+            if not version:
+                version = stated_version(value)
             if isinstance(value.get("sessionId"), str) and value["sessionId"]:
                 session = value["sessionId"]
             if isinstance(value.get("cwd"), str) and value["cwd"]:
                 cwd = value["cwd"]
             entry = value.get("entrypoint")
-            if isinstance(entry, str) and entry in _HEADLESS:
-                origin = "headless"
-            if value.get("isSidechain") is True:
+            if isinstance(entry, str) and entry:
+                raw = entry
+                if value.get("isSidechain") is True:
+                    origin = "subagent"
+                elif entry in _HEADLESS:
+                    origin = "headless"
+                elif entry in _INTERACTIVE:
+                    origin = "interactive"
+                else:
+                    origin = "unknown"
+            elif value.get("isSidechain") is True:
                 origin = "subagent"
             if cwd and session:
                 break
-        return Transcript(file_key(path), path, session, cwd, origin, head_internal(path))
+        return Transcript(
+            relative_key(path, root),
+            path,
+            session,
+            cwd,
+            origin,
+            head_internal(path),
+            raw,
+            version,
+            True,
+            "",
+        )
 
 
 def _fill(pending: dict[str, Turn], order: list[Turn], tool_id: str, output: str) -> None:
@@ -225,18 +287,34 @@ def _message_turns(value: dict, start: int, transcript: Transcript) -> list[Turn
         text, tools = _assistant(content)
         if text and not harness_only(text):
             found.append(Turn(turn_id, at, str(session), "agent", text, place_of(start), origin))
-        for index, (name, tool_id) in enumerate(tools, start=1):
+        elif text and harness_only(text):
+            found.append(Turn(turn_id, at, str(session), "system", text, place_of(start), origin, None, harness_parts(text)))
+        for index, (name, tool_id, arguments) in enumerate(tools, start=1):
             tool_origin = "subagent" if name in _SUBAGENT_TOOLS else origin
             found.append(
-                Turn(tool_id or turn_id, at, str(session), "tool", "", place_of(start, index), tool_origin, name)
+                Turn(
+                    tool_id or turn_id,
+                    at,
+                    str(session),
+                    "tool",
+                    "",
+                    place_of(start, index),
+                    tool_origin,
+                    name,
+                    (),
+                    arguments,
+                )
             )
         return found
-    if role == "user":
+    if role in {"user", "system"}:
         text, parts = _user_text(content)
         if text is None:
             return []
-        if (not text or harness_only(text)) and not parts:
-            return []
+        parts = parts + harness_parts(text or "")
+        if harness_only(text or "") or value.get("isMeta") is True or role == "system":
+            if not text and not parts:
+                return []
+            return [Turn(turn_id, at, str(session), "system", text or "", place_of(start), origin, None, parts)]
         if not text and not parts:
             return []
         return [Turn(turn_id, at, str(session), "owner", text, place_of(start), origin, None, parts)]
@@ -247,11 +325,11 @@ def _message_turns(value: dict, start: int, transcript: Transcript) -> list[Turn
     return found
 
 
-def _assistant(content: object) -> tuple[str, list[tuple[str, str]]]:
+def _assistant(content: object) -> tuple[str, list[tuple[str, str, str | None]]]:
     if isinstance(content, str):
         return content, []
     texts: list[str] = []
-    tools: list[tuple[str, str]] = []
+    tools: list[tuple[str, str, str | None]] = []
     if isinstance(content, list):
         for block in content:
             if not isinstance(block, dict):
@@ -262,7 +340,9 @@ def _assistant(content: object) -> tuple[str, list[tuple[str, str]]]:
             elif kind == "tool_use":
                 name = block.get("name") if isinstance(block.get("name"), str) else "tool"
                 tool_id = block.get("id") if isinstance(block.get("id"), str) else ""
-                tools.append((name, tool_id))
+                raw = block.get("input")
+                arguments = json.dumps(raw, ensure_ascii=False, sort_keys=True) if isinstance(raw, dict) else None
+                tools.append((name, tool_id, arguments))
     return "\n".join(texts), tools
 
 
@@ -289,9 +369,6 @@ def _user_text(content: object) -> tuple[str, tuple[Part, ...]] | tuple[None, tu
                 parts.append(Part(part.start + cursor, part.end + cursor, part.kind))
             pieces.append(text)
             cursor += len(text)
-            if cursor and pieces:
-                # Blocks are one text. A join without a separator keeps the spans exact.
-                pass
         elif block.get("type") in {"image", "document"}:
             snippet = "[file]"
             parts.append(Part(cursor, cursor + len(snippet), "file"))
@@ -329,6 +406,28 @@ def _result_text(content: object) -> str:
                 bits.append(item["text"])
         return "\n".join(bits)
     return ""
+
+
+def _attachment_type(value: dict) -> str:
+    attachment = value.get("attachment")
+    if isinstance(attachment, dict) and isinstance(attachment.get("type"), str) and attachment["type"]:
+        return attachment["type"]
+    return "attachment"
+
+
+def _system_line(value: dict, start: int, transcript: Transcript, kind: str) -> Turn | None:
+    """A compaction summary or a summary line. The body is kept only when it is a string."""
+    at = parse_time(value.get("timestamp"))
+    if at is None:
+        return None
+    text = value.get("summary") if isinstance(value.get("summary"), str) else ""
+    if not text and "compact" in kind:
+        text = "compaction"
+    if not text:
+        return None
+    session = value.get("sessionId") if isinstance(value.get("sessionId"), str) else transcript.session
+    turn_id = value.get("uuid") if isinstance(value.get("uuid"), str) else None
+    return Turn(turn_id, at, str(session), "system", text, place_of(start), transcript.origin)
 
 
 def _attachment(value: dict, start: int, transcript: Transcript) -> Turn | None:

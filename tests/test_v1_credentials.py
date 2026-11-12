@@ -123,6 +123,47 @@ class MaskTests(unittest.TestCase):
         with self.assertRaises(MemoryForestError):
             parse_config('[credentials]\nlabel_words = ["redacted"]\n')
 
+    def test_a_value_is_masked_by_its_shape_and_a_lookalike_is_not(self) -> None:
+        shapes = (
+            "sk-ant-" + "Ab9" * 12,
+            "sk-proj-" + "Cd8" * 12,
+            "github_pat_" + "Ef7" * 12,
+            "ghp_" + "Gh6" * 12,
+            "glpat-" + "Ij5" * 12,
+            "xoxb-" + "Kl4" * 8,
+            "sk_live_" + "Mn3" * 12,
+            "AKIA" + "Z9Y8X7W6V5U4T3S2",
+            "AIza" + "SyD0" * 10,
+            "SG." + "Qw2" * 12,
+            "npm_" + "Er1" * 12,
+            "Authorization: Bearer " + "Ab3" * 12,
+            "Authorization: Basic " + "QWxhZGRpbjpvcGVu",
+        )
+        for value in shapes:
+            with self.subTest(value=value[:12]):
+                stored = masked(f"the kiln log held {value} overnight")
+                self.assertNotIn(value, stored)
+                self.assertIn(R, stored)
+        key = (
+            "-----BEGIN " + "OPENSSH PRIVATE KEY-----\n"
+            "bWFkZS11cC1rZXk=\n"
+            "-----END " + "OPENSSH PRIVATE KEY-----"
+        )
+        self.assertNotIn("bWFkZS11cC1rZXk=", masked(key))
+        self.assertIn(R, masked(key))
+        beside = "Ab9Cd8" * 8
+        self.assertNotIn(beside, masked(f"api key {beside}"))
+        self.assertEqual(masked(masked(f"api key {beside}")), masked(f"api key {beside}"))
+        git_hash = "0123456789abcdef" * 2 + "01234567"
+        self.assertEqual(len(git_hash), 40)
+        uuid = "550e8400-e29b-01d4-c716-446655440000"
+        image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+        for value in (git_hash, "a" * 24 + git_hash, uuid, image):
+            with self.subTest(value=value[:12]):
+                self.assertEqual(masked(f"commit {value} at the kiln"), f"commit {value} at the kiln")
+                self.assertEqual(masked(f"token {git_hash}"), f"token {git_hash}")
+                self.assertEqual(masked(f"token: {uuid}"), f"token: {uuid}")
+
     def test_what_a_tool_shows_is_masked_and_starred(self) -> None:
         shown = credentials.shown({"line": "PIN 4821 to +64 21 555 0199"}, config=DEFAULT_CONFIG)
         self.assertNotIn("4821", shown["line"])

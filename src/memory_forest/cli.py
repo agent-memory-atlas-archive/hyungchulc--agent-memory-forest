@@ -642,9 +642,56 @@ def _config_for_output(arguments: argparse.Namespace) -> Config:
         return DEFAULT_CONFIG
 
 
+def _intake_hook(argv: Sequence[str]) -> bool:
+    """Whether this invocation is ``forest intake --hook`` (not ``intake status``)."""
+    if "--hook" not in argv or "intake" not in argv:
+        return False
+    index = argv.index("intake")
+    return not (index + 1 < len(argv) and argv[index + 1] == "status")
+
+
+def _hook_place(argv: Sequence[str]) -> str:
+    if "--from" in argv:
+        index = argv.index("--from")
+        if index + 1 < len(argv) and argv[index + 1].replace("-", "").isalnum():
+            return argv[index + 1][:80]
+    return "intake"
+
+
+def _root_for_hook_log(argv: Sequence[str]):
+    from pathlib import Path
+
+    candidate = None
+    if "--root" in argv:
+        index = argv.index("--root")
+        if index + 1 < len(argv):
+            candidate = Path(argv[index + 1])
+    if candidate is None:
+        candidate = Path.cwd()
+    if (candidate / "forest.toml").is_file():
+        return candidate
+    return None
+
+
+def _silent_hook_failure(argv: Sequence[str], class_name: str) -> int:
+    root = _root_for_hook_log(argv)
+    if root is not None:
+        from .intake import log_failure
+
+        log_failure(root, class_name, _hook_place(argv))
+    return 0
+
+
 def forest_main(argv: Sequence[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    hook = _intake_hook(raw)
     parser = build_forest_parser()
-    arguments = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    try:
+        arguments = parser.parse_args(raw)
+    except SystemExit:
+        if hook:
+            return _silent_hook_failure(raw, "intake_arguments")
+        raise
     global _SHOWN_CONFIG
     _SHOWN_CONFIG = None
     try:
@@ -655,6 +702,8 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
         _SHOWN_CONFIG = _config_for_output(arguments)
         return arguments._run(arguments)
     except MemoryForestError as exc:
+        if hook:
+            return _silent_hook_failure(raw, exc.code)
         if arguments.json:
             _print_json({"error": exc.as_dict(), "ok": False})
         else:
@@ -667,14 +716,22 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
                 sys.stderr.write(_shown(f"  command: {exc.command}\n"))
         return 2
     except UnicodeError:
+        if hook:
+            return _silent_hook_failure(raw, "UnicodeError")
         sys.stderr.write("forest: read_failed: a file could not be read as text\n")
         return 2
     except OSError as exc:
+        if hook:
+            return _silent_hook_failure(raw, exc.__class__.__name__)
         sys.stderr.write(f"forest: filesystem_error: {exc.__class__.__name__}\n")
         return 2
     except KeyboardInterrupt:
+        if hook:
+            return _silent_hook_failure(raw, "KeyboardInterrupt")
         return 130
     except Exception as exc:
+        if hook:
+            return _silent_hook_failure(raw, exc.__class__.__name__)
         sys.stderr.write(f"forest: failed: {exc.__class__.__name__}\n")
         return 2
 

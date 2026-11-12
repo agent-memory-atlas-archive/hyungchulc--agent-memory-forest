@@ -154,14 +154,19 @@ def parse_relative_route(relative: str | PurePosixPath | Path) -> Route:
         )
     suffix = pure.suffix
     if layer.name == "istm":
-        if len(parts) != 2 or suffix != ".jsonl":
+        # A raw lane is one agent's day file, `06 istm/<agent>/<day>.jsonl`. A file
+        # directly under `06 istm/` is the older single stream. Both are lanes.
+        if suffix != ".jsonl" or len(parts) not in (2, 3):
             raise MemoryForestError(
                 "invalid_istm_path",
-                "ISTM event streams must be root-level .jsonl files.",
+                "A raw lane is `06 istm/<file>.jsonl` or `06 istm/<agent>/<file>.jsonl`.",
                 details={"path": raw},
             )
         leaf = validate_segment(pure.stem, field="leaf")
-        return Route(layer, None, None, leaf, pure.as_posix())
+        if len(parts) == 2:
+            return Route(layer, None, None, leaf, pure.as_posix())
+        agent = validate_segment(parts[1], field="agent")
+        return Route(layer, agent, None, leaf, pure.as_posix())
     if suffix != ".md":
         raise MemoryForestError(
             "unsupported_file_type",

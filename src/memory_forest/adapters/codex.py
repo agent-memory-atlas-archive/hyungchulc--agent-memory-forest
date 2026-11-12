@@ -15,10 +15,11 @@ the same session and are not turns.
 A line whose ``type`` is not one of those is skipped and counted. A last line
 with no newline is left for the next read.
 
-``thread_source`` ``subagent`` (or ``source.subagent``, or ``parent_thread_id``)
-is a sub-agent: the whole session is one tool turn. ``thread_source``
-``automation``, ``exec``, ``github`` or ``mcp`` is headless. Anything else,
-including ``cli`` and ``vscode``, is interactive. The rollout does not store the
+``thread_source`` ``subagent`` (or ``source.subagent``) is a sub-agent: each
+message keeps its own id and is a tool turn. A ``parent_thread_id`` alone is
+not. ``thread_source`` ``automation``, ``exec``, ``github`` or ``mcp`` is
+headless. ``cli``, ``vscode`` and ``user`` are the owner's own client.
+Anything else is ``unknown``, and the raw value is kept. The rollout does not store the
 process environment. A hook sees ``MEMORY_FOREST_INTERNAL`` in its own
 environment. A sweep sees it when ``session_meta`` (or another line) carries it
 as a key. A hook sends ``transcript_path`` (which may be null), ``session_id``
@@ -39,14 +40,20 @@ from .common import (
     Transcript,
     Turn,
     complete_lines,
-    file_key,
+    confine_file,
+    counts_of,
     find_marks,
+    harness_parts,
     head_internal,
     head_objects,
+    marked_internal,
+    name_has_id,
     parse_object,
     parse_time,
     place_of,
-    require_file,
+    relative_key,
+    session_token,
+    stated_version,
     tool_home,
     walk_jsonl,
 )
@@ -55,6 +62,9 @@ from .common import (
 _SKIP = frozenset({"event_msg", "token_usage_record", "turn_context", "world_state"})
 _ITEM_SKIP = frozenset({"additional_tools", "reasoning"})
 _HEADLESS = frozenset({"automation", "exec", "github", "mcp"})
+# The owner's own client, and a thread the transcript marks as the user's.
+_INTERACTIVE = frozenset({"cli", "vscode", "user"})
+_HARNESS_PROVENANCE = frozenset({"agents_md", "developer_instructions", "harness", "model"})
 _SUBAGENT_TOOLS = frozenset({"spawn_agent", "spawn_subagent", "Agent", "Task"})
 
 
@@ -65,25 +75,37 @@ class CodexAdapter:
         root = _sessions_root(settings)
         if root is None:
             return []
-        found = []
-        for path in walk_jsonl(root, lambda name: name.startswith("rollout-") and name.endswith(".jsonl")):
-            transcript = self._open(path)
-            found.append(transcript)
-        return found
+        return [
+            self._open(path, root)
+            for path in walk_jsonl(root, lambda name: name.startswith("rollout-") and name.endswith(".jsonl"))
+        ]
 
     def open_path(self, path: Path, settings: IntakeToolSettings) -> Transcript:
-        del settings
-        return self._open(require_file(path))
+        root = _sessions_root(settings)
+        if root is None:
+            raise MemoryForestError(
+                "transcript_missing",
+                "The transcript root is not a directory.",
+                details={"adapter": self.name},
+            )
+        return self._open(confine_file(str(path), root), root)
 
     def hook(self, payload: dict, settings: IntakeToolSettings) -> Transcript:
+        """The transcript the hook names. The file body is not read."""
+        root = _sessions_root(settings)
+        if root is None:
+            raise MemoryForestError(
+                "transcript_missing",
+                "The transcript root is not a directory.",
+                details={"adapter": self.name},
+            )
         raw = payload.get("transcript_path") or payload.get("transcriptPath")
         path: Path | None = None
         if isinstance(raw, str) and raw:
-            path = require_file(Path(raw))
+            path = confine_file(raw, root)
         else:
-            session = payload.get("session_id") or payload.get("sessionId")
-            root = _sessions_root(settings)
-            if isinstance(session, str) and root is not None:
+            session = session_token(payload.get("session_id") or payload.get("sessionId"))
+            if session is not None:
                 path = _find_rollout(root, session)
         if path is None:
             raise MemoryForestError(
@@ -91,72 +113,105 @@ class CodexAdapter:
                 "The hook payload has no transcript path.",
                 details={"adapter": self.name},
             )
-        transcript = self._open(path)
-        cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else transcript.cwd
-        session = payload.get("session_id") or payload.get("sessionId") or transcript.session
-        return Transcript(transcript.key, transcript.path, str(session), cwd, transcript.origin, transcript.internal)
+        session = session_token(payload.get("session_id") or payload.get("sessionId")) or path.stem
+        cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
+        return Transcript(relative_key(path, root), path, session, cwd, "unknown", described=False)
+
+    def describe(self, transcript: Transcript, settings: IntakeToolSettings) -> Transcript:
+        root = _sessions_root(settings)
+        if root is None:
+            return transcript
+        return self._open(transcript.path, root)
 
     def read(self, transcript: Transcript, offset: int) -> ReadBatch:
         lines, new_offset = complete_lines(transcript.path, offset)
         unknown = 0
+        dropped: dict[str, int] = {}
+        faults: list[tuple[str, str]] = []
         order: list[Turn] = []
         pending: dict[str, Turn] = {}
+        internal = transcript.internal
         for start, raw in lines:
-            value = parse_object(raw)
-            if value is None:
-                continue
-            if value is False or not isinstance(value, dict):
-                unknown += 1
-                continue
-            kind = value.get("type")
-            if kind in _SKIP or kind == "session_meta":
-                continue
-            if kind != "response_item":
-                unknown += 1
-                continue
-            payload = value.get("payload")
-            if not isinstance(payload, dict):
-                unknown += 1
-                continue
-            at = parse_time(value.get("timestamp")) or parse_time(payload.get("timestamp"))
-            if at is None:
-                unknown += 1
-                continue
-            item = payload.get("type")
-            if item in _ITEM_SKIP:
-                continue
-            if item == "message":
-                turn = _message(payload, at, start, transcript)
-                if turn is not None:
+            place = place_of(start)
+            try:
+                value = parse_object(raw)
+                if value is None:
+                    continue
+                if value is False or not isinstance(value, dict):
+                    unknown += 1
+                    dropped["invalid"] = dropped.get("invalid", 0) + 1
+                    continue
+                if marked_internal(value):
+                    internal = True
+                kind = value.get("type")
+                if kind in _SKIP or kind == "session_meta":
+                    label = kind if isinstance(kind, str) else "invalid"
+                    dropped[label] = dropped.get(label, 0) + 1
+                    continue
+                if kind != "response_item":
+                    unknown += 1
+                    label = kind if isinstance(kind, str) else "invalid"
+                    dropped[label] = dropped.get(label, 0) + 1
+                    continue
+                payload = value.get("payload")
+                if not isinstance(payload, dict):
+                    unknown += 1
+                    dropped["invalid"] = dropped.get("invalid", 0) + 1
+                    continue
+                at = parse_time(value.get("timestamp")) or parse_time(payload.get("timestamp"))
+                if at is None:
+                    unknown += 1
+                    dropped["invalid"] = dropped.get("invalid", 0) + 1
+                    continue
+                item = payload.get("type")
+                if item in _ITEM_SKIP:
+                    label = item if isinstance(item, str) else "item"
+                    dropped[label] = dropped.get(label, 0) + 1
+                    continue
+                if item == "message":
+                    turn = _message(payload, at, start, transcript)
+                    if turn is not None:
+                        order.append(turn)
+                    else:
+                        dropped["message"] = dropped.get("message", 0) + 1
+                    continue
+                if item in {"custom_tool_call", "function_call"}:
+                    turn = _tool_call(payload, at, start, transcript)
                     order.append(turn)
-                continue
-            if item in {"custom_tool_call", "function_call"}:
-                turn = _tool_call(payload, at, start, transcript)
-                order.append(turn)
-                if turn.turn_id:
-                    pending[turn.turn_id] = turn
-                continue
-            if item in {"custom_tool_call_output", "function_call_output"}:
-                call_id = payload.get("call_id") if isinstance(payload.get("call_id"), str) else ""
-                output = _output_text(payload.get("output"))
-                tool = pending.get(call_id)
-                if tool is not None and output:
-                    order[order.index(tool)] = Turn(
-                        tool.turn_id, tool.at, tool.session, "tool", output, tool.place, tool.origin, tool.name, ()
-                    )
-                continue
-            unknown += 1
+                    if turn.turn_id:
+                        pending[turn.turn_id] = turn
+                    continue
+                if item in {"custom_tool_call_output", "function_call_output"}:
+                    call_id = payload.get("call_id") if isinstance(payload.get("call_id"), str) else ""
+                    output = _output_text(payload.get("output"))
+                    tool = pending.get(call_id)
+                    if tool is not None and output:
+                        order[order.index(tool)] = Turn(
+                            tool.turn_id, tool.at, tool.session, "tool", output, tool.place, tool.origin, tool.name, ()
+                        )
+                    continue
+                unknown += 1
+                label = item if isinstance(item, str) else "response_item"
+                dropped[label] = dropped.get(label, 0) + 1
+            except Exception as exc:
+                faults.append((exc.__class__.__name__, place))
+                dropped[exc.__class__.__name__] = dropped.get(exc.__class__.__name__, 0) + 1
         if transcript.origin == "subagent" and order:
-            order = [_one_subagent(order, transcript)]
-        if head_internal(transcript.path):
-            return ReadBatch((), new_offset, unknown, internal=True)
-        return ReadBatch(tuple(order), new_offset, unknown, internal=False)
+            order = _as_subagent_turns(order)
+        if internal:
+            return ReadBatch((), new_offset, unknown, True, counts_of(dropped), tuple(faults))
+        return ReadBatch(tuple(order), new_offset, unknown, False, counts_of(dropped), tuple(faults))
 
-    def _open(self, path: Path) -> Transcript:
+    def _open(self, path: Path, root: Path) -> Transcript:
         session = path.stem
         cwd = ""
-        origin = "interactive"
+        origin = "unknown"
+        raw = ""
+        parent = ""
+        version = ""
         for value in head_objects(path):
+            if not version:
+                version = stated_version(value)
             if value.get("type") != "session_meta":
                 continue
             payload = value.get("payload") if isinstance(value.get("payload"), dict) else {}
@@ -166,9 +221,13 @@ class CodexAdapter:
                 session = payload["session_id"]
             if isinstance(payload.get("cwd"), str):
                 cwd = payload["cwd"]
-            origin = _origin(payload)
+            origin, raw, parent = _origin(payload)
+            if not version:
+                version = stated_version(payload)
             break
-        return Transcript(file_key(path), path, session, cwd, origin, head_internal(path))
+        return Transcript(
+            relative_key(path, root), path, session, cwd, origin, head_internal(path), raw, version, True, parent
+        )
 
 
 def _sessions_root(settings: IntakeToolSettings) -> Path | None:
@@ -181,25 +240,27 @@ def _sessions_root(settings: IntakeToolSettings) -> Path | None:
 
 
 def _find_rollout(root: Path, session_id: str) -> Path | None:
-    if not session_id or "/" in session_id or "\\" in session_id or len(session_id) > 200:
+    token = session_token(session_id)
+    if token is None:
         return None
-    for path in walk_jsonl(root, lambda name: name.startswith("rollout-") and session_id in name and name.endswith(".jsonl")):
+    for path in walk_jsonl(root, lambda name: name.startswith("rollout-") and name.endswith(".jsonl") and name_has_id(name, token)):
         return path
     return None
 
 
-def _origin(payload: dict) -> str:
+def _origin(payload: dict) -> tuple[str, str, str]:
+    """Origin, the raw thread source, and a parent id. A parent id alone is not a sub-agent."""
     source = payload.get("source")
-    thread = payload.get("thread_source")
-    if (
-        thread == "subagent"
-        or payload.get("parent_thread_id")
-        or (isinstance(source, dict) and "subagent" in source)
-    ):
-        return "subagent"
+    thread = payload.get("thread_source") if isinstance(payload.get("thread_source"), str) else ""
+    raw = thread or (source if isinstance(source, str) else "")
+    parent = payload.get("parent_thread_id") if isinstance(payload.get("parent_thread_id"), str) else ""
+    if thread == "subagent" or (isinstance(source, dict) and "subagent" in source):
+        return "subagent", raw, parent
     if thread in _HEADLESS or (isinstance(source, str) and source in _HEADLESS):
-        return "headless"
-    return "interactive"
+        return "headless", raw, parent
+    if thread in _INTERACTIVE or (isinstance(source, str) and source in _INTERACTIVE):
+        return "interactive", raw, parent
+    return "unknown", raw, parent
 
 
 def _message(payload: dict, at, start: int, transcript: Transcript) -> Turn | None:
@@ -208,17 +269,21 @@ def _message(payload: dict, at, start: int, transcript: Transcript) -> Turn | No
     origin = transcript.origin
     turn_id = payload.get("id") if isinstance(payload.get("id"), str) else None
     if role == "developer":
-        return None
+        text = _join(payload.get("content"), {"input_text", "output_text"})
+        if not text:
+            return None
+        return Turn(turn_id, at, session, "system", text, place_of(start), origin)
     if role == "assistant":
         text = _join(payload.get("content"), {"output_text"})
         if not text:
             return None
         return Turn(turn_id, at, session, "agent", text, place_of(start), origin)
     if role == "user":
-        text, parts = _user_pieces(payload)
+        text, parts, owner = _user_pieces(payload)
         if not text and not parts:
             return None
-        return Turn(turn_id, at, session, "owner", text, place_of(start), origin, None, parts)
+        role_name = "owner" if owner else "system"
+        return Turn(turn_id, at, session, role_name, text, place_of(start), origin, None, parts)
     if isinstance(role, str) and role:
         text = _join(payload.get("content"), {"input_text", "output_text"})
         if not text:
@@ -227,29 +292,34 @@ def _message(payload: dict, at, start: int, transcript: Transcript) -> Turn | No
     return None
 
 
-def _user_pieces(payload: dict) -> tuple[str, tuple[Part, ...]]:
+def _user_pieces(payload: dict) -> tuple[str, tuple[Part, ...], bool]:
     content = payload.get("content")
     if not isinstance(content, list):
-        return "", ()
+        return "", (), False
     meta = payload.get("internal_chat_message_metadata_passthrough")
     rows = meta.get("content_item_metadata") if isinstance(meta, dict) else None
     pieces: list[str] = []
     parts: list[Part] = []
     cursor = 0
+    owner = False
     for index, item in enumerate(content):
         if not isinstance(item, dict):
             continue
         provenance = _provenance(rows, index)
         kind = item.get("type")
         if kind == "input_text" and isinstance(item.get("text"), str):
-            if provenance not in (None, "user"):
-                continue
             text = item["text"]
+            harness = provenance in _HARNESS_PROVENANCE
+            if provenance in (None, "user"):
+                owner = True
             if pieces:
                 pieces.append("\n")
                 cursor += 1
-            for part in find_marks(text):
-                parts.append(Part(part.start + cursor, part.end + cursor, part.kind))
+            if harness:
+                parts.append(Part(cursor, cursor + len(text), "harness"))
+            else:
+                for part in find_marks(text):
+                    parts.append(Part(part.start + cursor, part.end + cursor, part.kind))
             pieces.append(text)
             cursor += len(text)
         elif kind in {"input_file", "input_image", "image"}:
@@ -260,7 +330,8 @@ def _user_pieces(payload: dict) -> tuple[str, tuple[Part, ...]]:
             parts.append(Part(cursor, cursor + len(snippet), "file"))
             pieces.append(snippet)
             cursor += len(snippet)
-    return "".join(pieces), tuple(parts)
+            owner = True
+    return "".join(pieces), tuple(parts), owner
 
 
 def _provenance(rows: object, index: int) -> str | None:
@@ -304,20 +375,28 @@ def _output_text(output: object) -> str:
     return ""
 
 
-def _one_subagent(turns: list[Turn], transcript: Transcript) -> Turn:
-    texts = [turn.text for turn in turns if turn.role == "agent" and turn.text]
-    first = turns[0]
-    return Turn(
-        transcript.session,
-        first.at,
-        transcript.session,
-        "tool",
-        "\n".join(texts),
-        first.place,
-        "subagent",
-        "subagent",
-        (),
-    )
+def _as_subagent_turns(turns: list[Turn]) -> list[Turn]:
+    """Each message keeps its own id. The session id is not the id of the whole session."""
+    found = []
+    for turn in turns:
+        if turn.role == "system":
+            found.append(turn)
+            continue
+        found.append(
+            Turn(
+                turn.turn_id,
+                turn.at,
+                turn.session,
+                "tool",
+                turn.text,
+                turn.place,
+                "subagent",
+                turn.name or "subagent",
+                turn.parts,
+                turn.arguments,
+            )
+        )
+    return found
 
 
 adapter = CodexAdapter()

@@ -21,6 +21,7 @@ from v1_support import REPOSITORY_ROOT, ForestTestCase  # noqa: E402
 
 from memory_forest.cli import forest_main  # noqa: E402
 from memory_forest.credentials import REDACTED  # noqa: E402
+from memory_forest.intake import cursor_file  # noqa: E402
 from memory_forest.layout import initialize  # noqa: E402
 
 
@@ -142,14 +143,15 @@ class WriterTests(IntakeTestCase):
         path.write_text(first + record(id="turn-2", text="Second."), encoding="utf-8")
         root = self.forest(self.tool(folder))
         state = {
-            "placed": True,
-            "transcripts": {
-                str(path.resolve()): {"internal": False, "offset": len(first.encode("utf-8")), "seeded": False, "unknown": 0}
-            },
+            "described": True,
+            "offset": len(first.encode("utf-8")),
+            "origin": "interactive",
+            "session": "ses-kiln-1",
+            "source": "kiln.jsonl",
         }
-        intake = root / ".forest" / "intake"
-        intake.mkdir(parents=True)
-        (intake / "jsonl.json").write_text(json.dumps(state), encoding="utf-8")
+        target = cursor_file(root, "glaze-bot", "jsonl", "kiln.jsonl")
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps(state), encoding="utf-8")
         self.invoke(root, "--from", "jsonl", "--once")
         self.assertEqual([row["text"] for row in self.rows(root)], ["Second."])
 
@@ -288,15 +290,14 @@ class WriterTests(IntakeTestCase):
         folder.mkdir()
         path = folder / "kiln.jsonl"
         path.write_text(record(id="turn-1", text="From the hook."), encoding="utf-8")
-        root = self.forest("\n")
+        root = self.forest(self.tool(folder))
         payload = json.dumps({"transcript_path": str(path), "session_id": "ses-kiln-1", "cwd": "/studio/kiln"})
-        # The first run has not placed cursors, and this file is not in a configured
-        # folder, so import_earlier stays false and the file is new: it is read.
-        # Force the placed flag so the default import_earlier does not skip a file
-        # the hook names that discover never saw... discover is empty, so the file
-        # is new and is read. import_earlier false only seeds files discover finds.
+        # The hook reads only this transcript. It prints nothing: a client's hook
+        # treats stdout as model context and a non-zero exit as a block.
         code, out, err = self.invoke(root, "--from", "jsonl", "--as", "glaze-bot", "--once", "--hook", stdin=payload)
         self.assertEqual(code, 0, err + out)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "")
         self.assertEqual([row["text"] for row in self.rows(root)], ["From the hook."])
 
     def test_the_lock_gives_way(self) -> None:
@@ -337,19 +338,22 @@ class WriterTests(IntakeTestCase):
         (folder / "kiln.jsonl").write_text(record(id="turn-1", text="Once."), encoding="utf-8")
         root = self.forest(self.tool(folder))
         self.invoke(root, "--from", "jsonl", "--once")
-        index = root / ".forest" / "intake" / "index.json"
-        self.assertTrue(index.is_file())
-        index.unlink()
-        state_path = root / ".forest" / "intake" / "jsonl.json"
+        ids = root / ".forest" / "intake" / "ids" / "glaze-bot" / "2051-03-02.ids"
+        self.assertTrue(ids.is_file())
+        ids.unlink()
+        end = ids.with_suffix(".end")
+        if end.is_file():
+            end.unlink()
+        state_path = cursor_file(root, "glaze-bot", "jsonl", "kiln.jsonl")
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        for cursor in state["transcripts"].values():
-            cursor["offset"] = 0
-            cursor["seeded"] = False
+        state["offset"] = 0
+        state.pop("dev", None)
+        state.pop("prefix", None)
         state_path.write_text(json.dumps(state), encoding="utf-8")
         self.invoke(root, "--from", "jsonl", "--once")
         self.assertEqual([row["text"] for row in self.rows(root)], ["Once."])
-        rebuilt = json.loads(index.read_text(encoding="utf-8"))
-        self.assertTrue(any(key.endswith(":turn-1") for key in rebuilt["ids"]))
+        rebuilt = ids.read_text(encoding="utf-8")
+        self.assertIn(":turn-1", rebuilt)
 
     def test_intake_then_levels_check_reports_the_agent_due(self) -> None:
         folder = self.base / "notes"
@@ -363,6 +367,12 @@ class WriterTests(IntakeTestCase):
         self.assertEqual(code, 1)
         self.assertIn("glaze-bot", out.getvalue())
         self.assertIn("none -> tree", out.getvalue())
+        from memory_forest.model import parse_relative_route
+
+        lane = next((root / "06 istm" / "glaze-bot").glob("*.jsonl"))
+        route = parse_relative_route(f"06 istm/glaze-bot/{lane.name}")
+        self.assertEqual(route.domain, "glaze-bot")
+        self.assertEqual(route.path, f"06 istm/glaze-bot/{lane.name}")
 
     def test_dry_run_writes_nothing(self) -> None:
         folder = self.base / "notes"

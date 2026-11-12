@@ -153,7 +153,8 @@ class CredentialSettings:
         "password", "passcode", "passphrase", "passwd", "pin", "pin code", "pin number", "one-time code",
         "one-time password", "otp", "verification code", "security code", "confirmation code", "login code",
         "sign-in code", "access code", "authentication code", "2fa code", "door code", "gate code",
-        "entry code", "alarm code", "cvc", "cvv",
+        "entry code", "alarm code", "cvc", "cvv", "token", "api key", "secret", "bearer",
+        "authorization",
     )
     # Words between a label and its value without a colon: "the PIN is 4821".
     joining_words: tuple[str, ...] = ("is", "was")

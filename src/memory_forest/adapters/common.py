@@ -21,8 +21,11 @@ from ..errors import MemoryForestError
 
 
 MARKER: str = "MEMORY_FOREST_INTERNAL"
-ORIGINS: tuple[str, ...] = ("interactive", "headless", "subagent")
-PART_KINDS: tuple[str, ...] = ("paste", "file", "quote")
+# The first line of a prompt a stage sends. Intake treats that line, in a session's
+# first message, as the same mark as the environment variable.
+MARKER_LINE: str = MARKER
+ORIGINS: tuple[str, ...] = ("interactive", "headless", "subagent", "unknown")
+PART_KINDS: tuple[str, ...] = ("paste", "file", "quote", "harness")
 # Regions a tool wraps around text the owner pasted, attached or quoted.
 # The record keeps the whole text; these name the spans.
 _MARKS: tuple[tuple[str, str], ...] = (
@@ -78,6 +81,7 @@ class Turn:
     origin: str
     name: str | None = None
     parts: tuple[Part, ...] = ()
+    arguments: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +94,10 @@ class Transcript:
     cwd: str
     origin: str
     internal: bool = False
+    origin_raw: str = ""
+    version: str = ""
+    described: bool = False
+    parent: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,11 +108,133 @@ class ReadBatch:
     offset: int
     unknown: int
     internal: bool = False
+    # (type name, count) for lines that were not turns, and (class, place) for a line
+    # that could not be taken at all. The cursor still moves past both.
+    dropped: tuple[tuple[str, int], ...] = ()
+    faults: tuple[tuple[str, str], ...] = ()
 
 
 def env_internal(environ: Mapping[str, str]) -> bool:
     """Whether this process was started by a forest stage (``MEMORY_FOREST_INTERNAL``)."""
     return _truthy(environ.get(MARKER, ""))
+
+
+def speaks_as_owner(role: str, origin: str) -> bool:
+    """The owner at the keyboard. ``unknown`` is decided like ``headless``: it is not."""
+    return role == "owner" and origin == "interactive"
+
+
+def text_internal(text: str) -> bool:
+    """Whether ``text`` opens with the stage marker line."""
+    if not text:
+        return False
+    first = text.lstrip("\ufeff").splitlines()[:1]
+    return bool(first) and first[0].strip() == MARKER_LINE
+
+
+def session_token(value: object) -> str | None:
+    """A session id that cannot be a path: no separator, no ``..``, bounded length."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > 200 or text in {".", ".."}:
+        return None
+    if any(mark in text for mark in ("/", "\\", "\n", "\r", "..")):
+        return None
+    return text
+
+
+def name_has_id(name: str, session_id: str) -> bool:
+    """``session_id`` is the whole file name or a whole piece of it, never a substring."""
+    stem = name[:-6] if name.endswith(".jsonl") else name
+    if name == session_id or stem == session_id:
+        return True
+    return stem.endswith("-" + session_id) or stem.endswith("_" + session_id)
+
+
+def relative_key(path: Path, root: Path) -> str:
+    """``path`` relative to the tool's transcript root. Never an absolute home path."""
+    return path.resolve().relative_to(root.resolve()).as_posix()
+
+
+def confine_file(raw: str, root: Path) -> Path:
+    """The real regular file ``raw`` names, inside ``root``.
+
+    A ``..`` segment, a symlink, and a path that resolves outside ``root`` are refused.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        raise MemoryForestError(
+            "hook_incomplete",
+            "The hook payload has no transcript path.",
+        )
+    candidate = Path(raw)
+    if ".." in candidate.parts:
+        raise MemoryForestError(
+            "unsafe_transcript",
+            "A transcript path cannot contain '..'.",
+            details={"path": candidate.name},
+        )
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    if candidate.is_symlink():
+        raise MemoryForestError(
+            "unsafe_transcript",
+            "A transcript must be a regular file, never a symlink.",
+            details={"path": candidate.name},
+        )
+    try:
+        real = candidate.resolve()
+        base = root.resolve()
+    except OSError as exc:
+        raise MemoryForestError(
+            "unsafe_transcript",
+            "The transcript path could not be resolved.",
+            details={"path": candidate.name},
+        ) from exc
+    if not real.is_relative_to(base):
+        raise MemoryForestError(
+            "unsafe_transcript",
+            "The transcript is outside the tool's transcript root.",
+            details={"path": real.name},
+        )
+    return require_file(real)
+
+
+def stated_version(value: object) -> str:
+    """A short version string the transcript itself states, or empty."""
+    found = _version_in(value, 0)
+    return found or ""
+
+
+def _version_in(value: object, depth: int) -> str:
+    if depth > 4:
+        return ""
+    if isinstance(value, dict):
+        for key in ("version", "cli_version", "cliVersion"):
+            raw = value.get(key)
+            if isinstance(raw, str) and 0 < len(raw) <= 40 and "\n" not in raw and "/" not in raw:
+                return raw.strip()
+            if isinstance(raw, int) and not isinstance(raw, bool) and 0 <= raw <= 1_000_000:
+                return str(raw)
+        for item in value.values():
+            found = _version_in(item, depth + 1)
+            if found:
+                return found
+    return ""
+
+
+def harness_parts(text: str) -> tuple[Part, ...]:
+    """Spans of harness text inside ``text``. The text itself is not changed."""
+    found: list[Part] = []
+    for match in _HARNESS_RE.finditer(text):
+        start, end = match.span()
+        if end > start:
+            found.append(Part(start, end, "harness"))
+    return tuple(found)
+
+
+def counts_of(items: dict[str, int]) -> tuple[tuple[str, int], ...]:
+    return tuple(sorted((key, value) for key, value in items.items() if value))
 
 
 def marked_internal(value: object, *, record: bool = False, depth: int = 0) -> bool:

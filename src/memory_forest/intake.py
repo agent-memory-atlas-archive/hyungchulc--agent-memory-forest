@@ -4,19 +4,19 @@
 One turn is one JSON line in the day's file, the day taken in the forest's time
 zone. The line is appended, flushed and synced before the cursor moves, so a
 crash can repeat a turn and cannot lose one. A turn whose ``id`` the lane
-already holds is not written again. The index under ``.forest/intake/`` remembers
-those ids and is rebuilt from the lane files whenever it disagrees with them;
-the lane is the truth.
+already holds is not written again.
+
+A hook reads only the transcript it was called for. Ids are one append-only
+file per lane file, so that read does not grow with the rest of the history.
+The cursor remembers the file's device, inode, the size it saw and a hash of
+the bytes just before the offset. When those no longer match, the source is
+read again from the start and the ids keep what was already taken.
 
 Numbers and sign-in values are masked before the line is written. A tool turn
 records that the tool ran, not what it printed, unless ``intake.tool_output`` is
-``keep``. A sub-agent's work is a tool turn. A session a forest stage started,
-marked ``MEMORY_FOREST_INTERNAL``, is not taken in.
-
-The writer holds the ``intake`` lock for a moment. A second intake that cannot
-take it leaves its cursor and returns, so a hook never holds up the agent that
-fired it. Automatic intake stays off until ``[intake.tools.<adapter>] enabled``
-is true; ``--once`` takes a turn in anyway.
+``keep``. A sub-agent's work is a tool turn. A session a forest stage started
+is not taken in. The writer holds the ``intake`` lock for a moment. A second
+intake that cannot take it leaves its cursor and returns.
 """
 
 from __future__ import annotations
@@ -41,7 +41,8 @@ from .adapters.common import (
     Turn,
     complete_end,
     env_internal,
-    head_internal,
+    parse_object,
+    text_internal,
 )
 from .config import Config, IntakeToolSettings, load_config
 from .errors import MemoryForestError
@@ -51,14 +52,15 @@ from .locking import atomic_write, hold_lock
 LOCK_NAME = "intake"
 LOCK_WAIT_SECONDS = 0.2
 INTAKE_DIR = f"{layout.STATE_DIR}/intake"
-INDEX_FILE = f"{INTAKE_DIR}/index.json"
+FAILURES = f"{INTAKE_DIR}/failures.jsonl"
+PREFIX_BYTES = 64
+_EMPTY_PREFIX = hashlib.sha256(b"").hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
 class Result:
     """What one intake run did, for the command to print."""
 
-    exit_code: int
     lines: tuple[str, ...]
     data: dict[str, Any]
 
@@ -95,7 +97,6 @@ def run(
             f"set [intake.tools.{adapter_name}] enabled = true, or pass --once"
         )
         return Result(
-            0,
             (message,),
             {"adapter": adapter_name, "enabled": False, "message": message, "ok": True, "wrote": 0},
         )
@@ -128,7 +129,6 @@ def run(
         if held is None:
             message = "another intake holds the lock; this one left its cursor"
             return Result(
-                0,
                 (message,),
                 {"adapter": adapter_name, "lock": "busy", "message": message, "ok": True, "wrote": 0},
             )
@@ -147,17 +147,10 @@ def append_owned(
     session: str = "mcp",
     at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Append one turn to ``agent``'s raw lane. The caller has already chosen role and origin.
-
-    ``memory_log`` uses this. The same masking, id index and single writer as
-    ``forest intake`` apply. A second call with the same text at a different
-    instant is a second turn.
-    """
+    """Append one turn to ``agent``'s raw lane. The caller has already chosen role and origin."""
     if not layout.is_slug(agent):
         raise MemoryForestError("intake_agent_invalid", f"{agent} is not a slug.", details={"agent": agent})
-    if role not in {"owner", "agent", "tool"} and not (
-        role.startswith("other:") and role.removeprefix("other:").strip()
-    ):
+    if not _role_ok(role):
         raise MemoryForestError("intake_role_invalid", "That role is not one the lane records.", details={"role": role})
     if origin not in ORIGINS:
         raise MemoryForestError(
@@ -183,38 +176,83 @@ def append_owned(
     record = _record(config, agent, "mcp", transcript, turn)
     if record is None:
         raise MemoryForestError("intake_turn_rejected", "The turn was not a record the lane keeps.")
+    day = _day(record["at"], config)
     with hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="memory_log"):
-        ids, sizes = _load_ids(root, write=True)
-        if record["id"] in ids:
-            record["path"] = ids[record["id"]]
+        if _id_taken(root, agent, day, record["id"], full=True):
+            record["path"] = f"{layout.ISTM}/{agent}/{day}.jsonl"
             record["wrote"] = False
             return record
-        relative = f"{layout.ISTM}/{agent}/{_day(record['at'], config)}.jsonl"
+        relative = f"{layout.ISTM}/{agent}/{day}.jsonl"
         _append(root, relative, _encode(record))
-        ids[record["id"]] = relative
-        sizes[relative] = layout.resolve(root, relative).stat().st_size
-        _save_index(root, sizes, ids)
+        _note_ids(root, agent, day, [record["id"]])
     record["path"] = relative
     record["wrote"] = True
     return record
 
 
 def status(root: str | os.PathLike[str]) -> Result:
-    """Each adapter, whether it is on, which agent it files under, and unknown lines."""
+    """Each adapter, the lines it did not take, sources waiting on a cursor, and hook failures."""
     config = load_config(root)
-    rows = []
-    listed = []
-    for name in sorted(adapter_loader.load_adapters()):
+    failed = adapter_loader.load_failures()
+    rows: list[str] = []
+    listed: list[dict[str, Any]] = []
+    names = sorted(set(adapter_loader.load_adapters()) | set(failed))
+    for name in names:
+        if name in failed and name not in adapter_loader.load_adapters():
+            rows.append(f"{name}: failed to load ({failed[name]})")
+            listed.append({"adapter": name, "failed": failed[name], "loaded": False})
+            continue
         settings = config.intake.tool(name)
-        state = _read_state(root, name)
-        unknown = sum(int(item.get("unknown", 0)) for item in state["transcripts"].values())
         agent = settings.agent or "(not set)"
         mode = "on" if settings.enabled else "off"
-        rows.append(f"{name}: {mode}, agent {agent}, unknown {unknown}")
+        unknown, dropped, rewinds, ahead, version = _adapter_totals(root, config, name, settings)
+        line = f"{name}: {mode}, agent {agent}, unknown {unknown}"
+        if dropped:
+            detail = ", ".join(f"{label} {count}" for label, count in sorted(dropped.items()))
+            line += f" ({detail})"
+        if version:
+            line += f", version {version}"
+        if rewinds:
+            line += f", rewinds {rewinds}"
+        if ahead:
+            line += ", ahead " + ", ".join(ahead)
+        if name in failed:
+            line += f", plugin failed ({failed[name]})"
+        rows.append(line)
         listed.append(
-            {"adapter": name, "agent": settings.agent, "enabled": settings.enabled, "unknown": unknown}
+            {
+                "adapter": name,
+                "agent": settings.agent,
+                "ahead": ahead,
+                "dropped": dropped,
+                "enabled": settings.enabled,
+                "loaded": True,
+                "plugin_failed": failed.get(name, ""),
+                "rewinds": rewinds,
+                "unknown": unknown,
+                "version": version,
+            }
         )
-    return Result(0, tuple(rows), {"adapters": listed, "ok": True})
+    failure_rows, failure_count = _failure_lines(root)
+    if failure_count:
+        rows.append(f"failures {failure_count}")
+        rows.extend(failure_rows)
+    return Result(tuple(rows), {"adapters": listed, "failures": failure_count, "ok": True})
+
+
+def log_failure(root: str | os.PathLike[str], class_name: str, place: str) -> None:
+    """One hook failure: the class and the place, and neither a path nor a message."""
+    safe_class = "".join(character for character in class_name if character.isalnum() or character == "_")[:80]
+    safe_place = "".join(character for character in place if character.isalnum() or character in "-_/")[:80]
+    if not safe_class:
+        safe_class = "Error"
+    if not safe_place:
+        safe_place = "intake"
+    try:
+        layout.ensure_folder(root, INTAKE_DIR)
+        _append(root, FAILURES, json.dumps({"class": safe_class, "place": safe_place}, sort_keys=True) + "\n")
+    except (OSError, MemoryForestError):
+        return
 
 
 def _execute(
@@ -229,61 +267,64 @@ def _execute(
     *,
     dry_run: bool,
 ) -> Result:
-    state = _read_state(root, adapter.name)
-    discovered = adapter.discover(settings)
+    sweep = hook is None and transcript is None
     if hook is not None:
-        requested = [adapter.hook(dict(hook), settings)]
+        item = adapter.hook(dict(hook), settings)
         if env_internal(env):
-            requested = [replace(requested[0], internal=True)]
+            item = replace(item, internal=True)
+        discovered = [item]
     elif transcript is not None:
-        requested = [adapter.open_path(Path(transcript), settings)]
+        discovered = [adapter.open_path(Path(transcript), settings)]
     else:
-        requested = [item for item in discovered if _allowed(item, settings)]
-    requested = [item for item in requested if _allowed(item, settings)]
-
-    if not state["placed"] and not settings.import_earlier:
+        discovered = adapter.discover(settings)
+    meta = _read_meta(root, agent, adapter.name) if sweep else {"placed": True}
+    if sweep and not meta.get("placed") and not settings.import_earlier:
         if dry_run:
             lines = tuple(
-                f"{item.path.name}: 0 turns (the cursor would be placed at the end)" for item in requested
+                f"{item.path.name}: 0 turns (the cursor would be placed at the end)" for item in discovered
             )
             return _result(adapter.name, agent, lines, 0, dry_run=True, placed=False)
         for item in discovered:
-            _remember_cursor(
-                state,
-                item.key,
-                offset=complete_end(item.path),
-                seeded=True,
-                unknown=0,
-                internal=item.internal,
+            if _cursor_exists(root, agent, adapter.name, item.key):
+                continue
+            _follow_end(
+                root, agent, adapter.name, item,
+                excluded=not _allowed(item, settings),
+                seeded=_allowed(item, settings),
             )
-        state["placed"] = True
+        meta["placed"] = True
+        _write_meta(root, agent, adapter.name, meta)
+    elif sweep and not meta.get("placed") and not dry_run:
+        meta["placed"] = True
+        _write_meta(root, agent, adapter.name, meta)
+    requested = []
+    for item in discovered:
+        if _allowed(item, settings):
+            requested.append(item)
+        elif not dry_run:
+            _follow_end(root, agent, adapter.name, item, excluded=True)
 
-    if settings.import_earlier:
-        for cursor in state["transcripts"].values():
-            if cursor.get("seeded"):
-                cursor["offset"] = 0
-                cursor["seeded"] = False
-
-    ids, sizes = _load_ids(root, write=not dry_run)
     reports: list[str] = []
     total = 0
     total_unknown = 0
     for item in requested:
-        wrote, unknown, note = _one(
-            root, config, adapter, settings, agent, item, state, ids, sizes, dry_run=dry_run
-        )
+        try:
+            wrote, unknown, note = _one(
+                root, config, adapter, settings, agent, item, dry_run=dry_run
+            )
+        except Exception as exc:
+            log_failure(root, exc.__class__.__name__ if not isinstance(exc, MemoryForestError) else exc.code, adapter.name)
+            label = item.key or item.path.name
+            reports.append(f"{label}: failed ({exc.__class__.__name__})")
+            continue
         total += wrote
         total_unknown += unknown
-        label = f"{item.path.name}: {wrote} turn" if wrote == 1 else f"{item.path.name}: {wrote} turns"
+        label = f"{Path(item.key).name}: {wrote} turn" if wrote == 1 else f"{Path(item.key).name}: {wrote} turns"
         if unknown:
             label += f", {unknown} unknown"
         if note:
             label += f" ({note})"
         reports.append(label)
-    if not dry_run:
-        state["placed"] = True
-        _save_state(root, adapter.name, state)
-        _save_index(root, sizes, ids)
     return _result(adapter.name, agent, tuple(reports), total, dry_run=dry_run, placed=True, unknown=total_unknown)
 
 
@@ -294,41 +335,79 @@ def _one(
     settings: IntakeToolSettings,
     agent: str,
     transcript: Transcript,
-    state: dict[str, Any],
-    ids: dict[str, str],
-    sizes: dict[str, int],
     *,
     dry_run: bool,
 ) -> tuple[int, int, str]:
-    cursor = state["transcripts"].get(transcript.key) or {
-        "offset": 0,
-        "seeded": False,
-        "unknown": 0,
-        "internal": False,
-    }
-    record_shape = adapter.name == "jsonl"
-    if cursor.get("internal") or transcript.internal or head_internal(transcript.path, record=record_shape):
+    cursor = _load_cursor(root, agent, adapter.name, transcript.key)
+    # A cursor that only followed an excluded file stays where it is. import_earlier
+    # rewinds a cursor that was placed at the end on the first run, not one that
+    # was excluded: excluded means those turns are never taken.
+    if settings.import_earlier and cursor.get("seeded") and not cursor.get("excluded"):
+        cursor["offset"] = 0
+        cursor["prefix"] = _EMPTY_PREFIX
+        cursor["seeded"] = False
+        cursor["excluded"] = False
+    offset = int(cursor.get("offset") or 0)
+    try:
+        st = transcript.path.stat()
+    except OSError as exc:
+        raise MemoryForestError(
+            "transcript_missing",
+            "The transcript is not a file.",
+            details={"adapter": adapter.name, "path": transcript.path.name},
+        ) from exc
+    prefix = _prefix_hash(transcript.path, offset if offset <= st.st_size else 0)
+    rewind = False
+    if not _identity_ok(cursor, st, prefix, offset):
+        offset = 0
+        rewind = True
+        cursor["rewinds"] = int(cursor.get("rewinds") or 0) + 1
+    if rewind or not cursor.get("described"):
+        hooked_origin = transcript.origin
+        forced_internal = transcript.internal
+        describe = getattr(adapter, "describe", None)
+        if describe is not None:
+            transcript = describe(transcript, settings)
+        if hooked_origin == "subagent":
+            transcript = replace(transcript, origin="subagent")
+        if forced_internal:
+            transcript = replace(transcript, internal=True)
+    else:
+        transcript = replace(
+            transcript,
+            session=str(cursor.get("session") or transcript.session),
+            cwd=str(cursor.get("cwd") or transcript.cwd),
+            origin=str(cursor.get("origin") or transcript.origin),
+            internal=bool(cursor.get("internal")),
+            origin_raw=str(cursor.get("origin_raw") or ""),
+            version=str(cursor.get("version") or ""),
+            described=True,
+            parent=str(cursor.get("parent") or ""),
+        )
+    internal_note = "session carries MEMORY_FOREST_INTERNAL"
+    if transcript.internal or _stage_session(root, transcript.session):
         if not dry_run:
-            _remember_cursor(
-                state, transcript.key, offset=complete_end(transcript.path), seeded=False,
-                unknown=int(cursor.get("unknown", 0)), internal=True,
-            )
-        return 0, 0, "session carries MEMORY_FOREST_INTERNAL"
-    batch = adapter.read(transcript, int(cursor.get("offset", 0)))
-    if batch.internal:
+            _store_cursor(root, agent, adapter.name, transcript, cursor, offset=_file_end(transcript.path), internal=True)
+        return 0, 0, internal_note
+    batch = adapter.read(transcript, offset)
+    if batch.faults and not dry_run:
+        for class_name, place in batch.faults:
+            log_failure(root, class_name, f"{adapter.name} {place}")
+    if batch.internal or (offset == 0 and any(text_internal(turn.text) for turn in batch.turns[:3])):
         if not dry_run:
-            _remember_cursor(
-                state, transcript.key, offset=batch.offset, seeded=False,
-                unknown=int(cursor.get("unknown", 0)), internal=True,
-            )
-        return 0, 0, "session carries MEMORY_FOREST_INTERNAL"
+            _remember_batch(root, agent, adapter.name, transcript, cursor, batch, internal=True)
+        return 0, batch.unknown, internal_note
+    full = rewind or offset == 0
     records: list[tuple[str, dict[str, Any]]] = []
     seen: set[str] = set()
     for turn in batch.turns:
         record = _record(config, agent, adapter.name, transcript, turn)
         if record is None:
             continue
-        if record["id"] in ids or record["id"] in seen:
+        if record["id"] in seen:
+            continue
+        day = _day(record["at"], config)
+        if _id_taken(root, agent, day, record["id"], full=full):
             continue
         seen.add(record["id"])
         records.append((record["id"], record))
@@ -338,21 +417,12 @@ def _one(
     for turn_id, record in records:
         relative = f"{layout.ISTM}/{agent}/{_day(record['at'], config)}.jsonl"
         by_file.setdefault(relative, []).append(record)
-        ids[turn_id] = relative
     for relative, group in by_file.items():
         payload = "".join(_encode(item) for item in group)
         _append(root, relative, payload)
-        sizes[relative] = layout.resolve(root, relative).stat().st_size
-    _remember_cursor(
-        state,
-        transcript.key,
-        offset=batch.offset,
-        # A cursor placed at the end without reading stays seeded, so turning
-        # import_earlier on later still rewinds it. Reading from the start clears it.
-        seeded=bool(cursor.get("seeded")),
-        unknown=int(cursor.get("unknown", 0)) + batch.unknown,
-        internal=False,
-    )
+        day = Path(relative).stem
+        _note_ids(root, agent, day, [item["id"] for item in group])
+    _remember_batch(root, agent, adapter.name, transcript, cursor, batch, internal=False)
     return len(records), batch.unknown, ""
 
 
@@ -364,46 +434,72 @@ def _record(
     turn: Turn,
 ) -> dict[str, Any] | None:
     role = turn.role
-    if role not in {"owner", "agent", "tool"} and not (
-        role.startswith("other:") and role.removeprefix("other:").strip()
-    ):
+    if not _role_ok(role):
         return None
     origin = turn.origin if turn.origin in ORIGINS else transcript.origin
     if origin not in ORIGINS:
-        origin = "interactive"
+        origin = "unknown"
     text = turn.text
     parts = turn.parts
     name = turn.name
+    arguments = turn.arguments if role == "tool" and config.intake.tool_output == "keep" else None
     if role == "tool":
         if not name:
             name = "tool"
         if config.intake.tool_output != "keep" or not text:
             text = f"ran {name}"
             parts = ()
-    masked, parts = _mask_parts(text, parts, config)
+            arguments = None
+    masked, parts, repaired = _mask_parts(text, parts, config)
     at = turn.at if turn.at.tzinfo is not None else turn.at.replace(tzinfo=timezone.utc)
+    source = {"adapter": adapter_name, "place": turn.place, "transcript": transcript.key}
+    if transcript.origin_raw:
+        source["origin_raw"] = transcript.origin_raw
+    if transcript.parent:
+        source["parent"] = transcript.parent
     record: dict[str, Any] = {
         "at": at.isoformat(),
         "id": _compose_id(agent, turn.session or transcript.session, turn),
         "origin": origin,
         "role": role,
         "session": turn.session or transcript.session,
-        "source": {"adapter": adapter_name, "place": turn.place, "transcript": transcript.key},
+        "source": source,
         "text": masked,
     }
     if role == "tool":
-        record["name"] = name
+        record["name"] = name or "tool"
+    if arguments:
+        record["arguments"] = arguments
     if parts:
         record["parts"] = [{"end": part.end, "kind": part.kind, "start": part.start} for part in parts]
+    repaired = _mask_strings(record, config) or repaired
+    if repaired:
+        record["repaired"] = True
     return record
 
 
+def _role_ok(role: str) -> bool:
+    if role in {"owner", "agent", "tool", "system"}:
+        return True
+    return role.startswith("other:") and bool(role.removeprefix("other:").strip())
+
+
 def _compose_id(agent: str, session: str, turn: Turn) -> str:
+    """The source's own id, or a hash of the turn's content and time. The byte offset is not part of it."""
     token = turn.turn_id or ""
     if not token or any(character in token for character in "\r\n") or len(token) > 200:
-        digest = hashlib.sha256(f"{turn.place}\0{turn.text}".encode("utf-8")).hexdigest()[:20]
-        token = digest
-    return f"{agent}:{session.replace(chr(10), '')}:{token}"
+        material = "\0".join(
+            (
+                turn.session or session,
+                turn.role,
+                turn.at.isoformat(),
+                turn.text,
+                turn.name or "",
+            )
+        )
+        token = hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:20]
+    safe_session = session.replace("\n", "").replace("\r", "")
+    return f"{agent}:{safe_session}:{token}"
 
 
 def _day(at_text: str, config: Config) -> str:
@@ -413,7 +509,16 @@ def _day(at_text: str, config: Config) -> str:
     return parsed.astimezone(config.zone).date().isoformat()
 
 
-def _mask_parts(text: str, parts: tuple[Part, ...], config: Config) -> tuple[str, tuple[Part, ...]]:
+def _repair(text: str) -> tuple[str, bool]:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "replace").decode("utf-8"), True
+    return text, False
+
+
+def _mask_parts(text: str, parts: tuple[Part, ...], config: Config) -> tuple[str, tuple[Part, ...], bool]:
+    text, repaired = _repair(text)
     valid = []
     for part in parts:
         if part.kind not in PART_KINDS:
@@ -423,7 +528,8 @@ def _mask_parts(text: str, parts: tuple[Part, ...], config: Config) -> tuple[str
         if end > start:
             valid.append(Part(start, end, part.kind))
     if not valid:
-        return _mask(text, config), ()
+        masked, changed = _repair(_mask(text, config))
+        return masked, (), repaired or changed
     cuts = {0, len(text)}
     for part in valid:
         cuts.add(part.start)
@@ -433,7 +539,8 @@ def _mask_parts(text: str, parts: tuple[Part, ...], config: Config) -> tuple[str
     spans: list[tuple[int, int, int, int]] = []
     cursor = 0
     for left, right in zip(ordered, ordered[1:]):
-        piece = _mask(text[left:right], config)
+        piece, changed = _repair(_mask(text[left:right], config))
+        repaired = repaired or changed
         spans.append((left, right, cursor, cursor + len(piece)))
         pieces.append(piece)
         cursor += len(piece)
@@ -452,15 +559,37 @@ def _mask_parts(text: str, parts: tuple[Part, ...], config: Config) -> tuple[str
         end = mapped(part.end)
         if end > start:
             mapped_parts.append(Part(start, end, part.kind))
-    return "".join(pieces), tuple(mapped_parts)
+    return "".join(pieces), tuple(mapped_parts), repaired
 
 
 def _mask(text: str, config: Config) -> str:
     return numbers.star_numbers(credentials.mask(text, config=config), config=config)[0]
 
 
+def _mask_strings(record: dict[str, Any], config: Config) -> bool:
+    """Mask and repair every string the line will store. Returns whether any string was repaired."""
+    repaired = False
+    for key in ("text", "name", "session", "arguments"):
+        value = record.get(key)
+        if not isinstance(value, str):
+            continue
+        masked, changed = _repair(_mask(value, config))
+        record[key] = masked
+        repaired = repaired or changed
+    source = record.get("source")
+    if isinstance(source, dict):
+        for key, value in list(source.items()):
+            if not isinstance(value, str):
+                continue
+            masked, changed = _repair(_mask(value, config))
+            source[key] = masked
+            repaired = repaired or changed
+    return repaired
+
+
 def _encode(record: Mapping[str, Any]) -> str:
-    return json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    text = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def _allowed(transcript: Transcript, settings: IntakeToolSettings) -> bool:
@@ -490,21 +619,45 @@ def _normal(path: str) -> Path:
         return Path(os.path.abspath(candidate))
 
 
-def _remember_cursor(
-    state: dict[str, Any],
-    key: str,
-    *,
-    offset: int,
-    seeded: bool,
-    unknown: int,
-    internal: bool,
-) -> None:
-    state["transcripts"][key] = {
-        "internal": internal,
-        "offset": offset,
-        "seeded": seeded,
-        "unknown": unknown,
-    }
+def _stage_session(root, session: str) -> bool:
+    if not session:
+        return False
+    from .stage import session_recorded
+
+    return session_recorded(root, session)
+
+
+def _identity_ok(cursor: Mapping[str, Any], st: os.stat_result, prefix: str, offset: int) -> bool:
+    """A cursor with no identity yet is trusted. A changed file is not."""
+    if "dev" not in cursor or "ino" not in cursor:
+        return True
+    try:
+        same_file = int(cursor["dev"]) == st.st_dev and int(cursor["ino"]) == st.st_ino
+    except (TypeError, ValueError):
+        return False
+    if not same_file or st.st_size < offset:
+        return False
+    stored = cursor.get("prefix")
+    if isinstance(stored, str) and stored and stored != prefix:
+        return False
+    return True
+
+
+def _prefix_hash(path: Path, offset: int) -> str:
+    if offset <= 0:
+        return _EMPTY_PREFIX
+    start = max(0, offset - PREFIX_BYTES)
+    with path.open("rb") as handle:
+        handle.seek(start)
+        data = handle.read(offset - start)
+    return hashlib.sha256(data).hexdigest()
+
+
+def _file_end(path: Path) -> int:
+    try:
+        return complete_end(path)
+    except OSError:
+        return 0
 
 
 def _result(
@@ -529,7 +682,7 @@ def _result(
         "unknown": unknown,
         "wrote": wrote,
     }
-    return Result(0, (head, *(f"  {line}" for line in reports)), data)
+    return Result((head, *(f"  {line}" for line in reports)), data)
 
 
 @contextmanager
@@ -543,110 +696,368 @@ def _intake_lock(root: str | os.PathLike[str]) -> Iterator[object | None]:
         yield None
 
 
-def _empty_state() -> dict[str, Any]:
-    return {"placed": False, "transcripts": {}}
+def cursor_file(root: str | os.PathLike[str], agent: str, adapter_name: str, source_key: str) -> Path:
+    """The cursor for one agent, one adapter and one source."""
+    digest = hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:20]
+    relative = f"{INTAKE_DIR}/cursors/{agent}/{adapter_name}/{digest}.json"
+    return layout.resolve(root, relative)
 
 
-def _state_path(adapter_name: str) -> str:
-    return f"{INTAKE_DIR}/{adapter_name}.json"
+def _cursor_dir(root, agent: str, adapter_name: str) -> Path:
+    return layout.resolve(root, f"{INTAKE_DIR}/cursors/{agent}/{adapter_name}")
 
 
-def _read_state(root: str | os.PathLike[str], adapter_name: str) -> dict[str, Any]:
-    path = layout.resolve(root, _state_path(adapter_name))
+def _cursor_exists(root, agent: str, adapter_name: str, source_key: str) -> bool:
+    path = cursor_file(root, agent, adapter_name, source_key)
+    return path.is_file() and not path.is_symlink()
+
+
+def _load_cursor(root, agent: str, adapter_name: str, source_key: str) -> dict[str, Any]:
+    path = cursor_file(root, agent, adapter_name, source_key)
     if not path.is_file() or path.is_symlink():
-        return _empty_state()
+        return {"source": source_key}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise MemoryForestError(
-            "intake_state_invalid",
-            "The intake cursor file is not valid JSON. It was not rewritten.",
-            details={"adapter": adapter_name},
-        ) from exc
-    if not isinstance(value, dict) or not isinstance(value.get("transcripts"), dict):
-        raise MemoryForestError(
-            "intake_state_invalid",
-            "The intake cursor file is not a cursor record. It was not rewritten.",
-            details={"adapter": adapter_name},
-        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _set_aside(path)
+        log_failure(root, "intake_state_invalid", adapter_name)
+        return {"source": source_key}
+    if not isinstance(value, dict):
+        _set_aside(path)
+        log_failure(root, "intake_state_invalid", adapter_name)
+        return {"source": source_key}
+    value.setdefault("source", source_key)
+    return value
+
+
+def _set_aside(path: Path) -> None:
+    target = path.with_name(path.name + ".aside")
+    number = 1
+    while target.exists():
+        target = path.with_name(f"{path.name}.aside-{number}")
+        number += 1
+    try:
+        os.replace(path, target)
+    except OSError:
+        return
+
+
+def _save_cursor(root, agent: str, adapter_name: str, source_key: str, cursor: Mapping[str, Any]) -> None:
+    body = dict(cursor)
+    body["source"] = source_key
+    layout.ensure_folder(root, f"{INTAKE_DIR}/cursors/{agent}/{adapter_name}")
+    atomic_write(
+        cursor_file(root, agent, adapter_name, source_key),
+        json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _follow_end(root, agent: str, adapter_name: str, transcript: Transcript, *, excluded: bool, seeded: bool = False) -> None:
+    """Move the cursor to the end of the file and write no turns."""
+    try:
+        st = transcript.path.stat()
+        end = complete_end(transcript.path)
+    except OSError:
+        return
+    cursor = _load_cursor(root, agent, adapter_name, transcript.key)
+    cursor.update(
+        {
+            "described": True,
+            "dev": st.st_dev,
+            "excluded": excluded,
+            "ino": st.st_ino,
+            "offset": end,
+            "prefix": _prefix_hash(transcript.path, end),
+            "seeded": seeded and not excluded,
+            "session": transcript.session,
+            "size": st.st_size,
+            "cwd": transcript.cwd,
+            "origin": transcript.origin,
+            "origin_raw": transcript.origin_raw,
+            "parent": transcript.parent,
+            "version": transcript.version,
+        }
+    )
+    _save_cursor(root, agent, adapter_name, transcript.key, cursor)
+
+
+def _store_cursor(root, agent, adapter_name, transcript: Transcript, cursor: dict[str, Any], *, offset: int, internal: bool) -> None:
+    try:
+        st = transcript.path.stat()
+    except OSError:
+        return
+    cursor.update(_discovery(transcript))
+    cursor.update(
+        {
+            "dev": st.st_dev,
+            "ino": st.st_ino,
+            "internal": internal,
+            "offset": offset,
+            "prefix": _prefix_hash(transcript.path, offset),
+        "seeded": bool(cursor.get("seeded")),
+        "size": st.st_size,
+        }
+    )
+    _save_cursor(root, agent, adapter_name, transcript.key, cursor)
+
+
+def _remember_batch(root, agent, adapter_name, transcript: Transcript, cursor: dict[str, Any], batch, *, internal: bool) -> None:
+    dropped = dict(cursor.get("dropped") or {})
+    if not isinstance(dropped, dict):
+        dropped = {}
+    for label, count in batch.dropped:
+        dropped[label] = int(dropped.get(label, 0)) + count
+    cursor["dropped"] = dropped
+    cursor["unknown"] = int(cursor.get("unknown") or 0) + int(batch.unknown)
+    faults = list(cursor.get("faults") or [])
+    faults.extend([list(item) for item in batch.faults])
+    cursor["faults"] = faults[-8:]
+    _store_cursor(root, agent, adapter_name, transcript, cursor, offset=batch.offset, internal=internal)
+
+
+def _discovery(transcript: Transcript) -> dict[str, Any]:
+    return {
+        "cwd": transcript.cwd,
+        "described": True,
+        "origin": transcript.origin,
+        "origin_raw": transcript.origin_raw,
+        "parent": transcript.parent,
+        "session": transcript.session,
+        "version": transcript.version,
+    }
+
+
+def _read_meta(root, agent: str, adapter_name: str) -> dict[str, Any]:
+    path = _cursor_dir(root, agent, adapter_name) / "_meta.json"
+    if not path.is_file() or path.is_symlink():
+        return {"placed": False}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _set_aside(path)
+        log_failure(root, "intake_state_invalid", adapter_name)
+        return {"placed": False}
+    if not isinstance(value, dict):
+        _set_aside(path)
+        log_failure(root, "intake_state_invalid", adapter_name)
+        return {"placed": False}
     value.setdefault("placed", False)
     return value
 
 
-def _save_state(root: str | os.PathLike[str], adapter_name: str, state: dict[str, Any]) -> None:
-    layout.ensure_folder(root, INTAKE_DIR)
-    atomic_write(
-        layout.resolve(root, _state_path(adapter_name)),
-        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-    )
+def _write_meta(root, agent: str, adapter_name: str, meta: Mapping[str, Any]) -> None:
+    folder = _cursor_dir(root, agent, adapter_name)
+    folder.mkdir(parents=True, exist_ok=True)
+    atomic_write(folder / "_meta.json", json.dumps(dict(meta), sort_keys=True) + "\n")
 
 
-def _load_ids(root: str | os.PathLike[str], *, write: bool) -> tuple[dict[str, str], dict[str, int]]:
-    sizes = _lane_sizes(root)
-    path = layout.resolve(root, INDEX_FILE)
-    stored: object = None
-    if path.is_file() and not path.is_symlink():
-        try:
-            stored = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            stored = None
-    if isinstance(stored, dict) and stored.get("lanes") == sizes and isinstance(stored.get("ids"), dict):
-        ids = {str(key): str(value) for key, value in stored["ids"].items()}
-        return ids, sizes
-    ids = _rebuild_ids(root)
-    if write:
-        _save_index(root, sizes, ids)
-    return ids, sizes
-
-
-def _save_index(root: str | os.PathLike[str], sizes: dict[str, int], ids: dict[str, str]) -> None:
-    layout.ensure_folder(root, INTAKE_DIR)
-    atomic_write(
-        layout.resolve(root, INDEX_FILE),
-        json.dumps({"ids": ids, "lanes": sizes}, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-    )
-
-
-def _lane_sizes(root: str | os.PathLike[str]) -> dict[str, int]:
-    found: dict[str, int] = {}
-    for relative, path in _lane_files(root):
-        found[relative] = path.stat().st_size
-    return found
-
-
-def _rebuild_ids(root: str | os.PathLike[str]) -> dict[str, str]:
-    found: dict[str, str] = {}
-    for relative, path in _lane_files(root):
-        with path.open("rb") as handle:
-            for raw in handle:
-                if not raw.endswith(b"\n"):
-                    continue
-                from .adapters.common import parse_object
-
-                value = parse_object(raw[:-1])
-                if isinstance(value, dict) and isinstance(value.get("id"), str):
-                    found[value["id"]] = relative
-    return found
-
-
-def _lane_files(root: str | os.PathLike[str]) -> list[tuple[str, Path]]:
-    top = Path(root) / layout.ISTM
-    if not top.is_dir() or top.is_symlink():
+def _each_cursor(root, agent: str, adapter_name: str) -> list[tuple[Path, dict[str, Any]]]:
+    folder = _cursor_dir(root, agent, adapter_name)
+    if not folder.is_dir() or folder.is_symlink():
         return []
     found = []
-    for agent in sorted(os.scandir(top), key=lambda entry: entry.name):
-        if agent.name.startswith(".") or agent.is_symlink() or not agent.is_dir(follow_symlinks=False):
+    for entry in sorted(folder.iterdir(), key=lambda item: item.name):
+        if entry.name.startswith("_") or entry.suffix != ".json" or entry.is_symlink():
             continue
-        for entry in sorted(os.scandir(agent.path), key=lambda item: item.name):
-            if (
-                entry.name.startswith(".")
-                or not entry.name.endswith(".jsonl")
-                or entry.is_symlink()
-                or not entry.is_file(follow_symlinks=False)
-            ):
-                continue
-            found.append((f"{layout.ISTM}/{agent.name}/{entry.name}", Path(entry.path)))
+        try:
+            value = json.loads(entry.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            found.append((entry, value))
     return found
+
+
+def _adapter_totals(root, config: Config, adapter_name: str, settings: IntakeToolSettings) -> tuple[int, dict[str, int], int, list[str], str]:
+    unknown = 0
+    dropped: dict[str, int] = {}
+    rewinds = 0
+    ahead: list[str] = []
+    version = ""
+    agents = _agents_with_cursors(root, adapter_name, settings.agent)
+    for agent in agents:
+        for _path, cursor in _each_cursor(root, agent, adapter_name):
+            unknown += int(cursor.get("unknown") or 0)
+            rewinds += int(cursor.get("rewinds") or 0)
+            raw_dropped = cursor.get("dropped")
+            if isinstance(raw_dropped, dict):
+                for label, count in raw_dropped.items():
+                    try:
+                        dropped[str(label)] = dropped.get(str(label), 0) + int(count)
+                    except (TypeError, ValueError):
+                        continue
+            if not version and isinstance(cursor.get("version"), str):
+                version = cursor["version"]
+            source = cursor.get("source")
+            if isinstance(source, str) and source and _ahead(settings, source, cursor):
+                ahead.append(Path(source).name)
+    return unknown, dropped, rewinds, ahead, version
+
+
+def _agents_with_cursors(root, adapter_name: str, configured: str) -> list[str]:
+    base = layout.resolve(root, f"{INTAKE_DIR}/cursors")
+    found = []
+    if base.is_dir() and not base.is_symlink():
+        for agent in sorted(base.iterdir(), key=lambda item: item.name):
+            if (agent / adapter_name).is_dir():
+                found.append(agent.name)
+    if configured and configured not in found:
+        found.append(configured)
+    return found
+
+
+def _ahead(settings: IntakeToolSettings, source: str, cursor: Mapping[str, Any]) -> bool:
+    if not settings.path:
+        return False
+    root = Path(settings.path).expanduser()
+    path = root / source
+    try:
+        if not path.is_file() or path.is_symlink():
+            return False
+        return path.stat().st_size > int(cursor.get("offset") or 0)
+    except (OSError, ValueError):
+        return False
+
+
+def _failure_lines(root) -> tuple[list[str], int]:
+    path = layout.resolve(root, FAILURES)
+    if not path.is_file() or path.is_symlink():
+        return [], 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return [], 0
+    shown = []
+    for line in lines[-5:]:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and isinstance(value.get("class"), str) and isinstance(value.get("place"), str):
+            shown.append(f"  {value['class']} {value['place']}")
+    return shown, len(lines)
+
+
+def _id_taken(root, agent: str, day: str, turn_id: str, *, full: bool) -> bool:
+    if full:
+        return turn_id in _day_ids(root, agent, day)
+    return turn_id in _gap_ids(root, agent, day)
+
+
+def _id_dir(root, agent: str) -> Path:
+    return layout.resolve(root, f"{INTAKE_DIR}/ids/{agent}")
+
+
+def _ids_path(root, agent: str, day: str) -> Path:
+    return _id_dir(root, agent) / f"{day}.ids"
+
+
+def _end_path(root, agent: str, day: str) -> Path:
+    return _id_dir(root, agent) / f"{day}.end"
+
+
+def _lane_path(root, agent: str, day: str) -> Path:
+    return layout.resolve(root, f"{layout.ISTM}/{agent}/{day}.jsonl")
+
+
+def _covered(root, agent: str, day: str) -> tuple[int, int]:
+    lane = _lane_path(root, agent, day)
+    try:
+        size = lane.stat().st_size if lane.is_file() and not lane.is_symlink() else 0
+    except OSError:
+        size = 0
+    end = _end_path(root, agent, day)
+    covered = 0
+    if end.is_file() and not end.is_symlink():
+        try:
+            covered = int(end.read_text(encoding="utf-8").strip() or "0")
+        except (OSError, UnicodeError, ValueError):
+            covered = 0
+    if covered < 0 or covered > size:
+        covered = 0
+    return covered, size
+
+
+def _gap_ids(root, agent: str, day: str) -> set[str]:
+    covered, size = _covered(root, agent, day)
+    if covered == size:
+        return set()
+    lane = _lane_path(root, agent, day)
+    try:
+        with lane.open("rb") as handle:
+            handle.seek(covered)
+            data = handle.read(size - covered)
+    except OSError:
+        return set()
+    return _ids_in(data)
+
+
+def _day_ids(root, agent: str, day: str) -> set[str]:
+    covered, size = _covered(root, agent, day)
+    path = _ids_path(root, agent, day)
+    if path.is_file() and not path.is_symlink() and covered == size:
+        try:
+            return {line for line in path.read_text(encoding="utf-8").splitlines() if line}
+        except (OSError, UnicodeError):
+            pass
+    lane = _lane_path(root, agent, day)
+    ids: set[str] = set()
+    if lane.is_file() and not lane.is_symlink():
+        try:
+            ids = _ids_in(lane.read_bytes())
+        except OSError:
+            ids = set()
+    _write_ids(root, agent, day, ids, size)
+    return ids
+
+
+def _ids_in(data: bytes) -> set[str]:
+    """Ids in complete lines. A trailing partial line is not an id yet."""
+    found: set[str] = set()
+    if not data:
+        return found
+    if not data.endswith(b"\n"):
+        cut = data.rfind(b"\n")
+        data = data[: cut + 1] if cut >= 0 else b""
+    for raw in data.splitlines():
+        if not raw:
+            continue
+        value = parse_object(raw)
+        if isinstance(value, dict) and isinstance(value.get("id"), str):
+            found.add(value["id"])
+    return found
+
+
+def _note_ids(root, agent: str, day: str, ids: list[str]) -> None:
+    """Append the ids of the lane's new tail, including a torn write's lines, then remember the end."""
+    tail = _gap_ids(root, agent, day)
+    fresh = list(dict.fromkeys([*tail, *ids]))
+    if fresh:
+        folder = _id_dir(root, agent)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = _ids_path(root, agent, day)
+        payload = "".join(item + "\n" for item in fresh).encode("utf-8")
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            _write_all(descriptor, payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    _write_end(root, agent, day, _lane_path(root, agent, day).stat().st_size)
+
+
+def _write_ids(root, agent: str, day: str, ids: set[str], size: int) -> None:
+    folder = _id_dir(root, agent)
+    folder.mkdir(parents=True, exist_ok=True)
+    atomic_write(_ids_path(root, agent, day), "".join(item + "\n" for item in sorted(ids)))
+    _write_end(root, agent, day, size)
+
+
+def _write_end(root, agent: str, day: str, size: int) -> None:
+    folder = _id_dir(root, agent)
+    folder.mkdir(parents=True, exist_ok=True)
+    atomic_write(_end_path(root, agent, day), f"{size}\n")
 
 
 def _append(root: str | os.PathLike[str], relative: str, payload: str) -> None:
@@ -654,12 +1065,15 @@ def _append(root: str | os.PathLike[str], relative: str, payload: str) -> None:
     layout.ensure_folder(root, parent)
     path = layout.resolve(root, relative)
     created = not path.exists()
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    data = payload.encode("utf-8")
+    # Read-write so a torn tail can be cut back before the append.
+    flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, 0o600)
     try:
         if created:
             os.fchmod(descriptor, 0o600)
-        os.write(descriptor, payload.encode("utf-8"))
+        _trim_torn(descriptor)
+        _write_all(descriptor, data)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -669,3 +1083,33 @@ def _append(root: str | os.PathLike[str], relative: str, payload: str) -> None:
             os.fsync(directory)
         finally:
             os.close(directory)
+
+
+def _trim_torn(descriptor: int) -> None:
+    """A lane file that does not end in a newline loses that torn tail before the next append."""
+    size = os.lseek(descriptor, 0, os.SEEK_END)
+    if size <= 0:
+        return
+    os.lseek(descriptor, size - 1, os.SEEK_SET)
+    if os.read(descriptor, 1) == b"\n":
+        return
+    position = size
+    while position > 0:
+        step = min(8192, position)
+        position -= step
+        os.lseek(descriptor, position, os.SEEK_SET)
+        chunk = os.read(descriptor, step)
+        found = chunk.rfind(b"\n")
+        if found >= 0:
+            os.ftruncate(descriptor, position + found + 1)
+            return
+    os.ftruncate(descriptor, 0)
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("a lane write made no progress")
+        view = view[written:]

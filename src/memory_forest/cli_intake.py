@@ -44,8 +44,12 @@ def cmd_intake(arguments: Any) -> int:
             dry_run=arguments.dry_run,
             once=arguments.once,
         )
+    # A hook's stdout is added to the model's context by at least one client, and a
+    # non-zero exit can block the turn. Hook mode stays silent.
+    if arguments.hook:
+        return 0
     _show(arguments, result)
-    return result.exit_code
+    return 0
 
 
 def _hook_payload() -> dict[str, Any]:

@@ -14,8 +14,10 @@ A line that is not one of those updates is skipped and counted. A last line
 with no newline is left for the next read.
 
 ``session_kind`` ``headless`` or ``is_non_interactive`` is a headless run.
-``parent_session_id``, or a hook whose event is a sub-agent, makes the whole
-session one tool turn. The files do not store the process environment. A hook
+``session_kind`` ``interactive`` or ``is_non_interactive`` false is the owner's
+client. Anything else is ``unknown``. ``parent_session_id`` is kept and does not
+by itself make a sub-agent; a hook event that names a sub-agent does. Each
+message keeps its own id. The files do not store the process environment. A hook
 sees ``MEMORY_FOREST_INTERNAL`` in its own environment. A sweep sees it when
 ``summary.json``, ``prompt_context.json`` or a line carries it as a key. A hook
 sends ``sessionId`` and ``cwd`` and not a transcript path; the session directory
@@ -37,13 +39,19 @@ from .common import (
     Transcript,
     Turn,
     complete_lines,
-    file_key,
+    confine_file,
+    counts_of,
     find_marks,
+    harness_only,
+    harness_parts,
     marked_internal,
     parse_object,
     parse_time,
     place_of,
-    require_file,
+    relative_key,
+    session_token,
+    stated_version,
+    text_internal,
     tool_home,
 )
 
@@ -59,82 +67,125 @@ class GrokAdapter:
         root = _sessions_root(settings)
         if root is None:
             return []
-        found = []
-        for path in _updates(root):
-            found.append(self._open(path))
-        return found
+        return [self._open(path, root) for path in _updates(root)]
 
     def open_path(self, path: Path, settings: IntakeToolSettings) -> Transcript:
-        del settings
-        return self._open(require_file(path))
+        root = _sessions_root(settings)
+        if root is None:
+            raise MemoryForestError(
+                "transcript_missing",
+                "The transcript root is not a directory.",
+                details={"adapter": self.name},
+            )
+        return self._open(confine_file(str(path), root), root)
 
     def hook(self, payload: dict, settings: IntakeToolSettings) -> Transcript:
-        session = payload.get("sessionId") or payload.get("session_id")
+        """The session the hook names. The file body is not read."""
+        root = _sessions_root(settings)
+        if root is None:
+            raise MemoryForestError(
+                "transcript_missing",
+                "The transcript root is not a directory.",
+                details={"adapter": self.name},
+            )
+        session = session_token(payload.get("sessionId") or payload.get("session_id"))
         cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
-        if not isinstance(session, str) or not session:
+        if session is None:
             raise MemoryForestError(
                 "hook_incomplete",
                 "The hook payload has no session id.",
                 details={"adapter": self.name},
             )
-        path = _locate(settings, session, cwd)
+        path = _locate(root, session, cwd)
         if path is None:
             raise MemoryForestError(
                 "transcript_missing",
                 "The hook's session has no transcript.",
                 details={"adapter": self.name},
             )
-        transcript = self._open(path)
-        origin = transcript.origin
+        origin = "unknown"
         event = payload.get("hookEventName") or payload.get("hook_event_name") or ""
         if isinstance(event, str) and "subagent" in event.casefold():
             origin = "subagent"
-        return Transcript(transcript.key, transcript.path, session, cwd or transcript.cwd, origin, transcript.internal)
+        return Transcript(relative_key(path, root), path, session, cwd, origin, described=False)
+
+    def describe(self, transcript: Transcript, settings: IntakeToolSettings) -> Transcript:
+        root = _sessions_root(settings)
+        if root is None:
+            return transcript
+        opened = self._open(transcript.path, root)
+        if transcript.origin == "subagent":
+            return Transcript(
+                opened.key, opened.path, opened.session, opened.cwd or transcript.cwd,
+                "subagent", opened.internal, opened.origin_raw, opened.version, True, opened.parent,
+            )
+        return opened
 
     def read(self, transcript: Transcript, offset: int) -> ReadBatch:
         lines, new_offset = complete_lines(transcript.path, offset)
         unknown = 0
+        dropped: dict[str, int] = {}
+        faults: list[tuple[str, str]] = []
         events: list[dict] = []
+        internal = transcript.internal
         for start, raw in lines:
-            value = parse_object(raw)
-            if value is None:
-                continue
-            if value is False or not isinstance(value, dict):
-                unknown += 1
-                continue
-            update = _update(value)
-            if update is None:
-                unknown += 1
-                continue
-            kind = update.get("sessionUpdate")
-            if not isinstance(kind, str):
-                unknown += 1
-                continue
-            if kind in _SKIP_UPDATES:
-                continue
-            if kind not in {"user_message_chunk", "agent_message_chunk", "tool_call", "tool_call_update"}:
-                unknown += 1
-                continue
-            at = parse_time(value.get("timestamp"))
-            if at is None:
-                at = parse_time(_meta(update).get("agentTimestampMs")) if isinstance(_meta(update), dict) else None
-            if at is None:
-                unknown += 1
-                continue
-            events.append({"kind": kind, "at": at, "start": start, "update": update, "turn_id": _event_id(value, update)})
+            place = place_of(start)
+            try:
+                value = parse_object(raw)
+                if value is None:
+                    continue
+                if value is False or not isinstance(value, dict):
+                    unknown += 1
+                    dropped["invalid"] = dropped.get("invalid", 0) + 1
+                    continue
+                if marked_internal(value):
+                    internal = True
+                update = _update(value)
+                if update is None:
+                    unknown += 1
+                    dropped["invalid"] = dropped.get("invalid", 0) + 1
+                    continue
+                kind = update.get("sessionUpdate")
+                if not isinstance(kind, str):
+                    unknown += 1
+                    dropped["invalid"] = dropped.get("invalid", 0) + 1
+                    continue
+                if kind in _SKIP_UPDATES:
+                    dropped[kind] = dropped.get(kind, 0) + 1
+                    continue
+                if kind not in {"user_message_chunk", "agent_message_chunk", "tool_call", "tool_call_update"}:
+                    unknown += 1
+                    dropped[kind] = dropped.get(kind, 0) + 1
+                    continue
+                at = parse_time(value.get("timestamp"))
+                if at is None:
+                    at = parse_time(_meta(update).get("agentTimestampMs")) if isinstance(_meta(update), dict) else None
+                if at is None:
+                    unknown += 1
+                    dropped[kind] = dropped.get(kind, 0) + 1
+                    continue
+                if text_internal(_content_text(update.get("content"))[0]):
+                    internal = True
+                events.append({"kind": kind, "at": at, "start": start, "update": update, "turn_id": _event_id(value, update)})
+            except Exception as exc:
+                faults.append((exc.__class__.__name__, place))
+                dropped[exc.__class__.__name__] = dropped.get(exc.__class__.__name__, 0) + 1
         turns = _coalesce(events, transcript)
         if transcript.origin == "subagent" and turns:
-            turns = [_one_subagent(turns, transcript)]
-        if transcript.internal:
-            return ReadBatch((), new_offset, unknown, internal=True)
-        return ReadBatch(tuple(turns), new_offset, unknown, internal=False)
+            turns = _as_subagent_turns(turns)
+        if internal:
+            return ReadBatch((), new_offset, unknown, True, counts_of(dropped), tuple(faults))
+        return ReadBatch(tuple(turns), new_offset, unknown, False, counts_of(dropped), tuple(faults))
 
-    def _open(self, path: Path) -> Transcript:
+    def _open(self, path: Path, root: Path) -> Transcript:
         folder = path.parent
         session = folder.name
         cwd = ""
-        origin = "interactive"
+        origin = "unknown"
+        raw = ""
+        parent = ""
         internal = False
+        version = ""
         summary = _read_json(folder / "summary.json")
         if isinstance(summary, dict):
             info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
@@ -142,19 +193,33 @@ class GrokAdapter:
                 session = info["id"]
             if isinstance(info.get("cwd"), str):
                 cwd = info["cwd"]
-            if summary.get("session_kind") == "headless":
-                origin = "headless"
-            if summary.get("parent_session_id"):
+            kind = summary.get("session_kind")
+            if isinstance(kind, str):
+                raw = kind
+            if kind == "subagent":
                 origin = "subagent"
+            elif kind == "headless":
+                origin = "headless"
+            elif kind == "interactive":
+                origin = "interactive"
+            if isinstance(summary.get("parent_session_id"), str):
+                parent = summary["parent_session_id"]
             internal = marked_internal(summary)
+            version = stated_version(summary)
         context = _read_json(folder / "prompt_context.json")
         if isinstance(context, dict):
             if context.get("is_non_interactive") is True and origin != "subagent":
                 origin = "headless"
+                raw = raw or "non_interactive"
+            elif context.get("is_non_interactive") is False and origin == "unknown":
+                origin = "interactive"
+                raw = raw or "interactive"
             if not cwd and isinstance(context.get("working_directory"), str):
                 cwd = context["working_directory"]
             internal = internal or marked_internal(context)
-        return Transcript(file_key(path), path, session, cwd, origin, internal)
+            if not version:
+                version = stated_version(context)
+        return Transcript(relative_key(path, root), path, session, cwd, origin, internal, raw, version, True, parent)
 
 
 def _sessions_root(settings: IntakeToolSettings) -> Path | None:
@@ -182,11 +247,8 @@ def _updates(root: Path) -> list[Path]:
     return found
 
 
-def _locate(settings: IntakeToolSettings, session: str, cwd: str) -> Path | None:
-    if "/" in session or "\\" in session or len(session) > 200:
-        return None
-    root = _sessions_root(settings)
-    if root is None:
+def _locate(root: Path, session: str, cwd: str) -> Path | None:
+    if session_token(session) is None:
         return None
     if cwd:
         direct = root / quote(cwd, safe="~") / session / "updates.jsonl"
@@ -245,6 +307,8 @@ def _coalesce(events: list[dict], transcript: Transcript) -> list[Turn]:
             return
         text = "".join(pending["texts"])
         role = "agent" if pending["kind"] == "agent_message_chunk" else "owner"
+        if text and role == "owner" and (harness_only(text) or pending.get("harness")):
+            role = "system"
         if text:
             turns.append(
                 Turn(
@@ -321,6 +385,10 @@ def _add_text(pending: dict, update: dict) -> None:
     cursor = sum(len(item) for item in pending["texts"])
     for part in parts:
         pending["parts"].append(Part(part.start + cursor, part.end + cursor, part.kind))
+    for part in harness_parts(text):
+        pending["parts"].append(Part(part.start + cursor, part.end + cursor, part.kind))
+    if harness_only(text) and text:
+        pending["harness"] = True
     pending["texts"].append(text)
 
 
@@ -382,21 +450,28 @@ def _tool_output(update: dict) -> str:
     return text
 
 
-def _one_subagent(turns: list[Turn], transcript: Transcript) -> Turn:
-    texts = [turn.text for turn in turns if turn.role == "agent" and turn.text]
-    name = next((turn.name for turn in turns if turn.name), None) or "subagent"
-    first = turns[0]
-    return Turn(
-        transcript.session,
-        first.at,
-        transcript.session,
-        "tool",
-        "\n".join(texts),
-        first.place,
-        "subagent",
-        name,
-        (),
-    )
+def _as_subagent_turns(turns: list[Turn]) -> list[Turn]:
+    """Each message keeps its own id. A parent session id is not that id."""
+    found = []
+    for turn in turns:
+        if turn.role == "system":
+            found.append(turn)
+            continue
+        found.append(
+            Turn(
+                turn.turn_id,
+                turn.at,
+                turn.session,
+                "tool",
+                turn.text,
+                turn.place,
+                "subagent",
+                turn.name or "subagent",
+                turn.parts,
+                turn.arguments,
+            )
+        )
+    return found
 
 
 adapter = GrokAdapter()
