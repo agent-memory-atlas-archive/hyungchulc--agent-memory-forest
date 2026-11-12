@@ -39,17 +39,21 @@ and it does not show a turn that has not been filed onto the daily page. `forest
 - **Sign-in values** (passwords, PINs, one-time and verification codes, door codes) are never starred but
   removed: a page keeps that a value was sent, by whom, to whom and for which account, and `[REDACTED]` in
   its place. The value is recognised by a label word before it (`credentials.label_words`, English by
-  default; add the words of the other languages your forest records). Every record line a tool writes is
-  masked, the daily writer masks the text a model hands it, and the tools mask what they show; the lint
-  reports a page line that still holds one (`credential_in_full`) and `forest credentials fix` masks it
-  after archiving the page. **What is kept:** the raw lane `06 istm` and the archive keep the bytes they
-  were given, so protect them like the forest. A code with no label word before it, in a quoted turn, waits
-  for a reader's judgement (`forest credentials candidates | judge`); once judged a sign-in value it is
-  masked wherever it appears, through a ledger that keeps only keyed digests (`.forest/credentials/`, the
-  key readable by its owner only; protect it like the forest). **What the rule cannot see:** a bare code
-  nobody has judged yet, or one outside a quoted turn, a label word your settings do not list, a value
-  written without a digit and without a colon ("the password is tulip"), a value split across lines, and a
-  value inside an image or an attachment.
+  default, including token, API key, secret, bearer and authorization; add the words of the other
+  languages your forest records) and by its shape: the published key prefixes of large providers, an
+  `Authorization` header of bearer or basic, a private-key block, and a long mixed token beside a word
+  that names access. A git hash, a UUID and the head of a base64 image are not masked by that rule.
+  Every record line a tool writes is masked, the daily writer masks the text a model hands it, and the
+  tools mask what they show; the lint reports a page line that still holds one (`credential_in_full`) and
+  `forest credentials fix` masks it after archiving the page. **What is kept:** the raw lane `06 istm`
+  and the archive keep the bytes they were given, so protect them like the forest. A code with no label
+  word and no such shape, in a quoted turn, waits for a reader's judgement (`forest credentials
+  candidates | judge`); once judged a sign-in value it is masked wherever it appears, through a ledger
+  that keeps only keyed digests (`.forest/credentials/`, the key readable by its owner only; protect it
+  like the forest). **What the rule cannot see:** a bare code nobody has judged yet and that has none of
+  those shapes, a label word your settings do not list, a value written without a digit and without a
+  colon ("the password is tulip"), a value split across lines (except a private-key block, which is one
+  pattern), and a value inside an image.
 - **"Do not record."** When the owner says something is not to be remembered, the instruction is kept and the
   content is not; lines already filed are taken out, with the earlier version archived (contract,
   section 4).

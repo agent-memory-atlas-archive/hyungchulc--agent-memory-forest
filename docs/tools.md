@@ -422,10 +422,14 @@ either, the command stops and says how to set it. `include` and `exclude` are fo
 and later runs take only turns that arrived after that. `--dry-run` prints a count per transcript and
 writes nothing.
 
-A hook runs the same command with `--hook` and the tool's JSON on stdin. The command reads from its cursor,
-so a hook that did not fire loses nothing. If the intake lock is already held, the command stops at once,
-leaves the cursor and exits 0, so the hook does not hold up the agent. A line the adapter does not
-understand is skipped and counted. `forest intake status` shows the count.
+A hook runs the same command with `--hook` and the tool's JSON on stdin, and reads only that transcript.
+A missed hook on the same transcript is caught by its next hook. Other transcripts are caught by a sweep.
+In hook mode the process exits 0 and prints nothing, because a client can treat exit 2 as a block and
+can add stdout to the model's context. A failure is one line under `.forest/intake/` (its class and its
+place). If the intake lock is already held, the command stops at once and leaves the cursor. A line the
+adapter does not understand is skipped and counted by its type. `forest intake status` shows that count,
+the tool version where the transcript states it, sources whose file is ahead of their cursor, and the
+last few hook failures. A cursor file that is not valid is renamed aside and the source is read again.
 
 ```sh
 # Turn intake on for the till bot's exported records, and take what is already there.

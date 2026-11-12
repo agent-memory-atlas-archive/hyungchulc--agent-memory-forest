@@ -325,6 +325,8 @@ the filing run (reads the blocks it has not filed, at most a bounded amount per 
 → the forest. A nightly upkeep run applies levels, works the lint's upkeep list down, trims records and
 re-checks stale current-state lines. The stages are plain programs around a model of your choice; the
 package supplies their input and commit steps, their cursors and receipts, and the prompts as files.
+`stage.prepare` is the place a stage starts a model: it records the session id and marks the prompt and
+the environment so intake does not take that session in. The rest of the stage programs are milestone 3.
 
 ## 12. Settings (`forest.toml`)
 
@@ -454,13 +456,15 @@ that agent's own job.
 ### 15.1 Intake: how a conversation reaches the raw lane
 
 - **The record.** One line per turn in `06 istm/<agent>/<YYYY-MM-DD>.jsonl`: `id` (stable for the turn:
-  the agent, the session and the turn's own id, or a hash of its place and text where the tool gives none),
-  `at` (with its offset), `session`, `role` (`owner`, `agent`, `tool`, or `other:<name>`), `text`, `origin`
-  (`interactive`, `headless` or `subagent`), `source` (the adapter, the transcript and the place in it) and,
-  for a tool turn, the tool's `name`. Where the tool marks a span the owner pasted, attached or quoted,
-  `text` stays whole and `parts` names the span and its kind. A turn is the owner speaking only when its
-  role is `owner` and its origin is `interactive`. A sub-agent's work is a tool turn of the agent that
-  started it.
+  the agent, the session and the turn's own id where the transcript has them, or a hash of the turn's
+  content and time where it has none), `at` (with its offset), `session`, `role` (`owner`, `agent`,
+  `tool`, `system`, or `other:<name>`), `text`, `origin` (`interactive`, `headless`, `subagent` or
+  `unknown`), `source` (the adapter, the transcript relative to the tool's own root, and the place in
+  it) and, for a tool turn, the tool's `name`. Where the tool marks a span the owner pasted, attached or
+  quoted, or a span the client inserted, `text` stays whole and `parts` names the span and its kind
+  (`paste`, `file`, `quote` or `harness`). A turn is the owner speaking only when its role is `owner`
+  and its origin is `interactive`. `unknown` is treated like `headless`. A sub-agent's work is a tool
+  turn of the agent that started it, one id per message. A parent session id alone does not make one.
 - **One writer.** `forest intake` is the only program that appends to a lane. It takes turns from an
   adapter, skips a turn whose `id` the lane already holds, and masks numbers and sign-in values at the door
   by the contract's rules for them. A tool turn records that the tool ran, not what it printed, unless
@@ -470,16 +474,23 @@ that agent's own job.
   for and a generic one, `jsonl`, that reads a folder of files already in the record's shape, for any tool
   that can export or write them. An adapter is a small module behind the entry point group
   `memory_forest.adapters`, so one more tool is one more module and no change to the core.
-- **A hook signals, a cursor reads.** Where a tool has hooks (the end of a turn, the end of a session,
-  before its context is compacted), the hook runs `forest intake --from <tool>`. The command reads from its
-  cursor to the end of the transcript, so a hook that did not fire loses nothing: the next hook, the next
-  session start and the nightly run each catch up. No hook is ever the only path.
+- **A hook signals, a sweep catches up.** Where a tool has hooks (the end of a turn, the end of a
+  session, before its context is compacted), the hook runs `forest intake --from <tool> --hook`. The hook
+  reads only the transcript it was called for, from its cursor to the end of that file. A missed hook on
+  that same transcript is caught by the next hook of it. Other transcripts are caught by a sweep,
+  `forest intake --from <tool>`, not by a different session's hook. No hook is ever the only path. In
+  hook mode the process exits 0 and prints nothing: clients treat a hook's exit 2 as a block and may
+  show its stderr to the model, and may add its stdout to the model's context. A failure is one line in
+  `.forest/intake/`, class and place only, and `forest intake status` shows the count and the last few.
 - **Consent.** Which conversations are taken in is the owner's choice, asked at setup and never defaulted.
   Per tool, `[intake.tools.<adapter>]` holds `include` and `exclude` (folders the session ran in) and
   `import_earlier` (false until the owner says otherwise: the first run places cursors at the end of what
-  already exists). Automatic intake stays off until `enabled` is true. `forest intake --from <adapter>`
-  then says so and takes nothing, unless `--once` is given. A session a forest stage started, carrying
-  `MEMORY_FOREST_INTERNAL`, is not taken in. A hosted assistant has no transcript to read. Its
+  already exists). While a source is excluded, its cursor follows the file's end and nothing from it is
+  written; lifting the exclude does not import that past. Automatic intake stays off until `enabled` is
+  true. `forest intake --from <adapter>` then says so and takes nothing, unless `--once` is given. A
+  session a forest stage started is not taken in. The stage records the session id, opens the prompt
+  with the line `MEMORY_FOREST_INTERNAL`, and sets that name in the environment of the model process.
+  A hook still reads the environment. A hosted assistant has no transcript to read. Its
   `memory_log` path belongs to the MCP server, not to intake.
 - **An agent with no transcript and no hooks** has three ways in, strongest last: the MCP tool `memory_log`,
   with which it appends its own turn (it depends on the agent calling it, and the setup says so); an export

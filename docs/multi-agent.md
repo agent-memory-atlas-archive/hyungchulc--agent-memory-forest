@@ -168,14 +168,42 @@ tool in milestone 1.
 
 The raw lane is not edited by the agent. `forest intake` is the only writer. Each tool has an adapter,
 which knows where that tool keeps transcripts and how a turn is shaped. A hook runs
-`forest intake --from <tool>`. The command reads from its cursor to the end of the transcript, so a hook
-that did not fire loses nothing: the next hook and the next sweep catch up.
+`forest intake --from <tool> --hook` and reads only the transcript it was called for. A missed hook on
+that same transcript is caught by the next hook of it. Any other transcript is caught by a sweep,
+`forest intake --from <tool>`. `forest intake status` names a source whose file is ahead of its cursor.
+
+A hook exits 0 and prints nothing. What the clients on this machine do with a hook's exit code and
+output, from their own help text and Grok's user guide (Hooks, Exit Codes):
+
+- Claude Code. Before a tool runs, exit 0 shows nothing, exit 2 shows stderr to the model and blocks
+  the tool call, and any other exit shows stderr to the user and continues. After a tool runs, exit 0
+  leaves stdout for transcript mode, exit 2 shows stderr to the model immediately, and any other exit
+  shows stderr to the user only. JSON on stdout may carry `additionalContext`, which is injected into
+  the model's context.
+- Codex. Exit 2 on submitting a prompt or before a tool is a block, and the reason is stderr. Exit 2
+  after a tool is feedback to the model. Exit 2 on stop is a continuation prompt taken from stderr.
+  Some events can emit `additionalContext` into the model's context.
+- Grok. Exit 0 allows. Exit 2 denies a tool, blocks a stop, or feeds stderr to the model after a tool;
+  the guide tells a logging hook to exit 0 so a checker's exit 2 is not handed to the model. Any other
+  exit is recorded and does not block. Stdout JSON can add `additionalContext`, which is delivered to
+  the model inside a reminder tag. A hook that allowed leaves no trace, and its stdout is not shown.
 
 Which conversations are taken in is set per tool, and intake stays off until that tool is enabled. The
-folders a session ran in can be included or excluded, and turns from before the adapter was first enabled
-are left where they are unless earlier import is turned on. A session another program started is
-`headless`, and a sub-agent's work is a tool turn of the agent that started it, so a later stage does not
-read either as the owner speaking. The record and the writer's rules are in the contract, section 1.
+folders a session ran in can be included or excluded. While a source is excluded its cursor follows the
+file's end and nothing is written; lifting the exclude does not import that past. Turns from before the
+adapter was first enabled are left where they are unless earlier import is turned on. Only a value the
+adapter knows to be the owner's own client is `interactive`. An unrecognised value is `unknown`, kept
+raw in `source`, and a later stage treats it like `headless`. A session another program started is
+`headless`. A parent session id alone does not make a session a sub-agent's. A sub-agent's work is a
+tool turn of the agent that started it, so a later stage does not read it as the owner speaking.
+
+What a transcript marks, and what it does not. Claude Code marks a side chain, an `isMeta` line, a
+`system-reminder` block, and a summary or compaction line; those are `system` or a `harness` span.
+A reminder with none of those marks cannot be told from the owner. Codex marks provenance
+(`user` against `harness`, `developer_instructions`, `agents_md`) and a developer message; a user item
+with no provenance is taken as the owner. Grok's update lines carry no per-span provenance. A
+`system-reminder` tag inside a user chunk is a harness span; an untagged reminder cannot be separated.
+The record and the writer's rules are in the contract, section 1.
 
 Two rules hold for whoever files with a model. A line the model writes to state what quoted turns say is
 filed only after a second reading of the same turns has kept, corrected or dropped it: code can check that

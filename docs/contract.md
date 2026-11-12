@@ -23,23 +23,43 @@ number, the setting that holds it is given with its default.
     from. It is where provenance lives, not where meaning is decided. What a tool printed stays here only
     when the forest keeps it, and is never copied upward.
     One turn is one JSON line in `06 istm/<agent>/<YYYY-MM-DD>.jsonl`. The day is the forest's time zone.
-    The line has `id` (the agent, the session and the turn's own id, or a hash of its place and text),
-    `at` (with its offset), `session`, `role` (`owner`, `agent`, `tool`, or `other:<name>`), `text`,
-    `origin` (`interactive`, `headless` or `subagent`) and `source` (the adapter, the transcript and the
-    place in it). A tool turn also has `name`. Where the tool marks a span the owner pasted, attached or
-    quoted, `text` stays whole and `parts` names each span and its kind (`paste`, `file` or `quote`).
-    That span is evidence, not the owner's own words. A turn is the owner speaking only when its role is
-    `owner` and its origin is `interactive`. `headless` is a run another program started. A sub-agent's
-    work is a tool turn of the agent that started it, with origin `subagent`.
+    The line has `id` (the agent, the session and the turn's own id where the transcript has them, or
+    a hash of the turn's content and time where it has none), `at` (with its offset), `session`, `role`
+    (`owner`, `agent`, `tool`, `system`, or `other:<name>`), `text`, `origin` (`interactive`, `headless`,
+    `subagent` or `unknown`) and `source` (the adapter, the transcript and the place in it). The transcript
+    in `source` is relative to that tool's own transcript root. A tool turn also has `name`. Where the tool
+    marks a span the owner pasted, attached or quoted, or a span the client wrote into the owner's side,
+    `text` stays whole and `parts` names each span and its kind (`paste`, `file`, `quote` or `harness`).
+    That span is evidence, not the owner's own words. A line the client wrote and the owner did not
+    (`system`, or a turn that is only harness) is not the owner speaking. A turn is the owner speaking
+    only when its role is `owner` and its origin is `interactive`. `unknown` is decided like `headless`:
+    neither is the owner. The raw value of the field that said who started the session is kept in
+    `source`, so a later version can relabel it. A parent session id alone does not make a session a
+    sub-agent's. A sub-agent's work is a tool turn of the agent that started it, with origin `subagent`,
+    and each of its messages keeps its own id.
     `forest intake` is the only writer of a lane. It appends a line, flushes it and syncs it, and only
-    then moves its cursor, so a crash can repeat work and cannot lose a turn. It does not write a turn
-    whose `id` the lane already holds. An index under `.forest/intake/` remembers those ids and is rebuilt
-    from the lane files. The lane is the truth. The cursors beside that index are the writer's place in
-    each transcript and are not rebuilt from the lane. Numbers and sign-in values are masked, by section 4,
-    before the line is written. A tool turn records that the tool ran, not what it printed, unless
-    `intake.tool_output` is `keep`. A session a forest stage started, carrying `MEMORY_FOREST_INTERNAL`,
-    is not taken in. The writer holds a short lock. A second intake that cannot take the lock within a
-    moment stops without moving a cursor, so a hook never holds up the agent that fired it.
+    then moves its cursor, so a crash can repeat work and cannot lose a turn. Before an append, a lane
+    file that does not end in a newline is cut back to its last newline, and the write is repeated until
+    every byte is stored. It does not write a turn whose `id` the lane already holds. The ids are one
+    append-only file per lane file under `.forest/intake/`, rebuilt from that lane file when missing.
+    The lane is the truth. The cursors beside those files are the writer's place in each transcript,
+    keyed by the agent, the adapter and the source, and are not rebuilt from the lane. A cursor holds
+    the file's device and inode, the size it saw, and a hash of the bytes just before its offset. When
+    those no longer match, the source is read again from the start and the ids keep what was already
+    taken. A text that cannot be encoded is stored with the unencodable part replaced, and the line is
+    marked `repaired`. One transcript's failure does not stop the others. A line that cannot be taken
+    at all is skipped, its place and error class are recorded, and the cursor moves past it.
+    Numbers and sign-in values are masked, by section 4, before the line is written, in every string of
+    the line. A tool turn records that the tool ran, not what it printed, unless `intake.tool_output` is
+    `keep`. While a source is excluded, its cursor follows the file's end and nothing is written; that
+    past is not taken by lifting the exclude. A session a forest stage started is not taken in: the
+    stage records the session id under `.forest/intake/`, the prompt opens with the line
+    `MEMORY_FOREST_INTERNAL`, and a hook still sees that name in its environment. The writer holds a
+    short lock. A second intake that cannot take the lock within a moment stops without moving a cursor.
+    In hook mode every failure is caught, the exit code is 0, nothing is written to standard output or
+    standard error, and the failure is one line under `.forest/intake/` (its class and its place).
+    `forest intake status` shows the count and the last few. A cursor file that is not valid is renamed
+    aside and the source is read again; it is not a permanent failure.
   - `05 daily` is the readable record of each day: one page per local date. It keeps what the owner, the
     agents and other people wrote close to the original, and turns work, tool use and results into short
     causal episodes per request or run, keeping every failure and every change and closing routine
@@ -724,11 +744,15 @@ When the owner says that something is not to be remembered:
    card's security code, a door or gate code) is never written on a page, not even starred. The page keeps
    that a value was sent, who sent it, to whom and for which account, and `[REDACTED]` in the value's place:
    `- 2042-05-13 16:40 America/Halifax — Idris Mallow: gave Juno the yard gate code [REDACTED].`
-2. A value is recognised by the word before it, one of `credentials.label_words` (English words by default;
-   a forest adds the words of its other languages there). After a colon or an equals sign any value that
-   holds a letter or a digit counts (`PIN: -` says there is none); without one, a run of 3 to 64
-   characters that holds a digit and is no date, time, path or mail address, and that no word of
-   `credentials.count_words` follows ("a password of 12 characters" is a rule, not a value).
+2. A value is recognised by the word before it, one of `credentials.label_words` (English words by default,
+   including token, API key, secret, bearer and authorization; a forest adds the words of its other
+   languages there). After a colon or an equals sign any value that holds a letter or a digit counts
+   (`PIN: -` says there is none); without one, a run of 3 to 64 characters that holds a digit and is no
+   date, time, path or mail address, and that no word of `credentials.count_words` follows ("a password
+   of 12 characters" is a rule, not a value). A value is also recognised by its shape, in any string that
+   is written: the published key prefixes of large providers, an `Authorization` header of bearer or
+   basic, a private-key block, and a long mixed token beside a word that names access. A git hash, a
+   UUID and the head of a base64 image are not those shapes and are left as written.
 3. Every record line a tool writes is masked this way (section 4, What a record line is), the writer of the
    daily record and the version 0.3 writer mask the text a model hands them, and everything a tool prints
    is masked and its numbers starred: a page, an archive copy, record lines read back from a history file,
