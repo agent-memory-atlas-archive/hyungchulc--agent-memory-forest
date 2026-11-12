@@ -14,28 +14,35 @@ the version 1 commands replace it.
 ### Added
 
 - `forest index build | status` writes `.forest/index.sqlite`, one row per page section, collection
-  entry, daily block and raw-lane turn. The build holds the `index` lock and publishes by replacing the
-  file, so a reader never waits. A file is skipped when its size and time are unchanged, and hashed when
-  either changed. FTS5 uses the trigram tokenizer where this SQLite has it, beside unicode61 for spaced
-  words; without trigram, only unicode61 is built and `index status` says so. Deleting the file and
-  building again makes the same index
+  entry, daily block and raw-lane turn. The stored text is what a read prints. The build holds the
+  `index` lock and publishes by replacing the file, so a reader never waits. A file is skipped when its
+  size and time are unchanged, and hashed when either changed, when `build --verify` is given, or when
+  the stored hash is more than a day old. A CJK word of one or two characters is found inside a longer
+  word. A page that is not valid UTF-8 is read with replacement characters and named in the status.
+  FTS5 uses the trigram tokenizer where this SQLite has it, beside unicode61 for spaced words. Deleting
+  the file and building again makes the same index. A search brings changed lane and daily files up to
+  date first
 - `forest search` matches registry names and aliases first, then words, then vectors only when
   `[embeddings] provider` is not `none` and a provider is registered in the process. No provider ships
   with the package, and the package makes no network call. One result per page, the section as written,
   with why it matched. `forest read` prints a page or `#address` with the same masking as every other read
 - `forest timeline query` reads phrases from a language table. English is built in. Korean ships as
-  `memory_forest/phrases/ko.json`. A day-part phrase is judged in each entry's own time zone. A duration
-  is a window of instants. A raw-lane turn is found before any filing. `forest timeline subject` lists
-  one subject's indexed sections
+  `memory_forest/phrases/ko.json`. A forest adds a table under `.forest/phrases/`. A day-part phrase is
+  judged in each entry's own time zone, and a line with no zone uses the page's. A duration is a window
+  of instants. A raw-lane turn is found before any filing. `forest timeline subject` lists one subject's
+  indexed sections in time order
 - reader scope on search, read, timeline and MCP: results come from `agents.readable_trees`. An agent
   reads its own raw lane. An orchestrator reads every lane. The daily record is shared. Each answer names
   the trees that answered. `--named` is not an MCP argument
 - `forest mcp --as <agent> [--http HOST:PORT]` serves `memory_search`, `memory_read`, `memory_timeline`,
-  `memory_navigate` and `memory_log` over stdio and streamable HTTP, for protocol versions 2024-11-05,
-  2025-03-26, 2025-06-18 and 2025-11-25. The server's instructions stay under 2,048 characters.
-  `memory_log` appends through the intake writer; the server sets the role and the origin. `--http PORT`
-  binds to loopback. Any other host needs `.forest/mcp/token` in mode 0600, and the token is never
-  printed. The first tool call of each agent is recorded in `.forest/mcp/seen.json`
+  `memory_navigate` and `memory_log` over newline-delimited stdio and streamable HTTP, for protocol
+  versions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25. A JSON-RPC batch is accepted for 2025-03-26
+  only. The server's instructions stay under 2,048 characters. `memory_log` appends through the intake
+  writer and reports whether that line was indexed; the server sets the role and the origin. Every HTTP
+  bind, loopback included, uses `.forest/mcp/token` in mode 0600. The first start creates it and the
+  token is never printed. A non-loopback `Origin`, a non-loopback `Host` on a loopback bind, and a body
+  that is not JSON are refused. One bad request does not stop the server. The first tool call of each
+  agent is recorded in `.forest/mcp/seen.json`
 - `forest intake` writes one turn per line to an agent's raw lane (`06 istm/<agent>/<YYYY-MM-DD>.jsonl`),
   from the adapters `claude-code`, `codex`, `grok` and `jsonl`. A second run adds nothing. The cursor
   moves only after the line is synced. A hook that cannot take the short lock exits 0 and leaves its

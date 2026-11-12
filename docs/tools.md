@@ -456,15 +456,19 @@ sections.
 
 `forest index build` writes `.forest/index.sqlite`. The file is derived: delete it and build again and
 the same rows come back. One row is one page section, one collection entry, one marked block of a daily
-page, or one raw-lane turn. The build holds the `index` lock and publishes the file by replacing it, so
+page, or one raw-lane turn. The text in the row is the text a read would print, with sign-in values
+masked and numbers starred. The build holds the `index` lock and publishes the file by replacing it, so
 a search that is already running does not wait. A second build that finds the lock held says so and
-returns. A file whose size and time are unchanged is skipped; if either changed, the file is hashed and
-rewritten only when the bytes changed.
+returns. A file whose size and time are unchanged is skipped. `forest index build --verify`, and a build
+whose stored hash is more than a day old, hashes those files too and rewrites a file only when the bytes
+changed. A page that is not valid UTF-8 is read with replacement characters, named in the status, and
+does not stop the build.
 
-`forest index status` prints the tokenizer, the counts and how many files have changed since the build.
-Where this machine's SQLite has the trigram tokenizer, the line says `trigram+unicode61`: a run of three
-or more characters is found inside unspaced text, and spaced words of any length are found too. Where it
-does not, the line says `unicode61`, and unspaced text is one token.
+`forest index status` prints the tokenizer, the counts, how many files have changed since the build, and
+any page that was not valid UTF-8. Where this machine's SQLite has the trigram tokenizer, the line says
+`trigram+unicode61`: a run of three or more characters is found inside unspaced text, and spaced words of
+any length are found too. A CJK word of one or two characters is found inside a longer word either way.
+Where trigram is absent, the line says `unicode61`.
 
 ```sh
 forest index build
@@ -476,6 +480,10 @@ forest index status
 ```
 
 ## `forest search` and `forest read`
+
+A search brings changed lane files and daily pages into the index first. When a build already holds the
+lock, the JSON answer includes `stale` and the count of those files, and the search reads the index that
+is already published.
 
 `forest search` tries registry names and aliases first. A subject named in the question brings its home
 and every leaf that names it in `about:`. Word matches come after that. A vector match is added only
@@ -506,9 +514,11 @@ The answer ends with the trees that produced a result.
 
 `forest timeline query` takes a phrase or a range. English phrases are built in (`yesterday evening`,
 `the last 3 hours`, `yesterday`, a bare date). Korean phrases ship as an example table,
-`memory_forest/phrases/ko.json` (`어제 저녁`, `지난 3시간`). A day-part phrase is judged in each
-entry's own time zone. A duration, and a range written `2051-03-01..2051-03-02`, is one window of
-instants. Hours that are still only in a raw lane are included.
+`memory_forest/phrases/ko.json` (`어제 저녁`, `지난 3시간`). A forest adds or replaces a language with
+JSON files in `.forest/phrases/`. A day-part phrase is judged in each entry's own time zone, and a line
+with no zone of its own uses the page's `timezone:`. A duration, and a range written
+`2051-03-01..2051-03-02`, is one window of instants. Hours that are still only in a raw lane are included,
+including a lane written since the last manual build.
 
 `forest timeline subject <id>` lists the indexed sections of that subject, in time order, inside the
 same scope.
@@ -530,14 +540,23 @@ set it, and cannot set the role or origin of `memory_log`.
 own turn through the intake writer. The server sets the role to `agent` and the origin from the
 connection: `interactive` on stdio, `headless` on HTTP.
 
-`--http 8765` binds to loopback. `--http HOST:PORT` on any other address needs `.forest/mcp/token` in
-mode 0600. The client sends that token as a bearer token. The token is never printed. Reaching the port
-from outside the machine is the owner's own network decision; the server does not open that path itself.
+Stdio is one JSON-RPC message per line. Nothing but those messages is written to stdout.
+
+`--http 8765` binds to loopback. Every HTTP bind, loopback included, uses `.forest/mcp/token` in mode
+0600. The first start creates the file and never prints it. The client sends that token as a bearer
+token. A request with an `Origin` that is not loopback is refused, and on a loopback bind so is a `Host`
+that is not a loopback name with this server's port. The body must be `application/json`. Reaching a
+non-loopback port from outside the machine is the owner's own network decision; the server does not open
+that path itself.
+
+`memory_log` reports `indexed: true` or `indexed: false`. False means the line is in the lane and the
+index lock was busy.
 
 The clients checked here, `claude mcp`, `codex mcp` and `grok mcp`, speak protocol versions
 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also
 offer the older SSE transport. This server does not. It answers with the newest of those versions that
-the client names.
+the client names. A JSON-RPC batch is accepted for 2025-03-26 and refused for the other three. The HTTP
+`MCP-Protocol-Version` response header is the version negotiated with that client.
 
 The first tool call of each agent is recorded in `.forest/mcp/seen.json`, with the agent, the time, the
 tool and the transport. The question is not stored. `forest doctor` can later use that file to prove

@@ -188,8 +188,10 @@ every upkeep hit its own pages added, and it is never blocked by what was alread
 evening" matches each entry's own local date and "the last three hours" is a window of instants.
 `forest timeline query "<when>"` and `forest timeline subject <id>` read that index. A relative phrase
 comes from a language table (English is built in; `memory_forest/phrases/ko.json` is a second table
-shipped as an example), not from a sentence written into the matcher. A raw-lane turn is included whether
-or not a daily block or a leaf has filed it yet.
+shipped as an example), not from a sentence written into the matcher. A forest adds or replaces a
+language with a JSON file in `.forest/phrases/`; the package tables stay the default. A raw-lane turn
+is included whether or not a daily block or a leaf has filed it yet. A line that carries no zone of
+its own is read in the page's `timezone:`.
 
 ## 10. Retrieval
 
@@ -199,21 +201,28 @@ hour that has not been filed can be found, and deleting the file and building ag
 
 `forest index build` holds the `index` lock and publishes by replacing the file, so a reader opens
 whatever is already published and never waits. A second build that finds the lock held returns at once.
-A file whose size and time are unchanged is left; when either has changed, the file is hashed and
-rewritten only when the hash has changed. `forest index status` reports the tokenizer, the counts and
-which files have changed since the build.
+A file whose size and time are unchanged is left, unless the build is `forest index build --verify` or
+the stored hash is more than a day old: then the file is hashed, and rewritten only when the hash has
+changed. That catches a restore that kept the size and the time. `forest index status` reports the
+tokenizer, the counts, which files have changed, and any page that was not valid UTF-8. Such a page is
+read with replacement characters and the rest of the build is published. A raw-lane line that is not
+JSON is named the same way; the lines that are JSON are indexed.
 
 One row is one page section (a leaf, a board, a tree page or the root index, including the lines before
 the first heading), one collection entry (`<page>#<entry id>`), one marked block of a daily page
 (`<!-- block: <agent> <time> -->`), or one raw-lane turn. The row keeps the path and address, the layer,
 the tree, the subjects it is about, the times and the text.
 
-SQLite FTS5 indexes the text. Where the linked SQLite has the trigram tokenizer, a run of three or more
-characters is findable inside unspaced text, which is what makes Japanese and Chinese findable, and a
-unicode61 index beside it finds spaced words of any length, which is how Korean is usually written. A
-word of one or two characters is found only when unicode61 split it out as its own word. Where trigram is
-absent, only unicode61 is built, and unspaced text in those scripts is one token: a query has to name
-that whole token. `forest index status` says which tokenizer was built.
+SQLite FTS5 indexes the text a read would print: sign-in values masked, numbers starred. A search cannot
+confirm a guess at a value the read would hide. Where the linked SQLite has the trigram tokenizer, a run
+of three or more characters is findable inside unspaced text, and a unicode61 index beside it finds
+spaced words of any length, which is how Korean is usually written. A CJK word of one or two characters
+is stored as grams, so it is found inside a longer word whether or not a space was written, and whether
+or not trigram is available. `forest index status` says which tokenizer was built.
+
+A search, a timeline query and a subject listing bring changed lane files and daily pages into the index
+first, by size and time. When another build holds the lock, the answer says `stale:` and how many of
+those files were left, and it reads the index that is already published.
 
 `forest search "<words>" [--as <reader>] [--limit N] [--json]` matches registry names and aliases first.
 A subject named in the question brings its home and the leaves that name it in `about:`. Word matches
@@ -245,14 +254,23 @@ turn through the intake writer; the server sets the role to `agent` and the orig
 (`interactive` on stdio, `headless` on HTTP). A caller-supplied role or origin is refused. The server's
 instructions are under 2,048 characters.
 
+`memory_log` answers `indexed: true` when the new line is in the index and `indexed: false` when the
+index lock was busy. The line is in the lane either way. The update writes into the published index; it
+does not copy the database.
+
 The clients checked here (`claude mcp`, `codex mcp`, `grok mcp`) speak protocol versions 2024-11-05,
 2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also offer the
-older SSE transport; this server does not. The server answers with the newest of those versions that
-the client names. `--http PORT` binds to loopback. Any other host needs `.forest/mcp/token` in mode
-0600, sent as a bearer token, and the token is never printed. Reaching that port from outside the
-machine is the owner's own network decision. The first tool call of each agent is recorded in
-`.forest/mcp/seen.json` (the agent, the time, the tool and the transport, not the question) so
-`forest doctor` can later prove use.
+older SSE transport; this server does not. Stdio is one JSON-RPC message per line. A batch is accepted
+for 2025-03-26, the revision that added batches, and refused for the others. The server answers with
+the newest of those versions that the client names. `--http PORT` binds to loopback. Every bind,
+loopback included, uses `.forest/mcp/token` in mode 0600. The first start creates the file and never
+prints it. The client sends it as a bearer token. A request whose `Origin` is present and is not a
+loopback origin is refused. On a loopback bind, a `Host` that is not a loopback name with this server's
+port is refused; the name is not resolved. A bind the owner set to another address also accepts that
+address with the same port, and a bind on every interface accepts the host the client used, because
+that port was opened on purpose. The token is still required. The body must be `application/json`.
+Reaching a non-loopback port from outside the machine is the owner's own network decision. The first tool call of each agent is recorded in `.forest/mcp/seen.json` (the
+agent, the time, the tool and the transport, not the question) so `forest doctor` can later prove use.
 
 ## 11. The pipeline
 

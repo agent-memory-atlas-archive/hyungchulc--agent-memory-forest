@@ -24,9 +24,13 @@ provider's account, retention and regional rules, so review those before connect
 Every reader of a forest has an id, taken from its connection and never from the text of its question. An
 orchestrator reads the whole forest and every raw lane; any other agent reads the shared trees, its own
 tree and its own raw lane, and another agent's tree only when the forest's settings or its task allow it.
-The daily record is shared. `forest search`, `forest read`, `forest timeline` and `forest mcp` apply that
-rule, and each answer names the trees that answered. See [the contract](contract.md), section 3, "Agent
-trees", and [Agents](multi-agent.md).
+The daily record is shared, by the design of the forest: the root index and `05 daily/` are the map every
+reader can open, while a raw lane stays with its own agent and with orchestrators. A marked block on a
+daily page is written from an agent's lane. Once it is there, every reader can read that block. What it
+reveals is the filed text, the agent id in the block mark, and the time. It does not open the lane file,
+and it does not show a turn that has not been filed onto the daily page. `forest search`, `forest read`,
+`forest timeline` and `forest mcp` apply that rule, and each answer names the trees that answered. See
+[the contract](contract.md), section 3, "Agent trees", and [Agents](multi-agent.md).
 
 ## What the forest keeps out
 

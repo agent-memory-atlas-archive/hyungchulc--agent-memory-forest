@@ -141,6 +141,9 @@ never from the text of the question, so an agent cannot widen its view by asking
   `agents.default_scope` is `all`, or when its task names that agent ("Ledger Bot, check what Post Bot
   charged for shipping"). The default is `own+shared`.
 - A reader that is no agent of the forest reads the shared trees only.
+- The daily record is shared with every reader. A block on it comes from an agent's raw lane, and once
+  filed it shows that agent, the time and the text. The lane file stays with that agent and with
+  orchestrators.
 - Each tool call records which trees answered it, so a wrong answer can be traced to the page that gave it.
 
 The rule is one function, `memory_forest.agents.readable_trees(config, registry, reader_id)` (with
