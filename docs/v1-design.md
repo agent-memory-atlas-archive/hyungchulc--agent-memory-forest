@@ -208,20 +208,31 @@ changed. That catches a restore that kept the size and the time.
 an update after an append and a `memory_log` each change it inside one transaction. A reader reads the
 last committed snapshot and never waits for a writer; a connection opened before a build keeps its
 snapshot and sees the new one after the commit. A build that must index everything again (a new schema,
-tokenizer or masking) empties the tables and fills them inside that same transaction. Nothing replaces,
-renames or unlinks the database or its `-wal` and `-shm` files: SQLite's notes on how to corrupt a
-database (sections 1.3 and 2.5) warn that a process holding the old file can then share a journal with a
-new one. A build, an update and a `memory_log` do not unlink those files. A file SQLite cannot read is
-refused (`index_unreadable`) rather than replaced. The refusal's next move is `run` with the command
-`forest index reset`: under the index lock that command removes the database and its `-wal` and `-shm`
-files and nothing else, and the next query or `forest index build` makes the index again. Publishing a
+tokenizer or masking) empties the tables and fills them inside that same transaction. A build, an update
+and a `memory_log` never replace, rename or unlink the database or its `-wal` and `-shm` files: SQLite's
+notes on how to corrupt a database (sections 1.3 and 2.5) warn that a process holding the old file can
+then share a journal with a new one. A file that is still empty because the first build has not committed
+is no index yet, for a reader as before any build.
+
+**What SQLite refuses.** One function turns a SQLite error into a refusal, by its result code. Only a file
+that is corrupt or is not a database is `index_unreadable`, and it is refused rather than replaced: its
+next move is `run` with the command `forest index reset`. That command removes the database and its
+`-wal` and `-shm` files and nothing else, after checking all three, so it removes all of them or none. It
+holds the index lock while it does, which keeps builds and updates out; readers take no lock, so the lock
+does not protect a process that has the file open. It is meant for an unreadable file while no forest
+server is running. A held lock is the refusal `index_busy` with a non-zero exit. The next query or
+`forest index build` makes the index again. A busy or locked file is the busy path below. A read-only
+file or folder, a full disk, an I/O error and a path that cannot be opened have codes of their own
+(`index_read_only`, `index_disk_full`, `index_io_error`, `index_cannot_open`) whose next move is
+`report`: no command helps, and resetting a working index on a full disk would only lose it. Publishing a
 fresh copy by an atomic rename was the other model; it was not chosen because it copies the whole
 database for every appended line.
 
 **Appends.** A raw lane only grows. For each lane file the index keeps `indexed_bytes`, the end of its
 last complete line, and the hash of the bytes before it. When the file has only grown, those bytes are
-read and hashed again, in 1 MiB pieces, to prove they are unchanged. Measured on a development machine,
-that read from disk runs at about 1.3 GiB/s (8 MiB in 6.3 ms). Only the new complete lines are parsed
+read and hashed again, in 1 MiB pieces, to prove they are unchanged. Measured on a development machine
+with the file in the page cache (read just after it was written), 8 MiB took about 4 ms: that is the cost
+of the hash. A read from disk adds the disk's own time, which was not measured. Only the new complete lines are parsed
 and inserted; anything else indexes the file again whole. A last line with no newline yet is not indexed;
 the next update takes it when it is complete. The masking settings and the ledger are loaded once per
 build or update, not once per row.
@@ -243,9 +254,9 @@ masking rule in the code. So the index keeps one fingerprint of everything that 
 `[credentials]` and `[numbers]` settings, the set of judged sign-in digests, and the masking code's
 `MASKING_VERSION`). When the forest's fingerprint differs from the stored one, or the stored one cannot
 be read, at a build, at an update or at a query, every file is indexed again before anything is answered.
-A query that cannot rebuild waits for the other build, and refuses (`index_busy`) rather than answer from
-text masked under the old rules. When the fingerprint is the same, a busy open answers from the rows
-already on file and says `stale`. The fingerprint check and the answer are two snapshots: a masking
+A query that cannot rebuild waits for the other build's lock, and tries a busy file again every tenth of
+a second, until its budget (60 seconds) is spent; then it refuses (`index_busy`, next move `retry`) rather than answer from text masked under the old rules.
+When the fingerprint is the same, a busy open answers from the rows already on file and says `stale`. The fingerprint check and the answer are two snapshots: a masking
 change that lands in the milliseconds between them is answered under the old rules, the same as a query
 that arrived a moment earlier. `forest index status` says `masking: current` or `changed`.
 
@@ -518,7 +529,9 @@ that agent's own job.
 
 - The owner says one sentence to their agent. The agent runs `forest setup`, which is written to be driven
   by an agent: every output is one JSON object whose `next` is `ask_owner` (the question, the choices, and
-  why only the owner can answer), `run` (a command), `report` (what to tell the owner) or `done`. The agent
+  why only the owner can answer), `run` (a command), `retry` (the same call again after `after_seconds`),
+  `report` (what to tell the owner) or `done`. A refusal of any command or tool has the same form:
+  `code`, `message`, `details` and, when there is one, `next` with its `command` or `after_seconds`. The agent
   asks, runs the command again with `--answer key=value`, and is finished when `forest doctor` passes. An
   agent that never read a guide, or lost its place, still ends in the right state by following the output.
 - **Asked** (only what the owner alone can decide): where the forest lives, or which forest to join; this

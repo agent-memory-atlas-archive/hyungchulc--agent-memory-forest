@@ -463,10 +463,12 @@ the same rows come back. One row is one page section, one collection entry, one 
 page, or one raw-lane turn. The text in the row is the text a read would print, with sign-in values
 masked and numbers starred. The build holds the `index` lock and writes the file in place, in one
 transaction in WAL mode, so a search that is already running keeps reading the last committed index and
-does not wait. Nothing replaces or unlinks the file or its journal files. A second build that finds the
+does not wait. A build or an update never replaces or unlinks the file or its journal files; only
+`forest index reset`, below, removes them. A second build that finds the
 lock held says so and returns. A file whose size and time are unchanged is skipped. A raw lane that only
 grew has the bytes already indexed read and hashed, in 1 MiB pieces, to prove they are unchanged
-(about 1.3 GiB/s from disk on a development machine, 8 MiB in 6.3 ms). Only the new complete lines are
+(8 MiB in about 4 ms on a development machine with the file in the page cache, which is the cost of the
+hash; a read from disk adds the disk's own time). Only the new complete lines are
 parsed, and a last line without its newline waits for it. `forest index build --verify`, and a build
 whose stored hash is more than a day old, hashes those files too and rewrites a file only when the bytes
 changed. A page that is not valid UTF-8 is read with replacement characters, named in the status, and
@@ -476,10 +478,34 @@ When the masking changes (a `[credentials]` or `[numbers]` setting, a value judg
 the package's masking rules), the next build, update or search indexes every file again before it
 answers, so a search cannot find a value a read now hides. The fingerprint check and the answer are two
 snapshots: a masking change that lands between them is answered under the old rules, the same as a query
-that arrived a moment earlier. A file SQLite cannot read is refused with
-`index_unreadable`. The refusal's next move is `forest index reset`, which removes the index and its
-`-wal` and `-shm` files under the index lock and nothing else. The next query or `forest index build`
-makes the index again. `forest index reset --dry-run` names the files and removes nothing.
+that arrived a moment earlier. A query whose masking changed while the index is held waits for the
+other build, trying a busy file again every tenth of a second, for up to 60 seconds, and then refuses
+with `index_busy` rather than answer from rows masked under the old rules.
+
+What SQLite refuses is sorted by its result code:
+
+| Code | When | Next move |
+| --- | --- | --- |
+| `index_unreadable` | the file is corrupt or is not a database | `run` `forest index reset` |
+| `index_busy` | another connection or build holds the file or the lock | `retry` after `after_seconds` |
+| `index_read_only` | the file, its `-wal` or `-shm`, or `.forest/` cannot be written | `report` |
+| `index_disk_full` | the disk is full | `report` |
+| `index_io_error` | the disk returned an I/O error | `report` |
+| `index_cannot_open` | the path cannot be opened or created (a folder in its place) | `report` |
+| `index_missing` | there is no index and none could be built yet | `run` `forest index build` |
+
+A build that meets a busy file says `busy` and exits 0; a search with the same masking answers `stale`.
+`report` means no command helps: the message says what a person has to do. Resetting a working index on a
+full disk would lose it and the rebuild would fail again. A file whose first build has not committed yet
+is not refused: it is no index yet.
+
+`forest index reset` is for an `index_unreadable` file while no forest server is running. It checks the
+index and its `-wal` and `-shm` files first and then removes all of them, or none if one of them is a
+symlink or a folder, and prints what it removed. It holds the index lock while it does, which keeps a
+build or an update out; a search takes no lock, so the lock does not protect a process that has the file
+open. When the lock is held it removes nothing and exits 2 with `index_busy`, next move `retry`. The next
+query or `forest index build` makes the index again. `forest index reset --dry-run` names the files and
+removes nothing.
 
 `forest index status` prints the tokenizer, the counts, whether the masking is current, how many files
 have changed since the build, and any page that was not valid UTF-8. Where this machine's SQLite has the trigram tokenizer, the line says
@@ -568,6 +594,20 @@ that path itself.
 
 `memory_log` reports `indexed: true` or `indexed: false`. False means the line is in the lane and the
 index lock was busy.
+
+Every refusal of a tool is a result with `isError: true` whose text is one JSON object, the same object
+`--json` prints under `error`:
+
+```json
+{"code": "index_busy", "details": {"path": ".forest/index.sqlite"},
+ "message": "...", "next": "retry", "after_seconds": 2.0}
+```
+
+`code`, `message` and `details` are always there. `next` is there when the refusal has a next move:
+`run` with `command`, `retry` with `after_seconds` (the same call again after that wait), or `report`
+(tell the owner the message; no command helps). A refusal with no next move, such as `search_empty`,
+has no `next`. An argument that fails a tool's schema under 2025-11-25 is `arguments_invalid` in the
+same shape. The strings are masked like every answer.
 
 The clients checked here, `claude mcp`, `codex mcp` and `grok mcp`, speak protocol versions
 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also

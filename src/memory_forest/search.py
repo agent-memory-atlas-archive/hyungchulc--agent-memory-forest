@@ -5,7 +5,10 @@ build`` makes it again. One row is one page section, one collection entry, one
 marked block of a daily page, or one raw-lane turn. A build or update holds
 the ``index`` lock and writes the published file in place, in one transaction,
 in WAL mode: a reader keeps the snapshot it opened and never waits for a
-writer. Nothing replaces or unlinks the file or its journal files.
+writer. A build or update never replaces or unlinks the file or its journal
+files. Only ``forest index reset`` removes them, for a file that is corrupt or
+is not a database (``index_error`` is the one place a SQLite error is
+classified); its lock keeps builds out, not a reader that has the file open.
 
 The stored text is the text a read shows: sign-in values masked, numbers
 starred. Words, the trigram index and vectors are built from that text, so a
@@ -17,9 +20,9 @@ differs, every file is indexed again before a query is answered.
 A raw lane only grows. The index keeps the end of its last complete line and a
 hash of the bytes before it. On an update those bytes are read and hashed
 again, in 1 MiB pieces, to prove the file was only appended to. Measured on a
-development machine, that read from disk runs at about 1.3 GiB/s (8 MiB in
-6.3 ms). Only the new complete lines are parsed. A half-written last line
-waits for its newline.
+development machine with the file in the page cache, 8 MiB took about 4 ms:
+the cost of the hash. A read from disk adds the disk's own time. Only the new
+complete lines are parsed. A half-written last line waits for its newline.
 
 Word search uses FTS5. Where this SQLite has the trigram tokenizer, a run of
 three or more characters is findable inside unspaced text, and a unicode61

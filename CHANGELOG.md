@@ -17,14 +17,18 @@ the version 1 commands replace it.
   entry, daily block and raw-lane turn. The stored text is what a read prints. The build holds the
   `index` lock and writes the file in place in WAL mode, in one transaction, so a reader never waits and
   no journal file is unlinked under one. A lane that only grew has the bytes already indexed read and
-  hashed again, to prove the file was only appended to (about 1.3 GiB/s from disk on a development
-  machine); only the new complete lines are parsed. The
+  hashed again, to prove the file was only appended to (8 MiB in about 4 ms from the page cache on a
+  development machine); only the new complete lines are parsed. The
   index keeps a fingerprint of the masking; when settings, the ledger or the masking rules change, or the
   stored fingerprint cannot be read, every
-  file is indexed again before a search answers. When the fingerprint is the same, a busy open answers
-  from the rows already on file. `forest index reset` removes that derived file and its `-wal` and `-shm`
-  files under the index lock, and nothing else; the refusal `index_unreadable` names that command as its
-  next move. A file is skipped when its
+  file is indexed again before a search answers; a busy file is tried again every tenth of a second until
+  the budget is spent, then the search refuses with `index_busy`. When the fingerprint is the same, a busy
+  open answers from the rows already on file. Only a file that is corrupt or is not a database is
+  `index_unreadable`, whose next move is `forest index reset`: that command checks the derived file and
+  its `-wal` and `-shm` files and removes all three or none, and nothing else, and exits 2 with
+  `index_busy` when the index lock is held. A busy or locked file is the busy path; a read-only file, a
+  full disk, an I/O error and a path that cannot be opened have codes of their own whose next move is
+  `report`. A file whose first build has not committed is no index yet. A file is skipped when its
   size and time are unchanged, and hashed when either changed, when `build --verify` is given, or when
   the stored hash is more than a day old. A CJK word of one or two characters is found inside a longer
   word. A page that is not valid UTF-8 is read with replacement characters and named in the status.
@@ -49,7 +53,9 @@ the version 1 commands replace it.
   2025-03-26 only, after `initialize`, and a batch that holds `initialize` is refused. HTTP keeps no
   session, so a 2025-03-26 batch that does not contain `initialize` is answered from the protocol header.
   An HTTP error status may omit `id` where the revision allows it; a 200 payload keeps `id: null`. A tool's input validation error is `isError: true` under
-  2025-11-25 and `-32602` before it. A stdio line is bounded while it is read. The server's instructions stay under 2,048 characters. `memory_log` appends through the intake
+  2025-11-25 and `-32602` before it. Every refusal of a tool is one JSON object (`code`, `message`,
+  `details`, and `next` with `command` or `after_seconds` when it has a next move), the shape `--json`
+  prints. A stdio line is bounded while it is read. The server's instructions stay under 2,048 characters. `memory_log` appends through the intake
   writer and reports whether that line was indexed; the server sets the role and the origin. Every HTTP
   bind, loopback included, uses `.forest/mcp/token` in mode 0600. The first start creates it and the
   token is never printed. A non-loopback `Origin`, a non-loopback `Host` on a loopback bind, and a body
