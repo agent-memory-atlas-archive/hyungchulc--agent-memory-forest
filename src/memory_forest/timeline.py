@@ -2,6 +2,8 @@
 
 A phrase is a row in a language table. English is built in. Another language
 is a JSON file under ``memory_forest/phrases/``; Korean ships as the example.
+A forest adds or replaces a table with a JSON file in ``.forest/phrases/``,
+without editing the installed package. The package tables are the default.
 The matcher only knows the table's slots (a number, a unit, a day part, a
 date). It has no sentences of its own.
 
@@ -14,6 +16,7 @@ it yet.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -22,6 +25,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from . import layout
 from .config import Config, load_config
 from .errors import MemoryForestError
 from .model import TimelineLine
@@ -103,9 +107,9 @@ class When:
     daypart: tuple[int, int] | None = None
 
 
-def languages() -> list[str]:
-    """The language tags whose phrase tables ship with the package."""
-    return ["en", *(table["language"] for table in _files())]
+def languages(root: str | os.PathLike[str] | None = None) -> list[str]:
+    """Language tags from the package, plus any table in the forest's ``.forest/phrases``."""
+    return [str(table["language"]) for table in _tables(root)]
 
 
 def query(
@@ -121,9 +125,13 @@ def query(
     """What falls in ``phrase`` across the raw lanes, the daily pages and the forest."""
     safe = require_real_root(root)
     config = config or load_config(safe)
+    stale = search.refresh_lanes_and_daily(safe)
     moment = _aware(now or datetime.now(config.zone), config.zone)
-    when = resolve(phrase, config, moment)
-    return _collect(safe, config, reader, named, when, limit=limit, phrase=phrase.strip())
+    when = resolve(phrase, config, moment, root=safe)
+    payload = _collect(safe, config, reader, named, when, limit=limit, phrase=phrase.strip())
+    if stale:
+        payload["stale"] = stale
+    return payload
 
 
 def subject(
@@ -138,40 +146,53 @@ def subject(
     """The indexed sections whose subjects include ``subject_id``, in time order."""
     safe = require_real_root(root)
     config = config or load_config(safe)
+    stale = search.refresh_lanes_and_daily(safe)
     built = registry_mod.build(safe, config=config)
     scope = for_reader(config, built, reader, named=named, root=safe)
     connection = search.require_index(safe)
     try:
+        earliest = {
+            int(row[0]): row[1]
+            for row in connection.execute("SELECT unit_id, MIN(start_utc) FROM times GROUP BY unit_id")
+        }
         pages: dict[str, dict[str, Any]] = {}
-        order: list[tuple[str, str]] = []
-        for row in connection.execute("SELECT * FROM units ORDER BY path, line_start, id"):
+        page_stamp: dict[str, str] = {}
+        for row in connection.execute("SELECT * FROM units"):
             unit = search._row_dict(row)
             if subject_id not in unit["subjects"] or not search._visible(scope, unit["path"]):
                 continue
-            when_at = connection.execute(
-                "SELECT MIN(start_utc) FROM times WHERE unit_id = ?", (row["id"],)
-            ).fetchone()[0]
+            stamp = earliest.get(int(row["id"])) or "9999"
+            current = page_stamp.get(unit["path"])
+            if current is None or stamp < current:
+                page_stamp[unit["path"]] = stamp
             search._add_row(
                 pages, unit, f"subject: {subject_id}", tier=0, score=0, scope=scope,
             )
-            order.append((when_at or "9999", unit["path"]))
-        ranked = sorted(pages.values(), key=lambda item: next(stamp for stamp, path in order if path == item["path"]))
+        ranked = sorted(pages.values(), key=lambda item: (page_stamp.get(item["path"], "9999"), item["path"]))
         payload = search._envelope(scope, ranked[:limit])
         payload["subject"] = subject_id
+        if stale:
+            payload["stale"] = stale
         return payload
     finally:
         connection.close()
 
 
-def resolve(phrase: str, config: Config, now: datetime) -> When:
-    """The window ``phrase`` names, from the shipped tables and the ``..`` range syntax."""
+def resolve(
+    phrase: str,
+    config: Config,
+    now: datetime,
+    *,
+    root: str | os.PathLike[str] | None = None,
+) -> When:
+    """The window ``phrase`` names, from the tables and the ``..`` range syntax."""
     text = " ".join(phrase.strip().split())
     if not text:
         raise MemoryForestError("time_phrase_empty", "The time phrase is empty.")
     ranged = _RANGE_RE.fullmatch(text)
     if ranged is not None:
         return _range_when(ranged, config.zone, text)
-    tables = _tables()
+    tables = _tables(root)
     best: tuple[int, str, re.Match[str], dict[str, Any]] | None = None
     for table in tables:
         fold = bool(table.get("fold"))
@@ -186,10 +207,10 @@ def resolve(phrase: str, config: Config, now: datetime) -> When:
             if best is None or weight > best[0]:
                 best = (weight, table["language"], matched, {**row, "table": table})
     if best is None:
-        known = ", ".join(languages())
+        known = ", ".join(languages(root))
         raise MemoryForestError(
             "time_phrase_unknown",
-            f"No shipped time phrase matches {text!r}. The tables are: {known}. "
+            f"No time phrase matches {text!r}. The tables are: {known}. "
             "A range is written YYYY-MM-DD..YYYY-MM-DD.",
             details={"languages": known},
         )
@@ -225,7 +246,8 @@ def _collect(
             unit = search._row_dict(row)
             if not search._visible(scope, unit["path"]):
                 continue
-            matched_lines = _matching_lines(unit["text"], when, config)
+            page_zone = _page_zone(row["page_zone"] if "page_zone" in row.keys() else "", config)
+            matched_lines = _matching_lines(unit["text"], when, config, page_zone)
             if matched_lines:
                 unit = {**unit, "text": "\n".join(matched_lines)}
             why = f"time: {row['start_utc']} falls in {phrase}"
@@ -242,14 +264,16 @@ def _collect(
         connection.close()
 
 
-def _matching_lines(text: str, when: When, config: Config) -> list[str]:
+def _matching_lines(
+    text: str, when: When, config: Config, page_zone: ZoneInfo | timezone
+) -> list[str]:
     """Timeline lines in ``text`` whose own zone falls in ``when``. Empty when the text has none."""
     found = []
     for line in text.splitlines():
         parsed = TimelineLine.match(line)
         if parsed is None:
             continue
-        interval = search._timeline_interval(parsed, config.zone, config.zone)
+        interval = search._timeline_interval(parsed, page_zone, config.zone)
         if interval is None:
             continue
         start, end, zone_name = interval
@@ -333,11 +357,16 @@ def _range_when(matched: re.Match[str], zone: ZoneInfo, label: str) -> When:
 
 def _forest_day(day: str, zone: ZoneInfo, clock: str | None, *, end: bool) -> datetime:
     year, month, date = (int(part) for part in day.split("-"))
-    if clock:
-        hour, minute = (int(part) for part in clock.split(":"))
-        moment = datetime(year, month, date, hour, minute, tzinfo=zone)
-        return moment + timedelta(microseconds=1) if end else moment
-    start = datetime(year, month, date, tzinfo=zone)
+    try:
+        if clock:
+            hour, minute = (int(part) for part in clock.split(":"))
+            if hour > 23 or minute > 59:
+                raise ValueError
+            moment = datetime(year, month, date, hour, minute, tzinfo=zone)
+            return moment + timedelta(microseconds=1) if end else moment
+        start = datetime(year, month, date, tzinfo=zone)
+    except ValueError as exc:
+        raise MemoryForestError("time_phrase_unknown", "That date or time does not exist.") from exc
     return start + timedelta(days=1) if end else start
 
 
@@ -395,8 +424,48 @@ def _compile(pattern: str, table: dict[str, Any], fold: bool) -> re.Pattern[str]
     return re.compile("^" + "".join(pieces) + "$", flags)
 
 
-def _tables() -> list[dict[str, Any]]:
-    return [ENGLISH, *_files()]
+def _tables(root: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
+    tables = [ENGLISH, *_files()]
+    if root is None:
+        return tables
+    extra = _forest_files(root)
+    replaced = {str(table.get("language")) for table in extra}
+    return [table for table in tables if str(table.get("language")) not in replaced] + extra
+
+
+def _page_zone(name: str, config: Config) -> ZoneInfo | timezone:
+    if not name:
+        return config.zone
+    return search._zone_of(name, config.zone, config.zone)
+
+
+def _forest_files(root: str | os.PathLike[str]) -> list[dict[str, Any]]:
+    """Phrase tables the forest added. A file for a language replaces the package table."""
+    try:
+        folder = layout.resolve(root, f"{layout.STATE_DIR}/phrases")
+    except MemoryForestError:
+        return []
+    if folder.is_symlink() or not folder.is_dir():
+        return []
+    found = []
+    for path in sorted(folder.glob("*.json")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8")
+            value = json.loads(raw)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise MemoryForestError(
+                "time_phrase_unknown",
+                f"{path.name} is not a time-phrase table.",
+            ) from exc
+        if not isinstance(value, dict) or not isinstance(value.get("language"), str) or not isinstance(value.get("phrases"), list):
+            raise MemoryForestError(
+                "time_phrase_unknown",
+                f"{path.name} is not a time-phrase table.",
+            )
+        found.append(value)
+    return found
 
 
 def _files() -> list[dict[str, Any]]:

@@ -1,16 +1,23 @@
 """The MCP server (design, sections 10 and 15.2).
 
-``forest mcp --as <agent>`` speaks stdio. ``--http PORT`` binds to loopback.
-``--http HOST:PORT`` on any other address needs ``.forest/mcp/token`` in mode
-0600, and the token is never printed. Reaching that port from outside the
-machine is the owner's own network decision.
+``forest mcp --as <agent>`` speaks stdio: one JSON-RPC message per line, UTF-8,
+with no embedded newline. Logs go to stderr. stdout carries only protocol
+messages.
+
+``--http PORT`` binds to loopback. ``--http HOST:PORT`` on any other address is
+the owner's own network decision. Every bind, loopback included, requires
+``.forest/mcp/token`` in mode 0600. The first start creates it and never prints
+it. A request is refused unless the bearer token matches those bytes, the body
+is ``application/json``, and, when ``Origin`` or ``Host`` is present, it names
+the loopback server.
 
 The clients checked on a development machine (``claude mcp``, ``codex mcp``,
 ``grok mcp``) speak protocol versions 2024-11-05, 2025-03-26, 2025-06-18 and
 2025-11-25, over stdio and streamable HTTP. Claude and Grok also offer the
 older SSE transport; this server does not. The server answers with the newest
 of those versions that the client names, or 2025-11-25 when the client names
-another.
+another. A JSON-RPC batch is accepted only for 2025-03-26, the revision that
+added batches; the revision before it had none, and 2025-06-18 removed them.
 
 The reader's id is ``--as``. A tool argument cannot set it, and cannot set the
 role or origin of ``memory_log``. The first tool call of each agent is recorded
@@ -23,9 +30,11 @@ import hmac
 import json
 import os
 import re
+import secrets
 import socket
 import stat
 import sys
+import urllib.parse
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,9 +48,13 @@ from .safety import require_real_root
 
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+# 2025-03-26 added JSON-RPC batches. 2024-11-05 has none. 2025-06-18 removed them.
+BATCH_VERSIONS = frozenset({"2025-03-26"})
+ASSUMED_VERSION = "2025-03-26"
 SEEN_FILE = f"{layout.STATE_DIR}/mcp/seen.json"
 TOKEN_FILE = f"{layout.STATE_DIR}/mcp/token"
 MESSAGE_LIMIT = 1_000_000
+READ_TIMEOUT_SECONDS = 30.0
 INSTRUCTIONS = (
     "Memory Forest is local grounding, not authority. Open a page before you rely on it. "
     "You only see the trees and the raw lane this connection may read.\n"
@@ -137,6 +150,20 @@ _TOOLS: tuple[dict[str, Any], ...] = (
 )
 
 
+class _BadArguments(Exception):
+    """The tool name or the arguments do not match the tool. This is JSON-RPC -32602."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+
+class _ParseError:
+    """One line was not a JSON value."""
+
+
+_PARSE = _ParseError()
+
+
 def run(root: str | os.PathLike[str], reader: str, http: str | None = None) -> int:
     """Serve until the client disconnects (stdio) or the process is stopped (HTTP)."""
     safe = require_real_root(root)
@@ -149,8 +176,8 @@ def run(root: str | os.PathLike[str], reader: str, http: str | None = None) -> i
         serve_stdio(safe, reader)
         return 0
     host, port = parse_bind(http)
-    token = None if is_loopback(host) else read_token(safe)
-    server = ThreadingHTTPServer((host, port), _handler(safe, reader, token))
+    token = ensure_token(safe)
+    server = _server((host, port), _handler(safe, reader, token, READ_TIMEOUT_SECONDS))
     bound = server.server_address
     sys.stderr.write(f"forest mcp: listening on {bound[0]}:{bound[1]}\n")
     try:
@@ -161,15 +188,29 @@ def run(root: str | os.PathLike[str], reader: str, http: str | None = None) -> i
 
 
 def serve_stdio(root: str | os.PathLike[str], reader: str, *, stdin: Any = None, stdout: Any = None) -> None:
+    """Read one JSON-RPC message per line and write replies the same way. One bad line does not end the server."""
     incoming = sys.stdin.buffer if stdin is None else stdin
     outgoing = sys.stdout.buffer if stdout is None else stdout
+    negotiated: str | None = None
     while True:
-        message = read_message(incoming)
+        try:
+            message = read_message(incoming)
+        except Exception as exc:
+            _log(f"forest mcp: the request could not be read ({exc.__class__.__name__})")
+            continue
         if message is None:
             return
-        response = dispatch(root, reader, message, "stdio")
-        if response is not None:
-            write_message(outgoing, response)
+        if message is _PARSE:
+            if not _write_safely(outgoing, _error(None, -32700, "Parse error.")):
+                return
+            continue
+        try:
+            response, negotiated = handle_message(root, reader, message, "stdio", negotiated)
+        except Exception as exc:
+            _log(f"forest mcp: one request failed ({exc.__class__.__name__}) and the next will be read")
+            response = _error(_message_id(message), -32603, "The request could not be answered.")
+        if response is not None and not _write_safely(outgoing, response):
+            return
 
 
 def serve_http(
@@ -178,11 +219,16 @@ def serve_http(
     host: str,
     port: int,
     *,
-    token: str | None,
+    token: bytes | None = None,
+    read_timeout: float = READ_TIMEOUT_SECONDS,
 ) -> ThreadingHTTPServer:
-    """Bind and serve in a daemon thread. The caller stops the returned server."""
-    handler = _handler(root, reader, token)
-    server = ThreadingHTTPServer((host, port), handler)
+    """Bind and serve in a daemon thread. The caller stops the returned server.
+
+    ``token`` None creates or reads ``.forest/mcp/token``. The token is not printed.
+    """
+    token_bytes = token if token is not None else ensure_token(root)
+    handler = _handler(root, reader, token_bytes, read_timeout)
+    server = _server((host, port), handler)
     server.daemon_threads = True
     import threading
 
@@ -191,24 +237,30 @@ def serve_http(
     return server
 
 
-def dispatch(root: str | os.PathLike[str], reader: str, message: Any, transport: str) -> dict[str, Any] | None:
-    """One JSON-RPC message. A notification returns None."""
-    if not isinstance(message, dict) or not isinstance(message.get("method"), str):
-        return _error(message.get("id") if isinstance(message, dict) else None, -32600, "The request is not a JSON-RPC object.")
-    if "id" not in message:
-        return None
-    method = message["method"]
-    msg_id = message["id"]
-    params = message.get("params") if isinstance(message.get("params"), dict) else {}
-    if method == "initialize":
-        return _result(msg_id, _initialize(params))
-    if method == "ping":
-        return _result(msg_id, {})
-    if method == "tools/list":
-        return _result(msg_id, {"tools": [dict(tool) for tool in _TOOLS]})
-    if method == "tools/call":
-        return _result(msg_id, _call(root, reader, params, transport))
-    return _error(msg_id, -32601, "Method not found.")
+def handle_message(
+    root: str | os.PathLike[str],
+    reader: str,
+    message: Any,
+    transport: str,
+    negotiated: str | None,
+) -> tuple[Any, str | None]:
+    """One stdio or HTTP payload. A notification or a client response returns None."""
+    if isinstance(message, list):
+        version = _batch_version(negotiated, message)
+        if version not in BATCH_VERSIONS:
+            return _error(None, -32600, "This protocol version does not accept a batch."), negotiated
+        if not message:
+            return _error(None, -32600, "The batch is empty."), negotiated
+        replies: list[dict[str, Any]] = []
+        current = negotiated
+        for item in message:
+            reply, current = _dispatch_one(root, reader, item, transport, current if current else version)
+            if reply is not None:
+                replies.append(reply)
+        if not replies:
+            return None, current
+        return replies, current
+    return _dispatch_one(root, reader, message, transport, negotiated)
 
 
 def parse_bind(value: str) -> tuple[str, int]:
@@ -231,24 +283,45 @@ def parse_bind(value: str) -> tuple[str, int]:
 
 
 def is_loopback(host: str) -> bool:
-    """Whether ``host`` is only the local machine."""
-    if host in {"localhost", "127.0.0.1", "::1"}:
+    """Whether ``host`` is only the local machine. This resolves names; the request check does not."""
+    if _loopback_literal(host):
         return True
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror:
         return False
     addresses = {item[4][0] for item in infos}
-    return bool(addresses) and addresses <= {"127.0.0.1", "::1"}
+    return bool(addresses) and all(_loopback_literal(address) for address in addresses)
 
 
-def read_token(root: str | os.PathLike[str]) -> str:
-    """The token file. The returned string is for comparison and must not be printed."""
+def ensure_token(root: str | os.PathLike[str]) -> bytes:
+    """The token bytes. The first start writes ``.forest/mcp/token`` in mode 0600 and does not print it."""
+    safe = require_real_root(root)
+    path = layout.resolve(safe, TOKEN_FILE)
+    if path.exists() or path.is_symlink():
+        return read_token(safe)
+    layout.ensure_folder(safe, f"{layout.STATE_DIR}/mcp")
+    token = secrets.token_hex(32).encode("ascii")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        return read_token(safe)
+    try:
+        os.write(descriptor, token + b"\n")
+    finally:
+        os.close(descriptor)
+    os.chmod(path, 0o600)
+    return token
+
+
+def read_token(root: str | os.PathLike[str]) -> bytes:
+    """The token file as bytes. The value is for comparison and must not be printed."""
     path = layout.resolve(root, TOKEN_FILE)
     if path.is_symlink() or not path.is_file():
         raise MemoryForestError(
             "mcp_token_missing",
-            "A bind that is not loopback needs .forest/mcp/token, a regular file in mode 0600.",
+            "The MCP server needs .forest/mcp/token, a regular file in mode 0600.",
         )
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode != 0o600:
@@ -263,43 +336,70 @@ def read_token(root: str | os.PathLike[str]) -> str:
         raw = raw[:-1]
     if not raw or b"\n" in raw or b"\r" in raw:
         raise MemoryForestError("mcp_token_invalid", "The MCP token file must hold one line.")
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise MemoryForestError("mcp_token_invalid", "The MCP token file must be UTF-8.") from exc
+    return raw
 
 
-def read_message(stream: Any) -> Any | None:
-    """One stdio message framed with ``Content-Length``, or None at end of stream."""
-    headers: dict[str, str] = {}
+def read_message(stream: Any) -> Any:
+    """One newline-delimited JSON-RPC message, ``None`` at end of stream, or a parse failure."""
     while True:
         line = stream.readline()
         if not line:
             return None
-        if line in (b"\r\n", b"\n"):
-            break
-        if b":" in line:
-            key, value = line.split(b":", 1)
-            headers[key.decode("ascii", "replace").lower()] = value.strip().decode("ascii", "replace")
-    try:
-        length = int(headers.get("content-length", "0"))
-    except ValueError:
-        length = 0
-    if length < 0 or length > MESSAGE_LIMIT:
-        return {"id": None, "jsonrpc": "2.0", "method": ""}
-    body = stream.read(length)
-    if len(body) < length:
-        return None
-    try:
-        return json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {"id": None, "jsonrpc": "2.0", "method": ""}
+        if len(line) > MESSAGE_LIMIT:
+            return _PARSE
+        try:
+            text = line.decode("utf-8").strip("\r\n")
+        except UnicodeDecodeError:
+            return _PARSE
+        if not text:
+            continue
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return _PARSE
 
 
-def write_message(stream: Any, payload: Mapping[str, Any]) -> None:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    stream.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body)
+def write_message(stream: Any, payload: Mapping[str, Any] | list[Any]) -> None:
+    """One JSON-RPC message and a newline. The line holds no raw newline."""
+    if isinstance(payload, list):
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    else:
+        body = json.dumps(dict(payload), ensure_ascii=False, separators=(",", ":"))
+    data = body.encode("utf-8").replace(b"\r", b"").replace(b"\n", b"")
+    stream.write(data + b"\n")
     stream.flush()
+
+
+def _dispatch_one(
+    root: str | os.PathLike[str],
+    reader: str,
+    message: Any,
+    transport: str,
+    negotiated: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(message, dict):
+        return _error(None, -32600, "The request is not a JSON-RPC object."), negotiated
+    if not isinstance(message.get("method"), str):
+        # A client's response, or any object with no method, gets no error reply.
+        return None, negotiated
+    method = message["method"]
+    if "id" not in message:
+        return None, negotiated
+    msg_id = message["id"]
+    params = message.get("params") if isinstance(message.get("params"), dict) else {}
+    try:
+        if method == "initialize":
+            result = _initialize(params)
+            return _result(msg_id, result), str(result["protocolVersion"])
+        if method == "ping":
+            return _result(msg_id, {}), negotiated
+        if method == "tools/list":
+            return _result(msg_id, {"tools": [dict(tool) for tool in _TOOLS]}), negotiated
+        if method == "tools/call":
+            return _result(msg_id, _call(root, reader, params, transport)), negotiated
+    except _BadArguments as exc:
+        return _error(msg_id, -32602, exc.message), negotiated
+    return _error(msg_id, -32601, "Method not found."), negotiated
 
 
 def _initialize(params: Mapping[str, Any]) -> dict[str, Any]:
@@ -315,24 +415,74 @@ def _initialize(params: Mapping[str, Any]) -> dict[str, Any]:
 
 def _call(root: str | os.PathLike[str], reader: str, params: Mapping[str, Any], transport: str) -> dict[str, Any]:
     name = params.get("name")
-    arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else None
+    arguments = params.get("arguments")
     known = {tool["name"]: tool for tool in _TOOLS}
-    if not isinstance(name, str) or name not in known or arguments is None:
-        return _tool_error("Name a tool and pass its arguments as an object.")
-    allowed = set(known[name]["inputSchema"]["properties"])
-    extra = set(arguments) - allowed
-    if extra & _FORBIDDEN or "role" in arguments or "origin" in arguments:
-        return _tool_error("The server sets the role and the origin. A call cannot name its reader or another agent.")
-    if extra:
-        return _tool_error("That argument is not part of this tool.")
+    if not isinstance(name, str) or name not in known or not isinstance(arguments, dict):
+        raise _BadArguments("Name a tool and pass its arguments as an object.")
+    _check_arguments(name, arguments, known[name])
     try:
         payload = _invoke(root, reader, name, arguments, transport)
+    except _BadArguments:
+        raise
     except MemoryForestError as exc:
         return _tool_error(exc.message)
-    _remember(root, reader, name, transport)
+    except Exception:
+        return _tool_error("The tool could not answer.")
+    try:
+        _remember(root, reader, name, transport)
+    except Exception:
+        _log("forest mcp: the seen record could not be written")
     config = load_config(root)
     text = json.dumps(search.mask_result(payload, config=config), ensure_ascii=False, indent=2, sort_keys=True)
     return {"content": [{"type": "text", "text": text}], "isError": False}
+
+
+def _check_arguments(name: str, arguments: Mapping[str, Any], tool: Mapping[str, Any]) -> None:
+    schema = tool["inputSchema"]
+    allowed = set(schema["properties"])
+    extra = set(arguments) - allowed
+    if extra & _FORBIDDEN or "role" in arguments or "origin" in arguments:
+        raise _BadArguments("The server sets the role and the origin. A call cannot name its reader or another agent.")
+    if extra:
+        raise _BadArguments("That argument is not part of this tool.")
+    required = set(schema.get("required") or ())
+    if any(key not in arguments for key in required):
+        raise _BadArguments("A required argument is missing.")
+    if name == "memory_search":
+        if not isinstance(arguments.get("words"), str):
+            raise _BadArguments("The words are a string.")
+        if "limit" in arguments:
+            limit = arguments["limit"]
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+                raise _BadArguments("The limit is an integer of at least 1.")
+    elif name == "memory_read":
+        if not isinstance(arguments.get("path"), str):
+            raise _BadArguments("The path is a string.")
+        if "lines" in arguments:
+            if not isinstance(arguments["lines"], str):
+                raise _BadArguments("Lines are written A-B.")
+            try:
+                search.parse_lines(arguments["lines"])
+            except MemoryForestError as exc:
+                raise _BadArguments(exc.message) from exc
+    elif name == "memory_timeline":
+        phrase = arguments.get("phrase")
+        subject = arguments.get("subject")
+        if (phrase is None) == (subject is None):
+            raise _BadArguments("Pass a phrase or a subject id, one of them.")
+        if phrase is not None and (not isinstance(phrase, str) or not phrase.strip()):
+            raise _BadArguments("The phrase is a string.")
+        if subject is not None and (not isinstance(subject, str) or not subject.strip()):
+            raise _BadArguments("The subject id is a string.")
+    elif name == "memory_navigate":
+        if "path" in arguments and not isinstance(arguments["path"], str):
+            raise _BadArguments("The path is a string.")
+    elif name == "memory_log":
+        text = arguments.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise _BadArguments("A turn needs text.")
+        if "session" in arguments and not isinstance(arguments["session"], str):
+            raise _BadArguments("The session is a string.")
 
 
 def _invoke(
@@ -340,21 +490,13 @@ def _invoke(
 ) -> dict[str, Any]:
     if name == "memory_search":
         limit = arguments.get("limit", 10)
-        if not isinstance(limit, int) or isinstance(limit, bool):
-            raise MemoryForestError("search_limit", "The limit is an integer.")
-        return search.query(root, str(arguments.get("words") or ""), reader=reader, limit=limit)
+        return search.query(root, str(arguments.get("words") or ""), reader=reader, limit=int(limit))
     if name == "memory_read":
-        return search.read(
-            root,
-            str(arguments.get("path") or ""),
-            reader=reader,
-            lines=search.parse_lines(arguments.get("lines") if isinstance(arguments.get("lines"), str) else None),
-        )
+        lines = arguments.get("lines") if isinstance(arguments.get("lines"), str) else None
+        return search.read(root, str(arguments.get("path") or ""), reader=reader, lines=search.parse_lines(lines))
     if name == "memory_timeline":
         phrase = arguments.get("phrase")
         subject = arguments.get("subject")
-        if bool(phrase) == bool(subject):
-            raise MemoryForestError("time_phrase_empty", "Pass a phrase or a subject id, one of them.")
         if phrase:
             return timeline.query(root, str(phrase), reader=reader)
         return timeline.subject(root, str(subject), reader=reader)
@@ -370,9 +512,15 @@ def _invoke(
             origin="interactive" if transport == "stdio" else "headless",
             session=str(arguments.get("session") or "mcp"),
         )
-        search.build(root, only=[record["path"]], wait_seconds=5.0)
-        return {"id": record["id"], "path": record["path"], "wrote": bool(record["wrote"])}
-    raise MemoryForestError("mcp_tool_unknown", "That tool is not served.")
+        indexed = False
+        try:
+            outcome = search.update_files(root, [record["path"]], wait_seconds=0)
+            indexed = bool(outcome.get("indexed"))
+        except Exception:
+            _log("forest mcp: the turn was written and the index was not updated")
+            indexed = False
+        return {"id": record["id"], "indexed": indexed, "path": record["path"], "wrote": bool(record["wrote"])}
+    raise _BadArguments("That tool is not served.")
 
 
 def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: str) -> None:
@@ -398,58 +546,275 @@ def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: s
     os.chmod(path, 0o600)
 
 
-def _handler(root: str | os.PathLike[str], reader: str, token: str | None) -> type[BaseHTTPRequestHandler]:
+def _handler(
+    root: str | os.PathLike[str], reader: str, token: bytes, read_timeout: float
+) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        def setup(self) -> None:
+            super().setup()
+            self.request.settimeout(read_timeout)
+
         def do_POST(self) -> None:  # noqa: N802 - the library names the verb this way
-            if not self._allowed():
-                self._send(401, b'{"error":"unauthorized"}\n')
+            try:
+                self._post()
+            except (TimeoutError, socket.timeout):
+                self.close_connection = True
+            except Exception as exc:
+                _log(f"forest mcp: one connection failed ({exc.__class__.__name__})")
+                self.close_connection = True
+
+        def do_GET(self) -> None:  # noqa: N802
+            self._refused_method()
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._refused_method()
+
+        def do_PUT(self) -> None:  # noqa: N802
+            self._refused_method()
+
+        def log_message(self, _format: str, *_args: Any) -> None:
+            """Write nothing. A request line can carry the bearer token."""
+            return
+
+        def _post(self) -> None:
+            stated = self._stated_version()
+            version = stated if stated is not None else ASSUMED_VERSION
+            if not self._request_allowed(version):
+                return
+            if stated is None:
+                self._send(400, _error_body("The protocol version is not one this server speaks."), ASSUMED_VERSION)
+                return
+            if not _json_content_type(self.headers.get("Content-Type")):
+                self._send(415, _error_body("The body must be application/json."), version)
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 length = -1
             if length < 0 or length > MESSAGE_LIMIT:
-                self._send(413, b'{"error":"too large"}\n')
+                self.close_connection = True
+                self._send(413, _error_body("The request is too large."), version)
                 return
             raw = self.rfile.read(length)
+            if len(raw) < length:
+                self._send(400, _error_body("The request body was cut short."), version)
+                return
             try:
                 message = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                self._send(400, b'{"error":"not json"}\n')
+                self._send(400, json.dumps(_error(None, -32700, "Parse error.")).encode("utf-8"), version)
                 return
-            response = dispatch(root, reader, message, "http")
+            if isinstance(message, list) and version not in BATCH_VERSIONS:
+                self._send(
+                    400,
+                    json.dumps(_error(None, -32600, "This protocol version does not accept a batch.")).encode("utf-8"),
+                    version,
+                )
+                return
+            try:
+                response, _negotiated = handle_message(root, reader, message, "http", version)
+            except Exception as exc:
+                _log(f"forest mcp: one request failed ({exc.__class__.__name__}) and the server is still listening")
+                response = _error(_message_id(message), -32603, "The request could not be answered.")
+            answered = _response_version(response, version)
             if response is None:
-                self._send(202, b"")
+                self._send(202, b"", answered)
                 return
             body = json.dumps(response, ensure_ascii=False).encode("utf-8")
-            self._send(200, body, "application/json")
+            self._send(200, body, answered)
 
-        def do_GET(self) -> None:  # noqa: N802
-            self._send(405, b"")
+        def _refused_method(self) -> None:
+            version = self._stated_version() or ASSUMED_VERSION
+            if version is None or not self._request_allowed(version):
+                return
+            self._send(405, b"", version)
 
-        def log_message(self, _format: str, *_args: Any) -> None:
-            """Write nothing. A request line can carry the bearer token."""
-            return
-
-        def _allowed(self) -> bool:
-            if token is None:
-                return True
-            header = self.headers.get("Authorization", "")
-            if not header.startswith("Bearer "):
+        def _request_allowed(self, version: str) -> bool:
+            host, port = _bound(self.server)
+            if not _host_allowed(self.headers.get("Host"), host, port):
+                self._send(403, _error_body("The host is not this server."), version)
                 return False
-            return hmac.compare_digest(header[len("Bearer ") :], token)
+            if not _origin_allowed(self.headers.get("Origin")):
+                self._send(403, _error_body("The origin is not loopback."), version)
+                return False
+            if not _bearer_matches(self.headers.get("Authorization", ""), token):
+                self._send(401, _error_body("The token does not match."), version)
+                return False
+            return True
 
-        def _send(self, status: int, body: bytes, content_type: str = "application/json") -> None:
+        def _stated_version(self) -> str | None:
+            header = self.headers.get("MCP-Protocol-Version")
+            if header is None:
+                return ASSUMED_VERSION
+            if header in PROTOCOL_VERSIONS:
+                return header
+            return None
+
+        def _send(self, status: int, body: bytes, version: str) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("MCP-Protocol-Version", PROTOCOL_VERSIONS[0])
+            self.send_header("MCP-Protocol-Version", version if version in PROTOCOL_VERSIONS else ASSUMED_VERSION)
             self.end_headers()
-            self.wfile.write(body)
+            if body:
+                self.wfile.write(body)
 
     return Handler
+
+
+def _bound(server: Any) -> tuple[str, int]:
+    address = server.server_address
+    return str(address[0]), int(address[1])
+
+
+def _host_allowed(header: str | None, server_host: str, server_port: int) -> bool:
+    """A loopback server accepts only a loopback name with its own port.
+
+    A bind the owner set to another address also accepts that address, or any
+    host when the bind is every interface, because that port was opened on
+    purpose. The token is still required. The name is not resolved.
+    """
+    if not header:
+        return False
+    name, port = _split_host(header)
+    if port != server_port:
+        return False
+    if _loopback_literal(name):
+        return True
+    if _loopback_literal(server_host):
+        return False
+    if server_host in {"0.0.0.0", "::", ""}:
+        return True
+    return name.lower() == server_host.lower()
+
+
+def _origin_allowed(origin: str | None) -> bool:
+    """Absent is a non-browser client. Present must be an HTTP loopback origin."""
+    if origin is None:
+        return True
+    parsed = urllib.parse.urlsplit(origin.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    return _loopback_literal(parsed.hostname)
+
+
+def _loopback_literal(host: str) -> bool:
+    """``localhost``, ``::1``, or an address in 127.0.0.0/8. No name is resolved."""
+    name = host.strip().lower().strip("[]").rstrip(".")
+    if name.startswith("::ffff:"):
+        name = name.removeprefix("::ffff:")
+    if name in {"localhost", "::1"}:
+        return True
+    parts = name.split(".")
+    if len(parts) != 4:
+        return False
+    numbers: list[int] = []
+    for part in parts:
+        if not part.isdigit():
+            return False
+        value = int(part)
+        if value > 255:
+            return False
+        numbers.append(value)
+    return numbers[0] == 127
+
+
+def _split_host(value: str) -> tuple[str, int | None]:
+    text = value.strip()
+    if text.startswith("["):
+        name, separator, rest = text[1:].partition("]")
+        if not separator:
+            return text, None
+        if rest.startswith(":"):
+            try:
+                return name, int(rest[1:])
+            except ValueError:
+                return name, None
+        return name, None
+    if text.count(":") == 1:
+        name, _, port_text = text.partition(":")
+        try:
+            return name, int(port_text)
+        except ValueError:
+            return text, None
+    return text, None
+
+
+def _json_content_type(value: str | None) -> bool:
+    if not value:
+        return False
+    return value.split(";", 1)[0].strip().lower() == "application/json"
+
+
+def _bearer_matches(header: str, token: bytes) -> bool:
+    """Constant-time compare of the header's bytes. A non-ASCII header does not raise."""
+    prefix = "Bearer "
+    if not isinstance(header, str) or not header.startswith(prefix):
+        hmac.compare_digest(token, token)
+        return False
+    try:
+        presented = header[len(prefix) :].encode("latin-1")
+    except UnicodeEncodeError:
+        hmac.compare_digest(token, token)
+        return False
+    if len(presented) != len(token):
+        hmac.compare_digest(token, token)
+        return False
+    return hmac.compare_digest(presented, token)
+
+
+def _batch_version(negotiated: str | None, message: list[Any]) -> str:
+    if negotiated in PROTOCOL_VERSIONS:
+        return str(negotiated)
+    for item in message:
+        if not isinstance(item, dict) or item.get("method") != "initialize":
+            continue
+        params = item.get("params")
+        if isinstance(params, dict) and params.get("protocolVersion") in PROTOCOL_VERSIONS:
+            return str(params["protocolVersion"])
+    return ASSUMED_VERSION
+
+
+def _response_version(response: Any, applied: str) -> str:
+    payloads = response if isinstance(response, list) else [response]
+    for item in payloads:
+        if not isinstance(item, dict):
+            continue
+        result = item.get("result")
+        if isinstance(result, dict) and result.get("protocolVersion") in PROTOCOL_VERSIONS:
+            return str(result["protocolVersion"])
+    return applied if applied in PROTOCOL_VERSIONS else ASSUMED_VERSION
+
+
+def _server(address: tuple[str, int], handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServer:
+    class Server(ThreadingHTTPServer):
+        def handle_error(self, request: Any, client_address: Any) -> None:
+            _log("forest mcp: one connection failed and the server is still listening")
+
+    server = Server(address, handler)
+    server.daemon_threads = True
+    return server
+
+
+def _write_safely(stream: Any, payload: Mapping[str, Any] | list[Any]) -> bool:
+    try:
+        write_message(stream, payload)
+    except Exception as exc:
+        _log(f"forest mcp: the reply could not be written ({exc.__class__.__name__})")
+        return False
+    return True
+
+
+def _error_body(message: str) -> bytes:
+    return json.dumps(_error(None, -32600, message), ensure_ascii=False).encode("utf-8")
+
+
+def _message_id(message: Any) -> Any:
+    if isinstance(message, dict) and "id" in message:
+        return message["id"]
+    return None
 
 
 def _port(text: str) -> int:
@@ -469,3 +834,7 @@ def _result(msg_id: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"error": {"code": code, "message": message}, "id": msg_id, "jsonrpc": "2.0"}
+
+
+def _log(text: str) -> None:
+    sys.stderr.write(text.rstrip("\n") + "\n")

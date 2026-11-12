@@ -6,11 +6,23 @@ marked block of a daily page, or one raw-lane turn. The build holds the
 ``index`` lock and publishes the file by replacing it, so a reader opens the
 published file and never waits for a build.
 
+The stored text is the text a read shows: sign-in values masked, numbers
+starred. Words, the trigram index and vectors are built from that text, so a
+guess at a hidden value is not confirmed by a hit.
+
 Word search uses FTS5. Where this SQLite has the trigram tokenizer, a run of
 three or more characters is findable inside unspaced text, and a unicode61
-index beside it finds spaced words of any length. Where trigram is absent,
-only unicode61 is built: unspaced text is one token, and ``index status`` says
-so.
+index beside it finds spaced words of any length. A CJK character sequence of
+one or two characters is stored as grams, so it is found inside a longer word
+whether or not trigram is available. Where trigram is absent, longer unspaced
+text in those scripts is found the same way. ``index status`` says which
+tokenizer was built.
+
+A search, a timeline read and a subject listing bring lane files and daily
+pages up to date first, by size and time. A file whose size and time are
+unchanged is hashed only when that check is older than a day, or when the
+build was asked to verify. A page that is not valid UTF-8 is read with
+replacement characters and named in ``index status``.
 
 Aliases are matched from the registry before words. Vectors run only when
 ``[embeddings] provider`` is not ``none`` and a provider of that name is
@@ -33,7 +45,7 @@ from zoneinfo import ZoneInfo
 from . import embeddings, layout, registry as registry_mod
 from .collections import owner_of
 from .config import Config, load_config
-from .credentials import shown
+from .credentials import shown as show_text
 from .errors import MemoryForestError
 from .locking import hold_lock
 from .model import TimelineLine, parse_page
@@ -43,9 +55,12 @@ from .scope import Scope, for_reader
 
 
 INDEX_RELATIVE = f"{layout.STATE_DIR}/index.sqlite"
-SCHEMA = "1"
+SCHEMA = "2"
 LOCK_NAME = "index"
 VECTOR_FLOOR = 0.2
+# A restore that keeps the size and the time (``rsync -t``, ``cp -p``) is
+# invisible to the cheap check. Hash those files once this interval has passed.
+VERIFY_INTERVAL = timedelta(hours=24)
 _STAGING_SUFFIX = ".building"
 _H2_RE = re.compile(r"##[ \t]+(?P<text>.+?)[ \t]*$")
 _BLOCK_RE = re.compile(r"<!--[ \t]*block:[ \t]*(\S+)[ \t]+(\S+)[ \t]*-->[ \t]*$")
@@ -80,23 +95,86 @@ def build(
     *,
     only: Sequence[str] | None = None,
     wait_seconds: float = 0.0,
+    verify: bool = False,
 ) -> dict[str, Any]:
-    """Build or update the index. A lock held elsewhere returns ``busy`` without waiting past ``wait_seconds``."""
+    """Build or update the index. A lock held elsewhere returns ``busy`` without waiting past ``wait_seconds``.
+
+    The published file is replaced at the end, so a reader of the previous file
+    never sees a half-written index. ``verify`` hashes every file whose size and
+    time are unchanged.
+    """
     try:
         with hold_lock(root, LOCK_NAME, wait_seconds=wait_seconds, label="forest index"):
-            return _build_held(root, only=only)
+            result = _build_held(root, only=only, verify=verify)
     except MemoryForestError as exc:
         if exc.code != "lock_busy":
             raise
         return {
             "busy": True,
             "files": 0,
+            "indexed": False,
             "message": "an index build is already running",
             "ok": True,
             "path": INDEX_RELATIVE,
             "units": 0,
             "updated": 0,
         }
+    result["indexed"] = True
+    return result
+
+
+def update_files(
+    root: str | os.PathLike[str],
+    paths: Sequence[str],
+    *,
+    wait_seconds: float = 0.0,
+    verify: bool = False,
+) -> dict[str, Any]:
+    """Update those files in the published index. This does not copy the database.
+
+    ``indexed`` is false when the index lock is already held. The turns are still
+    on disk; the next query brings them in.
+    """
+    safe = require_real_root(root)
+    if not _index_path(safe).is_file():
+        result = build(safe, only=list(paths), wait_seconds=wait_seconds, verify=verify)
+        result["indexed"] = not bool(result.get("busy"))
+        return result
+    try:
+        with hold_lock(safe, LOCK_NAME, wait_seconds=wait_seconds, label="forest index"):
+            result = _update_held(safe, [layout.normalize(item) for item in paths], verify=verify)
+    except MemoryForestError as exc:
+        if exc.code != "lock_busy":
+            raise
+        return {
+            "busy": True,
+            "files": 0,
+            "indexed": False,
+            "ok": True,
+            "path": INDEX_RELATIVE,
+            "units": 0,
+            "updated": 0,
+        }
+    result["busy"] = False
+    result["indexed"] = True
+    return result
+
+
+def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
+    """Bring changed lane and daily files into the index. Returns how many could not be updated."""
+    safe = require_real_root(root)
+    if not _index_path(safe).is_file():
+        result = build(safe, wait_seconds=0)
+        if result.get("busy"):
+            return len(_lane_daily_files(safe))
+        return 0
+    changed = _changed_lane_daily(safe)
+    if not changed:
+        return 0
+    result = update_files(safe, changed, wait_seconds=0)
+    if result.get("busy") or not result.get("indexed"):
+        return len(changed)
+    return 0
 
 
 def status(root: str | os.PathLike[str]) -> dict[str, Any]:
@@ -115,6 +193,9 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
         files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
         stale = _stale_files(safe, connection)
+        undecodable = _flagged(connection, "undecodable")
+        torn = _flagged(connection, "torn")
+        verify_due = _verify_due(connection)
     finally:
         connection.close()
     return {
@@ -127,19 +208,21 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
         "schema": meta.get("schema", ""),
         "stale": stale,
         "tokenizer": meta.get("tokenizer", ""),
+        "torn": torn,
+        "undecodable": undecodable,
         "units": units,
+        "verify_due": verify_due,
     }
 
 
 def connect(root: str | os.PathLike[str]) -> sqlite3.Connection | None:
-    """Open the published index read-only, or None when it is absent. Does not wait on a build."""
+    """Open the published index without waiting on a build. Writes are refused on this connection."""
     path = _index_path(require_real_root(root))
     if not path.is_file() or path.is_symlink():
         return None
-    uri = path.resolve().as_uri() + "?mode=ro"
     for _attempt in (1, 2):
         try:
-            connection = sqlite3.connect(uri, uri=True, timeout=0.0)
+            connection = sqlite3.connect(path, timeout=0.0)
         except sqlite3.OperationalError:
             continue
         connection.row_factory = sqlite3.Row
@@ -169,7 +252,7 @@ def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
     return connection
 
 
-def _build_held(root: str | os.PathLike[str], *, only: Sequence[str] | None) -> dict[str, Any]:
+def _build_held(root: str | os.PathLike[str], *, only: Sequence[str] | None, verify: bool = False) -> dict[str, Any]:
     safe = require_real_root(root)
     config = load_config(safe)
     published = _index_path(safe)
@@ -209,7 +292,7 @@ def _build_held(root: str | os.PathLike[str], *, only: Sequence[str] | None) -> 
                 _drop_path(connection, relative)
                 updated += 1
                 continue
-            if _unchanged(connection, relative, path):
+            if _unchanged(connection, relative, path, verify=verify):
                 continue
             _replace_path(connection, config, relative, path, tokenizer)
             updated += 1
@@ -232,6 +315,10 @@ def _build_held(root: str | os.PathLike[str], *, only: Sequence[str] | None) -> 
     os.chmod(staging, 0o600)
     os.replace(staging, published)
     os.chmod(published, 0o600)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(published) + suffix)
+        if sidecar.exists() and not sidecar.is_symlink():
+            sidecar.unlink()
     _fsync_directory(published.parent)
     return {
         "busy": False,
@@ -252,7 +339,10 @@ def _create_schema(connection: sqlite3.Connection, *, trigram: bool) -> None:
             path TEXT PRIMARY KEY,
             size INTEGER NOT NULL,
             mtime_ns INTEGER NOT NULL,
-            sha256 TEXT NOT NULL
+            sha256 TEXT NOT NULL,
+            verified_at TEXT NOT NULL,
+            undecodable INTEGER NOT NULL,
+            torn INTEGER NOT NULL
         );
         CREATE TABLE units (
             id INTEGER PRIMARY KEY,
@@ -266,7 +356,8 @@ def _create_schema(connection: sqlite3.Connection, *, trigram: bool) -> None:
             heading TEXT NOT NULL,
             text TEXT NOT NULL,
             line_start INTEGER NOT NULL,
-            line_end INTEGER NOT NULL
+            line_end INTEGER NOT NULL,
+            page_zone TEXT NOT NULL
         );
         CREATE INDEX units_path ON units(path);
         CREATE INDEX units_address ON units(address);
@@ -282,6 +373,11 @@ def _create_schema(connection: sqlite3.Connection, *, trigram: bool) -> None:
             vector TEXT NOT NULL
         );
         CREATE VIRTUAL TABLE units_words USING fts5(heading, text, tokenize = 'unicode61 remove_diacritics 2');
+        CREATE TABLE cjk_grams (
+            gram TEXT NOT NULL,
+            unit_id INTEGER NOT NULL
+        );
+        CREATE INDEX cjk_grams_gram ON cjk_grams(gram);
         """
     )
     if trigram:
@@ -290,9 +386,20 @@ def _create_schema(connection: sqlite3.Connection, *, trigram: bool) -> None:
 
 def _source_files(root: Path) -> list[tuple[str, Path]]:
     found: list[tuple[str, Path]] = []
-    for layer in (*layout.FOREST_LAYERS, layout.DAILY):
+    for layer in layout.FOREST_LAYERS:
         for relative in layout.iter_pages(root, (layer,)):
             found.append((relative, layout.resolve(root, relative)))
+    found.extend(_lane_daily_files(root))
+    return found
+
+
+def _lane_daily_files(root: Path) -> list[tuple[str, Path]]:
+    """Daily pages and raw-lane files only. A query refresh stats these, not every page."""
+    found: list[tuple[str, Path]] = []
+    for relative in layout.iter_pages(root, (layout.DAILY,)):
+        path = _file_at(root, relative)
+        if path is not None:
+            found.append((relative, path))
     top = root / layout.ISTM
     if not top.exists():
         return found
@@ -319,13 +426,120 @@ def _source_files(root: Path) -> list[tuple[str, Path]]:
     return found
 
 
-def _unchanged(connection: sqlite3.Connection, relative: str, path: Path) -> bool:
+def _file_at(root: Path, relative: str) -> Path | None:
+    try:
+        path = layout.resolve(root, layout.normalize(relative))
+    except MemoryForestError:
+        return None
+    if path.is_symlink() or not path.is_file():
+        return None
+    return path
+
+
+def _changed_lane_daily(root: Path) -> list[str]:
+    connection = connect(root)
+    if connection is None:
+        return [relative for relative, _path in _lane_daily_files(root)]
+    try:
+        stored = {
+            row[0]: (row[1], row[2])
+            for row in connection.execute(
+                "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
+                (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
+            )
+        }
+    finally:
+        connection.close()
+    present = dict(_lane_daily_files(root))
+    changed = []
+    for relative, path in present.items():
+        info = path.stat()
+        old = stored.get(relative)
+        if old is None or old[0] != info.st_size or old[1] != info.st_mtime_ns:
+            changed.append(relative)
+    changed.extend(relative for relative in stored if relative not in present)
+    return sorted(set(changed))
+
+
+def _update_held(root: Path, paths: list[str], *, verify: bool) -> dict[str, Any]:
+    """Write ``paths`` into the published database. The caller holds the index lock."""
+    config = load_config(root)
+    tokenizer = tokenizer_name()
+    published = _index_path(root)
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(published)
+        connection.execute("PRAGMA busy_timeout = 1000")
+        meta = _metadata(connection)
+        if meta.get("schema") != SCHEMA or meta.get("tokenizer") != tokenizer:
+            connection.close()
+            connection = None
+            return _build_held(root, only=None, verify=verify)
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("BEGIN IMMEDIATE")
+        updated = 0
+        for relative in paths:
+            path = _file_at(root, relative)
+            if path is None:
+                if connection.execute("SELECT 1 FROM files WHERE path = ?", (relative,)).fetchone():
+                    _drop_path(connection, relative)
+                    updated += 1
+                continue
+            if _unchanged(connection, relative, path, verify=verify):
+                continue
+            _replace_path(connection, config, relative, path, tokenizer)
+            updated += 1
+        _set_meta(connection, "schema", SCHEMA)
+        _set_meta(connection, "tokenizer", tokenizer)
+        _set_meta(connection, "built_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        connection.commit()
+        try:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+        files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
+    except BaseException:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except sqlite3.Error:
+                pass
+        raise
+    finally:
+        if connection is not None:
+            connection.close()
+    os.chmod(published, 0o600)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(published) + suffix)
+        if sidecar.is_file() and not sidecar.is_symlink():
+            os.chmod(sidecar, 0o600)
+    return {
+        "files": files,
+        "ok": True,
+        "path": INDEX_RELATIVE,
+        "tokenizer": tokenizer,
+        "units": units,
+        "updated": updated,
+    }
+
+
+def _unchanged(connection: sqlite3.Connection, relative: str, path: Path, *, verify: bool) -> bool:
+    """Size and time first. Hash when ``verify`` is set or the stored hash is older than a day."""
     info = path.stat()
     row = connection.execute(
-        "SELECT size, mtime_ns, sha256 FROM files WHERE path = ?", (relative,)
+        "SELECT size, mtime_ns, sha256, verified_at FROM files WHERE path = ?", (relative,)
     ).fetchone()
     if row is None or row[0] != info.st_size or row[1] != info.st_mtime_ns:
         return False
+    if not verify and not _verification_due(row[3]):
+        return True
+    if _hash(path) != row[2]:
+        return False
+    connection.execute(
+        "UPDATE files SET verified_at = ? WHERE path = ?",
+        (_verified_stamp(), relative),
+    )
     return True
 
 
@@ -338,38 +552,42 @@ def _replace_path(
 ) -> None:
     info = path.stat()
     digest = _hash(path)
+    text, undecodable = _read_text(path)
+    torn = _torn_lane(relative, text)
+    verified = _verified_stamp()
     row = connection.execute("SELECT sha256 FROM files WHERE path = ?", (relative,)).fetchone()
     if row is not None and row[0] == digest:
         connection.execute(
-            "UPDATE files SET size = ?, mtime_ns = ? WHERE path = ?",
-            (info.st_size, info.st_mtime_ns, relative),
+            "UPDATE files SET size = ?, mtime_ns = ?, verified_at = ?, undecodable = ?, torn = ? WHERE path = ?",
+            (info.st_size, info.st_mtime_ns, verified, int(undecodable), int(torn), relative),
         )
         return
-    text = path.read_text(encoding="utf-8")
     units = units_of(relative, text, config)
     _drop_path(connection, relative)
     provider = embeddings.get(config.embeddings.provider)
     vectors: Sequence[Sequence[float]] | None = None
-    if provider is not None and units:
+    shown_units = [_shown_unit(unit, config) for unit in units]
+    if provider is not None and shown_units:
         try:
-            vectors = provider.embed([unit["text"] for unit in units])
+            vectors = provider.embed([unit["text"] for unit in shown_units])
         except Exception as exc:
             raise MemoryForestError(
                 "embeddings_failed",
                 "The registered embedding provider failed. Nothing was published.",
                 details={"provider": provider.name},
             ) from exc
-        if len(vectors) != len(units):
+        if len(vectors) != len(shown_units):
             raise MemoryForestError(
                 "embeddings_failed",
                 "The embedding provider returned a different number of vectors than texts.",
                 details={"provider": provider.name},
             )
     trigram = "trigram" in tokenizer
-    for index, unit in enumerate(units):
+    for index, unit in enumerate(shown_units):
         cursor = connection.execute(
-            "INSERT INTO units (path, address, layer, tree, agent, kind, subjects, heading, text, line_start, line_end) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO units (path, address, layer, tree, agent, kind, subjects, heading, text, "
+            "line_start, line_end, page_zone) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 unit["path"],
                 unit["address"],
@@ -382,6 +600,7 @@ def _replace_path(
                 unit["text"],
                 unit["line_start"],
                 unit["line_end"],
+                unit["page_zone"],
             ),
         )
         unit_id = int(cursor.lastrowid)
@@ -404,9 +623,11 @@ def _replace_path(
                 "INSERT INTO vectors (unit_id, vector) VALUES (?, ?)",
                 (unit_id, json.dumps(list(vectors[index]))),
             )
+        _insert_grams(connection, unit_id, unit["heading"], unit["text"])
     connection.execute(
-        "INSERT INTO files (path, size, mtime_ns, sha256) VALUES (?, ?, ?, ?)",
-        (relative, info.st_size, info.st_mtime_ns, digest),
+        "INSERT INTO files (path, size, mtime_ns, sha256, verified_at, undecodable, torn) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (relative, info.st_size, info.st_mtime_ns, digest, verified, int(undecodable), int(torn)),
     )
 
 
@@ -418,6 +639,7 @@ def _drop_path(connection: sqlite3.Connection, relative: str) -> None:
             connection.execute("DELETE FROM units_tri WHERE rowid = ?", (unit_id,))
         connection.execute("DELETE FROM times WHERE unit_id = ?", (unit_id,))
         connection.execute("DELETE FROM vectors WHERE unit_id = ?", (unit_id,))
+        connection.execute("DELETE FROM cjk_grams WHERE unit_id = ?", (unit_id,))
     connection.execute("DELETE FROM units WHERE path = ?", (relative,))
     connection.execute("DELETE FROM files WHERE path = ?", (relative,))
 
@@ -465,6 +687,125 @@ def _hash(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _read_text(path: Path) -> tuple[str, bool]:
+    """The file as text. A page that is not UTF-8 is read with replacement characters."""
+    data = path.read_bytes()
+    try:
+        return data.decode("utf-8"), False
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace"), True
+
+
+def _torn_lane(relative: str, text: str) -> bool:
+    """Whether a raw-lane file has a line that is not one JSON object. The other lines are still indexed."""
+    if not relative.startswith(layout.ISTM + "/"):
+        return False
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            json.loads(line)
+        except json.JSONDecodeError:
+            return True
+    return False
+
+
+def _shown_unit(unit: dict[str, Any], config: Config) -> dict[str, Any]:
+    """The unit with the heading and text a read would print."""
+    heading = show_text(unit["heading"], config=config)
+    text = show_text(unit["text"], config=config)
+    return {
+        **unit,
+        "heading": heading if isinstance(heading, str) else unit["heading"],
+        "text": text if isinstance(text, str) else unit["text"],
+    }
+
+
+def _verified_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _verification_due(stamp: str | None) -> bool:
+    if not stamp:
+        return True
+    try:
+        verified = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    return datetime.now(timezone.utc) - verified >= VERIFY_INTERVAL
+
+
+def _flagged(connection: sqlite3.Connection, column: str) -> list[str]:
+    if column not in {"undecodable", "torn"}:
+        return []
+    rows = connection.execute(f"SELECT path FROM files WHERE {column} = 1 ORDER BY path")
+    return [row[0] for row in rows]
+
+
+def _verify_due(connection: sqlite3.Connection) -> list[str]:
+    found = []
+    for path, stamp in connection.execute("SELECT path, verified_at FROM files ORDER BY path"):
+        if _verification_due(stamp):
+            found.append(path)
+    return found
+
+
+def _insert_grams(connection: sqlite3.Connection, unit_id: int, heading: str, text: str) -> None:
+    grams = _cjk_grams(heading + "\n" + text)
+    if not grams:
+        return
+    connection.executemany(
+        "INSERT INTO cjk_grams (gram, unit_id) VALUES (?, ?)",
+        [(gram, unit_id) for gram in grams],
+    )
+
+
+def _cjk_ids(connection: sqlite3.Connection, tokens: Sequence[str]) -> set[int]:
+    """Units whose CJK grams contain each token, including a short token inside a longer word."""
+    found: set[int] = set()
+    for token in tokens:
+        for run in _CJK_RUN.findall(token):
+            found.update(_units_for_run(connection, run))
+    return found
+
+
+def _units_for_run(connection: sqlite3.Connection, run: str) -> set[int]:
+    grams = [run] if len(run) == 1 else [run[index : index + 2] for index in range(len(run) - 1)]
+    matched: set[int] | None = None
+    for gram in grams:
+        try:
+            rows = {
+                int(row[0])
+                for row in connection.execute("SELECT unit_id FROM cjk_grams WHERE gram = ?", (gram,))
+            }
+        except sqlite3.OperationalError:
+            return set()
+        matched = rows if matched is None else matched & rows
+        if not matched:
+            return set()
+    return matched or set()
+
+
+def _cjk_grams(text: str) -> list[str]:
+    """Unigrams and bigrams of each uninterrupted CJK run, so a short word is found inside a longer one."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for run in _CJK_RUN.findall(text):
+        for index, character in enumerate(run):
+            if character not in seen:
+                seen.add(character)
+                found.append(character)
+            if index:
+                pair = run[index - 1 : index + 1]
+                if pair not in seen:
+                    seen.add(pair)
+                    found.append(pair)
+    return found
+
+
+_CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+")
 
 
 def _index_path(root: Path) -> Path:
@@ -667,6 +1008,7 @@ def _unit(
         "line_start": line_start,
         "path": relative,
         "subjects": [item for item in subjects if item],
+        "page_zone": zone.key if isinstance(zone, ZoneInfo) else _zone_name(datetime.now(zone)),
         "text": text,
         "times": times,
         "tree": tree,
@@ -754,9 +1096,14 @@ def _timeline_interval(
         return None
     start, end = span
     if line.start and re.fullmatch(r"\d{4}-\d{2}-\d{2}", line.date):
-        start = _clock(start, line.start)
+        clocked = _clock(start, line.start)
+        if clocked is None:
+            return None
+        start = clocked
         if line.end:
             stop = _clock(span[0], line.end)
+            if stop is None:
+                return None
             if stop <= start:
                 stop += timedelta(days=1)
             end = stop
@@ -766,6 +1113,13 @@ def _timeline_interval(
 
 
 def _calendar_span(date_text: str, zone: ZoneInfo) -> tuple[datetime, datetime] | None:
+    try:
+        return _calendar_span_unchecked(date_text, zone)
+    except ValueError:
+        return None
+
+
+def _calendar_span_unchecked(date_text: str, zone: ZoneInfo) -> tuple[datetime, datetime] | None:
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_text):
         year, month, day = (int(part) for part in date_text.split("-"))
         start = datetime(year, month, day, tzinfo=zone)
@@ -790,9 +1144,14 @@ def _calendar_span(date_text: str, zone: ZoneInfo) -> tuple[datetime, datetime] 
     return None
 
 
-def _clock(day: datetime, clock: str) -> datetime:
-    hour, minute = (int(part) for part in clock.split(":", 1))
-    return day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+def _clock(day: datetime, clock: str) -> datetime | None:
+    try:
+        hour, minute = (int(part) for part in clock.split(":", 1))
+        if hour > 23 or minute > 59:
+            return None
+        return day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    except ValueError:
+        return None
 
 
 def _zone_of(name: str | None, page_zone: ZoneInfo, forest_zone: ZoneInfo) -> ZoneInfo | timezone:
@@ -873,6 +1232,7 @@ def query(
         raise MemoryForestError("search_empty", "Search needs the words to look for.")
     if limit < 1:
         raise MemoryForestError("search_limit", "The limit is at least 1.", details={"limit": limit})
+    stale = refresh_lanes_and_daily(safe)
     built = registry_mod.build(safe, config=config)
     scope = for_reader(config, built, reader, named=named, root=safe)
     connection = require_index(safe)
@@ -882,7 +1242,10 @@ def query(
         _add_word_hits(connection, pages, words, scope)
         vector_note = _add_vector_hits(connection, pages, words, config, scope)
         ordered = sorted(pages.values(), key=lambda item: (item["tier"], -item["score"], item["path"]))[:limit]
-        return _envelope(scope, ordered, vectors=vector_note, question=words)
+        payload = _envelope(scope, ordered, vectors=vector_note, question=words)
+        if stale:
+            payload["stale"] = stale
+        return payload
     finally:
         connection.close()
 
@@ -911,7 +1274,7 @@ def read(
             details={"path": path},
         )
     try:
-        file_text = layout.resolve(safe, path, must_exist=True).read_text(encoding="utf-8")
+        file_text, undecodable = _read_text(layout.resolve(safe, path, must_exist=True))
     except MemoryForestError:
         raise
     except OSError as exc:
@@ -933,7 +1296,7 @@ def read(
         body = "\n".join(file_lines[overlap_start - 1 : overlap_end])
         start, end = overlap_start, overlap_end
     tree = info.tree or ""
-    return _envelope(
+    payload = _envelope(
         scope,
         [
             {
@@ -958,6 +1321,10 @@ def read(
             }
         ],
     )
+    if undecodable:
+        payload["status"] = f"undecodable: {path}"
+        payload["undecodable"] = [path]
+    return payload
 
 
 def navigate(
@@ -981,13 +1348,16 @@ def navigate(
             "That path is outside this reader's trees and lane.",
             details={"path": target},
         )
-    file_text = layout.resolve(safe, target, must_exist=True).read_text(encoding="utf-8")
+    try:
+        file_text, undecodable = _read_text(layout.resolve(safe, target, must_exist=True))
+    except OSError as exc:
+        raise MemoryForestError("read_failed", "The page could not be read.", details={"path": target}) from exc
     kept = [
         {"line": number, "text": line}
         for number, line in enumerate(file_text.splitlines(), start=1)
         if line.strip() and _line_visible(line, scope, built)
     ]
-    return {
+    payload = {
         "consulted": list(scope.trees),
         "lanes": [],
         "ok": True,
@@ -1013,6 +1383,10 @@ def navigate(
         ],
         "trees": [info.tree] if info.tree and info.tree in scope.trees else [],
     }
+    if undecodable:
+        payload["status"] = f"undecodable: {target}"
+        payload["undecodable"] = [target]
+    return payload
 
 
 def _navigate_target(path: str | None, built: registry_mod.Registry, scope: Scope) -> str:
@@ -1154,6 +1528,7 @@ def _add_word_hits(
                     ids.add(int(row[0]))
             except sqlite3.OperationalError:
                 continue
+    ids.update(_cjk_ids(connection, tokens))
     if not ids:
         return
     for row in connection.execute(
@@ -1395,7 +1770,7 @@ def _addressed(path: str, text: str, address: str, config: Config) -> tuple[int,
 
 def mask_result(value: Any, *, config: Config) -> Any:
     """What a command or the MCP server returns: sign-in values masked, numbers starred."""
-    return shown(value, config=config)
+    return show_text(value, config=config)
 
 
 def parse_lines(text: str | None) -> tuple[int, int] | None:

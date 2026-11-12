@@ -11,7 +11,7 @@ from .errors import MemoryForestError
 
 
 def cmd_index_build(arguments: Any) -> int:
-    result = search.build(forest_root(arguments))
+    result = search.build(forest_root(arguments), verify=bool(arguments.verify))
     _show_index(arguments, result)
     return 0
 
@@ -103,15 +103,19 @@ def _show_index(arguments: Any, result: dict[str, Any]) -> None:
         _print_lines([f"index: {result['path']}", "not built"])
         return
     stale = result.get("stale") or []
-    _print_lines(
-        [
-            f"index: {result['path']}",
-            f"tokenizer: {result.get('tokenizer', '')}",
-            f"files: {result.get('files', 0)}  units: {result.get('units', 0)}",
-            f"stale: {len(stale)}",
-            *(f"  {path}" for path in stale),
-        ]
-    )
+    lines = [
+        f"index: {result['path']}",
+        f"tokenizer: {result.get('tokenizer', '')}",
+        f"files: {result.get('files', 0)}  units: {result.get('units', 0)}",
+        f"stale: {len(stale)}",
+        *(f"  {path}" for path in stale),
+    ]
+    for label in ("undecodable", "torn", "verify_due"):
+        named = result.get(label) or []
+        if named:
+            lines.append(f"{label}: {len(named)}")
+            lines.extend(f"  {path}" for path in named)
+    _print_lines(lines)
 
 
 def _show_pages(arguments: Any, result: dict[str, Any]) -> None:
@@ -144,7 +148,18 @@ _NAMED = arg("--named", action="append", default=None, help="an agent this task 
 _LIMIT = arg("--limit", type=int, default=10, help="how many pages to return")
 
 COMMANDS: list[ForestCommand] = [
-    ForestCommand(("index", "build"), cmd_index_build, "Build or update .forest/index.sqlite. A reader never waits for this."),
+    ForestCommand(
+        ("index", "build"),
+        cmd_index_build,
+        "Build or update .forest/index.sqlite. A reader never waits for this.",
+        (
+            arg(
+                "--verify",
+                action="store_true",
+                help="Hash every file, including one whose size and time are unchanged.",
+            ),
+        ),
+    ),
     ForestCommand(("index", "status"), cmd_index_status, "Show the index tokenizer, counts and files changed since the build."),
     ForestCommand(
         ("search",),
@@ -179,7 +194,7 @@ COMMANDS: list[ForestCommand] = [
         ("mcp",),
         cmd_mcp,
         "Serve memory_search, memory_read, memory_timeline, memory_navigate and memory_log. "
-        "--http PORT binds to loopback; any other host needs .forest/mcp/token in mode 0600.",
+        "Stdio is one JSON message per line. HTTP, including loopback, uses .forest/mcp/token in mode 0600.",
         (
             arg("--as", dest="reader", required=True, help="the agent this connection reads and logs as"),
             arg("--http", default=None, help="PORT, or HOST:PORT. PORT alone binds to loopback"),

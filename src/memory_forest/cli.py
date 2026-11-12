@@ -662,11 +662,17 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
             for key, value in sorted(exc.details.items()):
                 sys.stderr.write(_shown(f"  {key}: {value}\n"))
         return 2
+    except UnicodeError:
+        sys.stderr.write("forest: read_failed: a file could not be read as text\n")
+        return 2
     except OSError as exc:
         sys.stderr.write(f"forest: filesystem_error: {exc.__class__.__name__}\n")
         return 2
     except KeyboardInterrupt:
         return 130
+    except Exception as exc:
+        sys.stderr.write(f"forest: failed: {exc.__class__.__name__}\n")
+        return 2
 
 
 if __name__ == "__main__":
