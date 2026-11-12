@@ -1,4 +1,4 @@
-"""The index keeps up: masking, appends, one way of writing the file, large queries.
+"""The index keeps up (masking, appends, one way of writing the file, large queries); protocol details.
 
 The bakery, Ilse, the lockers and the two bots are invented. Nothing here is a
 real person, shop, code or transcript.
@@ -19,11 +19,11 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
-from memory_forest import credential_ledger, layout, search
+from memory_forest import credential_ledger, layout, mcp, search
 from memory_forest.errors import MemoryForestError
 from memory_forest.locking import hold_lock
 
-from test_v1_find import FILES, SETTINGS, _cli, _initialize, _rpc, _stdio
+from test_v1_find import FILES, SETTINGS, _cli, _initialize, _http, _read_frame, _rpc, _stdio
 from v1_support import ForestTestCase
 
 
@@ -316,6 +316,117 @@ class PublishingTests(ForestTestCase):
             search.build(self.root)
         self.assertEqual(refused.exception.code, "index_unreadable")
         self.assertTrue(self.index.exists())
+
+
+class ProtocolTests(ForestTestCase):
+    """Each detail as the negotiated revision's own text states it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root = self.make_forest(FILES)
+        search.build(self.root)
+
+    @staticmethod
+    def _call(msg_id: int, name: str, arguments: dict | None) -> dict:
+        params: dict = {"name": name}
+        if arguments is not None:
+            params["arguments"] = arguments
+        return {"jsonrpc": "2.0", "id": msg_id, "method": "tools/call", "params": params}
+
+    def test_input_validation_is_a_tool_result_from_2025_11_25_and_a_protocol_error_before(self) -> None:
+        bad = [("memory_search", {"words": "rye", "limit": 0}), ("memory_read", {"path": LOCKER, "lines": "x"})]
+        for version in mcp.PROTOCOL_VERSIONS:
+            with self.subTest(version=version), _stdio(self.root) as proc:
+                _rpc(proc, _initialize(version))
+                for number, (name, arguments) in enumerate(bad, start=2):
+                    reply = _rpc(proc, self._call(number, name, arguments))
+                    if version == "2025-11-25":
+                        self.assertTrue(reply["result"]["isError"], reply)
+                    else:
+                        self.assertEqual(reply["error"]["code"], -32602, reply)
+                unknown = _rpc(proc, self._call(9, "memory_missing", {}))
+                self.assertEqual(unknown["error"]["code"], -32602)
+                listed = _rpc(proc, self._call(10, "memory_navigate", None))
+                self.assertFalse(listed["result"]["isError"])
+
+    def test_an_unreadable_id_is_omitted_where_allowed_and_null_elsewhere(self) -> None:
+        with _stdio(self.root) as proc:
+            proc.stdin.write(b"{not json\n")
+            proc.stdin.flush()
+            before = _read_frame(proc.stdout)
+            self.assertEqual(before["error"]["code"], -32700)
+            self.assertIn("id", before)
+            self.assertIsNone(before["id"])
+            _rpc(proc, _initialize("2025-11-25"))
+            proc.stdin.write(b"{not json\n")
+            proc.stdin.flush()
+            newest = _read_frame(proc.stdout)
+            self.assertEqual(newest["error"]["code"], -32700)
+            self.assertNotIn("id", newest)
+            null_id = _rpc(proc, {"jsonrpc": "2.0", "id": None, "method": "ping"})
+            self.assertEqual(null_id["error"]["code"], -32600)
+            self.assertNotIn("id", null_id)
+        with _stdio(self.root) as proc:
+            _rpc(proc, _initialize("2025-06-18"))
+            proc.stdin.write(b"[1, 2\n")
+            proc.stdin.flush()
+            older = _read_frame(proc.stdout)
+            self.assertIsNone(older["id"])
+        token = mcp.ensure_token(self.root).decode("ascii")
+        server = mcp.serve_http(self.root, "till-bot", "127.0.0.1", 0, token=token.encode("ascii"), read_timeout=0.4)
+        try:
+            broken = _http(server.server_address[1], None, token=token, raw=b"{not json")
+            self.assertEqual(broken.status, 400)
+            self.assertNotIn("id", json.loads(broken.body))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_an_oversize_line_is_one_error_and_the_next_line_is_read(self) -> None:
+        with _stdio(self.root) as proc:
+            _rpc(proc, _initialize("2025-11-25"))
+            proc.stdin.write(b'{"jsonrpc":"2.0","id":5,"method":"ping","params":{"pad":"' + b"a" * mcp.MESSAGE_LIMIT
+                             + b'"}}\n')
+            proc.stdin.write(b'{"jsonrpc":"2.0","id":6,"method":"ping"}\n')
+            proc.stdin.flush()
+            refused = _read_frame(proc.stdout)
+            self.assertEqual(refused["error"]["code"], -32600)
+            following = _read_frame(proc.stdout)
+            self.assertEqual(following["id"], 6)
+            self.assertEqual(following["result"], {})
+
+    def test_read_message_holds_no_more_than_the_limit(self) -> None:
+        class Stream:
+            def __init__(self, data: bytes) -> None:
+                self.data, self.position, self.largest = data, 0, 0
+
+            def readline(self, size: int = -1) -> bytes:
+                self.largest = max(self.largest, size)
+                end = self.data.find(b"\n", self.position)
+                end = len(self.data) if end < 0 else end + 1
+                if 0 <= size < end - self.position:
+                    end = self.position + size
+                piece = self.data[self.position : end]
+                self.position = end
+                return piece
+
+        stream = Stream(b"x" * (mcp.MESSAGE_LIMIT * 3) + b"\n" + b'{"jsonrpc":"2.0","id":1,"method":"ping"}\n')
+        self.assertIs(mcp.read_message(stream), mcp._OVERSIZE)
+        self.assertEqual(mcp.read_message(stream)["id"], 1)
+        self.assertLessEqual(stream.largest, mcp.MESSAGE_LIMIT + 1)
+        self.assertIsNone(mcp.read_message(stream))
+
+    def test_a_batch_before_initialize_or_holding_initialize_is_refused(self) -> None:
+        with _stdio(self.root) as proc:
+            early = _rpc(proc, [{"jsonrpc": "2.0", "id": 1, "method": "ping"}])
+            self.assertEqual(early["error"]["code"], -32600)
+            folded = _rpc(proc, [_initialize("2025-03-26")])
+            self.assertEqual(folded["error"]["code"], -32600)
+            _rpc(proc, _initialize("2025-03-26"))
+            again = _rpc(proc, [{"jsonrpc": "2.0", "id": 2, "method": "ping"}, _initialize("2025-03-26")])
+            self.assertEqual(again["error"]["code"], -32600)
+            accepted = _rpc(proc, [{"jsonrpc": "2.0", "id": 3, "method": "ping"}])
+            self.assertEqual([item["id"] for item in accepted], [3])
 
 
 class QuerySizeTests(ForestTestCase):

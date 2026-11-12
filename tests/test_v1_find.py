@@ -501,7 +501,8 @@ class McpTests(ForestTestCase):
                     "params": {"name": "memory_log", "arguments": {"text": "should not land", "role": "owner"}},
                 },
             )
-            self.assertEqual(rejected["error"]["code"], -32602)
+            # 2025-11-25: an argument the tool does not take is an input validation error, a tool result.
+            self.assertTrue(rejected["result"]["isError"])
             lane = (self.root / "06 istm" / "till-bot" / "2051-03-02.jsonl").read_text(encoding="utf-8")
             self.assertNotIn("should not land", lane)
             logged = _rpc(

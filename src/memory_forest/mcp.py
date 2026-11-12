@@ -11,6 +11,22 @@ it. A request is refused unless the bearer token matches those bytes, the body
 is ``application/json``, and, when ``Origin`` or ``Host`` is present, it names
 the loopback server.
 
+What each protocol revision says, and this server does:
+
+- An argument that fails a tool's input schema (``limit`` below 1, ``lines``
+  not written A-B, an argument the tool does not take) is a tool result with
+  ``isError: true`` under 2025-11-25 ("Input validation errors" are tool
+  execution errors) and JSON-RPC ``-32602`` under the earlier revisions
+  ("Invalid arguments" are protocol errors). An unknown tool, or arguments that
+  are not an object, is ``-32602`` under every revision.
+- An error answering a message whose id could not be read has no ``id`` under
+  2025-11-25 and on HTTP from 2025-03-26 on, which allow that; elsewhere its
+  ``id`` is null, as JSON-RPC 2.0 requires.
+- A stdio line is read at most ``MESSAGE_LIMIT`` bytes at a time. A longer line
+  is answered with one error and skipped to its end; the next line is read.
+- A batch is refused before ``initialize`` (no revision is agreed yet) and when
+  it holds ``initialize``, which 2025-03-26 says must not be part of a batch.
+
 The clients checked on a development machine (``claude mcp``, ``codex mcp``,
 ``grok mcp``) speak protocol versions 2024-11-05, 2025-03-26, 2025-06-18 and
 2025-11-25, over stdio and streamable HTTP. Claude and Grok also offer the
@@ -50,6 +66,11 @@ from .safety import require_real_root
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 # 2025-03-26 added JSON-RPC batches. 2024-11-05 has none. 2025-06-18 removed them.
 BATCH_VERSIONS = frozenset({"2025-03-26"})
+# 2025-11-25: "Input validation errors" are tool execution errors (``isError: true``), not protocol errors.
+INPUT_ERROR_RESULT_VERSIONS = frozenset({"2025-11-25"})
+# An error response with no ``id``: allowed by 2025-11-25's base protocol, and for HTTP error bodies from 2025-03-26.
+NO_ID_VERSIONS = frozenset({"2025-11-25"})
+NO_ID_HTTP_VERSIONS = frozenset({"2025-03-26", "2025-06-18", "2025-11-25"})
 ASSUMED_VERSION = "2025-03-26"
 SEEN_FILE = f"{layout.STATE_DIR}/mcp/seen.json"
 TOKEN_FILE = f"{layout.STATE_DIR}/mcp/token"
@@ -161,7 +182,12 @@ class _ParseError:
     """One line was not a JSON value."""
 
 
+class _Oversize:
+    """One line was longer than ``MESSAGE_LIMIT``; it was read to its end and dropped."""
+
+
 _PARSE = _ParseError()
+_OVERSIZE = _Oversize()
 
 
 def run(root: str | os.PathLike[str], reader: str, http: str | None = None) -> int:
@@ -201,14 +227,19 @@ def serve_stdio(root: str | os.PathLike[str], reader: str, *, stdin: Any = None,
         if message is None:
             return
         if message is _PARSE:
-            if not _write_safely(outgoing, _error(None, -32700, "Parse error.")):
+            if not _write_safely(outgoing, _unread_error(-32700, "Parse error.", negotiated, "stdio")):
+                return
+            continue
+        if message is _OVERSIZE:
+            refused = _unread_error(-32600, f"The message is longer than {MESSAGE_LIMIT} bytes.", negotiated, "stdio")
+            if not _write_safely(outgoing, refused):
                 return
             continue
         try:
             response, negotiated = handle_message(root, reader, message, "stdio", negotiated)
         except Exception as exc:
             _log(f"forest mcp: one request failed ({exc.__class__.__name__}) and the next will be read")
-            response = _error(_message_id(message), -32603, "The request could not be answered.")
+            response = _reply_error(message, -32603, "The request could not be answered.", negotiated, "stdio")
         if response is not None and not _write_safely(outgoing, response):
             return
 
@@ -244,22 +275,23 @@ def handle_message(
     transport: str,
     negotiated: str | None,
 ) -> tuple[Any, str | None]:
-    """One stdio or HTTP payload. A notification or a client response returns None."""
+    """One stdio or HTTP payload. A notification or a client response returns None.
+
+    ``negotiated`` is the revision agreed by ``initialize`` on stdio (None before it), or the one an HTTP request
+    states.
+    """
     if isinstance(message, list):
-        version = _batch_version(negotiated, message)
-        if version not in BATCH_VERSIONS:
-            return _error(None, -32600, "This protocol version does not accept a batch."), negotiated
-        if not message:
-            return _error(None, -32600, "The batch is empty."), negotiated
+        refusal = _batch_refusal(negotiated, message)
+        if refusal is not None:
+            return _unread_error(-32600, refusal, negotiated, transport), negotiated
         replies: list[dict[str, Any]] = []
-        current = negotiated
         for item in message:
-            reply, current = _dispatch_one(root, reader, item, transport, current if current else version)
+            reply, _ignored = _dispatch_one(root, reader, item, transport, negotiated)
             if reply is not None:
                 replies.append(reply)
         if not replies:
-            return None, current
-        return replies, current
+            return None, negotiated
+        return replies, negotiated
     return _dispatch_one(root, reader, message, transport, negotiated)
 
 
@@ -340,13 +372,21 @@ def read_token(root: str | os.PathLike[str]) -> bytes:
 
 
 def read_message(stream: Any) -> Any:
-    """One newline-delimited JSON-RPC message, ``None`` at end of stream, or a parse failure."""
+    """One newline-delimited JSON-RPC message, ``None`` at end of stream, or a parse or size failure.
+
+    A line is read at most ``MESSAGE_LIMIT`` bytes and its newline at a time; a longer one is read on to its
+    end in bounded pieces and dropped, so no line is ever held whole in memory.
+    """
     while True:
-        line = stream.readline()
+        line = stream.readline(MESSAGE_LIMIT + 1)
         if not line:
             return None
-        if len(line) > MESSAGE_LIMIT:
-            return _PARSE
+        if len(line) > MESSAGE_LIMIT and not line.endswith(b"\n"):
+            while True:
+                rest = stream.readline(1 << 16)
+                if not rest or rest.endswith(b"\n"):
+                    break
+            return _OVERSIZE
         try:
             text = line.decode("utf-8").strip("\r\n")
         except UnicodeDecodeError:
@@ -378,7 +418,7 @@ def _dispatch_one(
     negotiated: str | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(message, dict):
-        return _error(None, -32600, "The request is not a JSON-RPC object."), negotiated
+        return _unread_error(-32600, "The request is not a JSON-RPC object.", negotiated, transport), negotiated
     if not isinstance(message.get("method"), str):
         # A client's response, or any object with no method, gets no error reply.
         return None, negotiated
@@ -386,6 +426,9 @@ def _dispatch_one(
     if "id" not in message:
         return None, negotiated
     msg_id = message["id"]
+    if not _valid_id(msg_id):
+        # MCP: a request id is a string or an integer, never null.
+        return _unread_error(-32600, "A request id is a string or a number.", negotiated, transport), negotiated
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
     try:
         if method == "initialize":
@@ -396,7 +439,7 @@ def _dispatch_one(
         if method == "tools/list":
             return _result(msg_id, {"tools": [dict(tool) for tool in _TOOLS]}), negotiated
         if method == "tools/call":
-            return _result(msg_id, _call(root, reader, params, transport)), negotiated
+            return _result(msg_id, _call(root, reader, params, transport, negotiated)), negotiated
     except _BadArguments as exc:
         return _error(msg_id, -32602, exc.message), negotiated
     return _error(msg_id, -32601, "Method not found."), negotiated
@@ -413,13 +456,26 @@ def _initialize(params: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _call(root: str | os.PathLike[str], reader: str, params: Mapping[str, Any], transport: str) -> dict[str, Any]:
+def _call(
+    root: str | os.PathLike[str],
+    reader: str,
+    params: Mapping[str, Any],
+    transport: str,
+    version: str | None = None,
+) -> dict[str, Any]:
     name = params.get("name")
-    arguments = params.get("arguments")
+    arguments = params.get("arguments", {})
     known = {tool["name"]: tool for tool in _TOOLS}
-    if not isinstance(name, str) or name not in known or not isinstance(arguments, dict):
-        raise _BadArguments("Name a tool and pass its arguments as an object.")
-    _check_arguments(name, arguments, known[name])
+    if not isinstance(name, str) or name not in known:
+        raise _BadArguments("Name a tool this server serves.")
+    if not isinstance(arguments, dict):
+        raise _BadArguments("Pass the tool's arguments as an object.")
+    try:
+        _check_arguments(name, arguments, known[name])
+    except _BadArguments as exc:
+        if version in INPUT_ERROR_RESULT_VERSIONS:
+            return _tool_error(exc.message)
+        raise
     try:
         payload = _invoke(root, reader, name, arguments, transport)
     except _BadArguments:
@@ -584,10 +640,11 @@ def _handler(
             if not self._request_allowed(version):
                 return
             if stated is None:
-                self._send(400, _error_body("The protocol version is not one this server speaks."), ASSUMED_VERSION)
+                refused = _error_body("The protocol version is not one this server speaks.", ASSUMED_VERSION)
+                self._send(400, refused, ASSUMED_VERSION)
                 return
             if not _json_content_type(self.headers.get("Content-Type")):
-                self._send(415, _error_body("The body must be application/json."), version)
+                self._send(415, _error_body("The body must be application/json.", version), version)
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -595,21 +652,22 @@ def _handler(
                 length = -1
             if length < 0 or length > MESSAGE_LIMIT:
                 self.close_connection = True
-                self._send(413, _error_body("The request is too large."), version)
+                self._send(413, _error_body("The request is too large.", version), version)
                 return
             raw = self.rfile.read(length)
             if len(raw) < length:
-                self._send(400, _error_body("The request body was cut short."), version)
+                self._send(400, _error_body("The request body was cut short.", version), version)
                 return
             try:
                 message = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                self._send(400, json.dumps(_error(None, -32700, "Parse error.")).encode("utf-8"), version)
+                broken = _unread_error(-32700, "Parse error.", version, "http")
+                self._send(400, json.dumps(broken).encode("utf-8"), version)
                 return
             if isinstance(message, list) and version not in BATCH_VERSIONS:
                 self._send(
                     400,
-                    json.dumps(_error(None, -32600, "This protocol version does not accept a batch.")).encode("utf-8"),
+                    _error_body("This protocol version does not accept a batch.", version),
                     version,
                 )
                 return
@@ -617,7 +675,7 @@ def _handler(
                 response, _negotiated = handle_message(root, reader, message, "http", version)
             except Exception as exc:
                 _log(f"forest mcp: one request failed ({exc.__class__.__name__}) and the server is still listening")
-                response = _error(_message_id(message), -32603, "The request could not be answered.")
+                response = _reply_error(message, -32603, "The request could not be answered.", version, "http")
             answered = _response_version(response, version)
             if response is None:
                 self._send(202, b"", answered)
@@ -634,13 +692,13 @@ def _handler(
         def _request_allowed(self, version: str) -> bool:
             host, port = _bound(self.server)
             if not _host_allowed(self.headers.get("Host"), host, port):
-                self._send(403, _error_body("The host is not this server."), version)
+                self._send(403, _error_body("The host is not this server.", version), version)
                 return False
             if not _origin_allowed(self.headers.get("Origin")):
-                self._send(403, _error_body("The origin is not loopback."), version)
+                self._send(403, _error_body("The origin is not loopback.", version), version)
                 return False
             if not _bearer_matches(self.headers.get("Authorization", ""), token):
-                self._send(401, _error_body("The token does not match."), version)
+                self._send(401, _error_body("The token does not match.", version), version)
                 return False
             return True
 
@@ -765,18 +823,6 @@ def _bearer_matches(header: str, token: bytes) -> bool:
     return hmac.compare_digest(presented, token)
 
 
-def _batch_version(negotiated: str | None, message: list[Any]) -> str:
-    if negotiated in PROTOCOL_VERSIONS:
-        return str(negotiated)
-    for item in message:
-        if not isinstance(item, dict) or item.get("method") != "initialize":
-            continue
-        params = item.get("params")
-        if isinstance(params, dict) and params.get("protocolVersion") in PROTOCOL_VERSIONS:
-            return str(params["protocolVersion"])
-    return ASSUMED_VERSION
-
-
 def _response_version(response: Any, applied: str) -> str:
     payloads = response if isinstance(response, list) else [response]
     for item in payloads:
@@ -807,14 +853,40 @@ def _write_safely(stream: Any, payload: Mapping[str, Any] | list[Any]) -> bool:
     return True
 
 
-def _error_body(message: str) -> bytes:
-    return json.dumps(_error(None, -32600, message), ensure_ascii=False).encode("utf-8")
+def _error_body(message: str, version: str | None) -> bytes:
+    return json.dumps(_unread_error(-32600, message, version, "http"), ensure_ascii=False).encode("utf-8")
 
 
-def _message_id(message: Any) -> Any:
-    if isinstance(message, dict) and "id" in message:
-        return message["id"]
+def _batch_refusal(negotiated: str | None, message: list[Any]) -> str | None:
+    """Why a batch is not answered item by item, or None when it is."""
+    if negotiated is None:
+        return "A batch is accepted only after initialize."
+    if negotiated not in BATCH_VERSIONS:
+        return "This protocol version does not accept a batch."
+    if not message:
+        return "The batch is empty."
+    if any(isinstance(item, dict) and item.get("method") == "initialize" for item in message):
+        return "The initialize request is not part of a batch."
     return None
+
+
+def _valid_id(value: Any) -> bool:
+    return isinstance(value, str) or (isinstance(value, (int, float)) and not isinstance(value, bool))
+
+
+def _reply_error(message: Any, code: int, text: str, version: str | None, transport: str) -> dict[str, Any]:
+    """An error answering ``message``: its own id when it could be read."""
+    if isinstance(message, dict) and _valid_id(message.get("id")):
+        return _error(message["id"], code, text)
+    return _unread_error(code, text, version, transport)
+
+
+def _unread_error(code: int, text: str, version: str | None, transport: str) -> dict[str, Any]:
+    """An error for a message whose id could not be read: no ``id`` where the revision allows that, else null."""
+    reply = _error(None, code, text)
+    if version in NO_ID_VERSIONS or (transport == "http" and version in NO_ID_HTTP_VERSIONS):
+        del reply["id"]
+    return reply
 
 
 def _port(text: str) -> int:
