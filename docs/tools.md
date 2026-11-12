@@ -505,13 +505,18 @@ A build that meets a busy file says `busy` and exits 0; a search with the same m
 full disk would lose it and the rebuild would fail again. A file whose first build has not committed yet
 is not refused: it is no index yet.
 
-`forest index reset` is for an `index_unreadable` file while no forest server is running. It checks the
-index and its `-wal` and `-shm` files first and then removes all of them, or none if one of them is a
-symlink or a folder, and prints what it removed. It holds the index lock while it does, which keeps a
-build or an update out; a search takes no lock, so the lock does not protect a process that has the file
-open. When the lock is held it removes nothing and exits 2 with `index_busy`, next move `retry`. The next
-query or `forest index build` makes the index again. `forest index reset --dry-run` names the files and
-removes nothing.
+`forest index reset` is for an index that is corrupt or damaged. The index file's name carries a
+generation. `.forest/index.current` names the current file, and with no pointer `.forest/index.sqlite`
+is the current file, so a forest made before this still opens. Under the index lock the command chooses
+a name that has not been used, writes the pointer and syncs it, then renames it into place. Only then
+does it remove the old database and its `-wal` and `-shm` files, the sidecars first, each when it is
+present. A file that cannot be removed is named in the output and is not a failure: it is an orphan
+nothing reads. The next reset or build removes orphans, only files of the index's own naming pattern in
+`.forest/`, never a symlink, never a folder, and never the current file. A call that already has a file
+open finishes on that file, so a forest server may be running. The lock keeps a build or an update out.
+When the lock is held the command removes nothing and exits 2 with `index_busy`, next move `retry`.
+The next query or `forest index build` makes the index again, at the new path. `forest index reset
+--dry-run` says what it would do and writes nothing.
 
 `forest index status` prints the tokenizer, the counts, whether the masking is current, how many files
 have changed since the build, and any page that was not valid UTF-8. Where this machine's SQLite has the trigram tokenizer, the line says

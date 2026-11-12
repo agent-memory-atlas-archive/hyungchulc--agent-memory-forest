@@ -27,9 +27,17 @@ def cmd_index_reset(arguments: Any) -> int:
     if arguments.json:
         _print_json(result)
         return 0
-    verb = "would remove" if result.get("dry_run") else "removed"
+    dry_run = bool(result.get("dry_run"))
+    verb = "would remove" if dry_run else "removed"
+    point = "would point at" if dry_run else "points at"
     removed = result.get("removed") or []
-    _print_lines([f"{verb}: {path}" for path in removed] or [f"{verb}: (nothing)"])
+    lines = [f"{point}: {result['path']}"]
+    lines.extend(f"{verb}: {path}" for path in removed)
+    if not removed:
+        lines.append(f"{verb}: (nothing)")
+    left = "would leave" if dry_run else "orphan"
+    lines.extend(f"{left}: {path}" for path in result.get("orphans") or [])
+    _print_lines(lines)
     return 0
 
 
@@ -175,7 +183,7 @@ COMMANDS: list[ForestCommand] = [
     ForestCommand(
         ("index", "reset"),
         cmd_index_reset,
-        "Remove the derived index and its -wal and -shm files, and nothing else. The next query builds it again.",
+        "Point the index at a new file, then remove the old one. A call already open keeps its own file.",
         (
             arg(
                 "--dry-run",

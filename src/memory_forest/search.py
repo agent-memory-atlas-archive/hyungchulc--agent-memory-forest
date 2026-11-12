@@ -6,9 +6,11 @@ marked block of a daily page, or one raw-lane turn. A build or update holds
 the ``index`` lock and writes the published file in place, in one transaction,
 in WAL mode: a reader keeps the snapshot it opened and never waits for a
 writer. A build or update never replaces or unlinks the file or its journal
-files. Only ``forest index reset`` removes them, for a file that is corrupt or
-is not a database (``index_error`` is the one place a SQLite error is
-classified); its lock keeps builds out, not a reader that has the file open.
+files. ``forest index reset`` publishes a new generation under
+``.forest/index.current`` and only then removes the old file, for an index
+that is corrupt or is not a database (``index_error`` is the one place a
+SQLite error is classified). A call that already opened a file finishes on
+that file. The lock keeps builds out, not a reader that has the file open.
 
 The stored text is the text a read shows: sign-in values masked, numbers
 starred. Words, the trigram index and vectors are built from that text, so a
@@ -49,7 +51,9 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
+import stat
 import threading
 import time
 from collections.abc import Iterable, Iterator, Sequence
@@ -65,14 +69,19 @@ from .collections import owner_of
 from .config import Config, load_config
 from .credentials import shown as show_text
 from .errors import MemoryForestError
-from .locking import hold_lock
+from .locking import atomic_write, hold_lock
 from .model import TimelineLine, parse_page
 from .registry import COLLECTION_OWN_SECTIONS, about_ids, normalize_name
 from .safety import require_real_root
 from .scope import Scope, for_reader
 
 
-INDEX_RELATIVE = f"{layout.STATE_DIR}/index.sqlite"
+# The name a forest has when nothing has published a pointer yet. A later reset never reuses it.
+INDEX_FILENAME = "index.sqlite"
+INDEX_RELATIVE = f"{layout.STATE_DIR}/{INDEX_FILENAME}"
+# ``.forest/index.current`` names the current index file. Absent, the legacy name above is current.
+POINTER_FILENAME = "index.current"
+_INDEX_NAME = re.compile(r"index(?:-[0-9a-f]{16})?\.sqlite\Z")
 SCHEMA = "3"
 LOCK_NAME = "index"
 # When the masking changed, a query waits this long for another build before it refuses to answer.
@@ -193,23 +202,24 @@ def update_files(
 
 
 def reset(root: str | os.PathLike[str], *, dry_run: bool = False) -> dict[str, Any]:
-    """Remove the derived index and its ``-wal`` and ``-shm`` files, and nothing else.
+    """Point the index at a new file, then remove the old one and its ``-wal`` and ``-shm`` files.
 
-    For a file that is corrupt or is not a database, while no forest server is running. The index lock is
-    held for the removal, which keeps builds and updates out; a reader takes no lock, so a process that
-    has the file open still holds it. All three paths are checked first, so the removal is all or nothing.
-    Pages, lanes and every other file stay. The next query or ``forest index build`` makes the index again.
-    ``dry_run`` names the files and leaves them. A held lock is the refusal ``index_busy`` (next: retry).
+    For an index that is corrupt, not a database, or damaged. The new file's name has never been used, so
+    no order of removals has to be right: a reader that already opened the old file finishes on it. The
+    index lock is held, which keeps a build or an update out. A server may be running. Pages and lanes stay.
+    A file that cannot be removed is named in ``orphans`` and is not a failure. ``dry_run`` says what would
+    change and writes nothing. A held lock is the refusal ``index_busy`` (next: retry).
     """
     safe = require_real_root(root)
     try:
         with _index_writer(safe, 0):
-            removed = _unlink_index(safe, dry_run=dry_run)
+            _reset_barrier()
+            result = _reset_held(safe, dry_run=dry_run)
     except MemoryForestError as exc:
         if exc.code not in _BUSY_CODES:
             raise
         raise index_busy_error("The index lock is held, so nothing was removed. Reset again when it is free.") from exc
-    return {"dry_run": dry_run, "ok": True, "path": INDEX_RELATIVE, "removed": removed}
+    return result
 
 
 _MASKING_BUSY = (
@@ -278,13 +288,14 @@ def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
 def status(root: str | os.PathLike[str]) -> dict[str, Any]:
     """Counts, the tokenizer, and whether a file has changed since the build. This does not take the lock."""
     safe = require_real_root(root)
+    relative = f"{layout.STATE_DIR}/{_current_index_name(safe)}"
     connection = connect(safe)
     if connection is None:
         return {
             "available": False,
             "exists": _index_path(safe).is_file(),
             "ok": True,
-            "path": INDEX_RELATIVE,
+            "path": relative,
         }
     try:
         try:
@@ -306,7 +317,7 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
         "files": files,
         "masking": "current" if meta.get("masking") == masking_fingerprint(safe) else "changed",
         "ok": True,
-        "path": INDEX_RELATIVE,
+        "path": relative,
         "schema": meta.get("schema", ""),
         "stale": stale,
         "tokenizer": meta.get("tokenizer", ""),
@@ -359,7 +370,7 @@ def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
         raise MemoryForestError(
             "index_missing",
             "The forest has no search index. Run `forest index build`.",
-            details={"path": INDEX_RELATIVE},
+            details={"path": index_relative(root)},
             next_step="run",
             command="forest index build",
         )
@@ -372,6 +383,9 @@ _WRITERS = threading.Lock()
 _BUSY_CODES = frozenset({"lock_busy", "lock_already_held"})
 # Tests set this to a path. A build touches it inside the write transaction and waits until it is removed.
 _PAUSE_ENV = "MEMORY_FOREST_INDEX_PAUSE"
+# A reset writes one line to the first fifo once it holds the lock, then reads the second until a line arrives.
+_RESET_HELD_ENV = "MEMORY_FOREST_RESET_HELD"
+_RESET_RELEASE_ENV = "MEMORY_FOREST_RESET_RELEASE"
 _RESET_COMMAND = "forest index reset"
 
 
@@ -517,7 +531,9 @@ def _attempt_write(
                 raise
             remaining = deadline - time.monotonic()
             if exc.code != "index_busy" or wait_seconds <= 0 or remaining <= 0:
-                return _busy_result(busy_message)
+                return _busy_result(
+                    busy_message, path=f"{layout.STATE_DIR}/{_current_index_name(root)}"
+                )
             _retry_pause(min(RETRY_INTERVAL_SECONDS, remaining))
 
 
@@ -531,36 +547,270 @@ def _retry_pause(seconds: float) -> None:
     threading.Event().wait(seconds)
 
 
-def _unlink_index(root: Path, *, dry_run: bool) -> list[str]:
-    """The index database and its ``-wal`` and ``-shm`` files. Nothing else, and no symlink is followed.
+def _reset_barrier() -> None:
+    """Let a test observe a reset that holds the lock, then wait for the test to let it continue.
 
-    All three paths are checked before anything is removed, so a symlink or a folder among them leaves
-    every file in place.
+    Ordinary runs set neither fifo. The held fifo is opened for write, which waits until the test opens
+    it for read, and the release fifo is opened for read, which waits until the test writes a line.
     """
-    published = _index_path(root)
-    found: list[tuple[Path, str]] = []
-    for suffix in ("", "-wal", "-shm"):
-        path = Path(str(published) + suffix)
-        relative = INDEX_RELATIVE + suffix
-        if path.is_symlink():
-            raise MemoryForestError(
-                "symlink_forbidden",
-                "Symlinks are not allowed inside a Memory Forest. Nothing was removed.",
-                details={"path": relative},
-            )
-        if path.exists() and not path.is_file():
-            raise MemoryForestError(
-                "index_reset_refused",
-                "An index path is not a file, so nothing was removed. Move it out of .forest/, then reset again.",
-                details={"path": relative},
-                next_step="report",
-            )
-        if path.is_file():
-            found.append((path, relative))
-    if not dry_run:
-        for path, _relative in found:
-            path.unlink()
-    return [relative for _path, relative in found]
+    held = os.environ.get(_RESET_HELD_ENV)
+    if not held:
+        return
+    descriptor = os.open(held, os.O_WRONLY)
+    try:
+        os.write(descriptor, b"held\n")
+    finally:
+        os.close(descriptor)
+    release = os.environ.get(_RESET_RELEASE_ENV)
+    if not release:
+        return
+    descriptor = os.open(release, os.O_RDONLY)
+    try:
+        os.read(descriptor, 64)
+    finally:
+        os.close(descriptor)
+
+
+def _state_dir(root: Path) -> Path:
+    """``.forest/`` without a path walk. The root is already real; this refuses a symlink in its place.
+
+    A query's freshness check is counted by how many times it resolves a path. The index name is one
+    component, so a ``lstat`` is enough and a walk per lookup would be paid on every search.
+    """
+    folder = Path(root) / layout.STATE_DIR
+    try:
+        info = folder.lstat()
+    except FileNotFoundError:
+        return folder
+    if stat.S_ISLNK(info.st_mode):
+        raise MemoryForestError(
+            "symlink_forbidden",
+            "Symlinks are not allowed inside a Memory Forest.",
+            details={"path": layout.STATE_DIR},
+            next_step="report",
+        )
+    if not stat.S_ISDIR(info.st_mode):
+        raise MemoryForestError(
+            "index_cannot_open",
+            "The .forest folder is not a directory.",
+            details={"path": layout.STATE_DIR},
+            next_step="report",
+        )
+    return folder
+
+
+def _read_pointer(root: Path) -> tuple[str | None, bool]:
+    """The current index file's name, and whether the pointer's text is not a name.
+
+    No pointer means the legacy name. A symlink pointer, or a pointer that is not a file, is refused
+    before a reset writes anything. Text that is not an index name is ``(None, True)``: a reset can
+    replace it, and every other caller refuses it.
+    """
+    path = _state_dir(root) / POINTER_FILENAME
+    relative = f"{layout.STATE_DIR}/{POINTER_FILENAME}"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return INDEX_FILENAME, False
+    if stat.S_ISLNK(info.st_mode):
+        raise MemoryForestError(
+            "symlink_forbidden",
+            "Symlinks are not allowed inside a Memory Forest. Nothing was removed.",
+            details={"path": relative},
+            next_step="report",
+        )
+    if not stat.S_ISREG(info.st_mode):
+        raise MemoryForestError(
+            "index_reset_refused",
+            "The index pointer is not a file, so a new index cannot be published. Move it out of .forest/.",
+            details={"path": relative},
+            next_step="report",
+        )
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise MemoryForestError(
+            "index_cannot_open",
+            "The index pointer could not be read.",
+            details={"path": relative},
+            next_step="report",
+        ) from exc
+    if _INDEX_NAME.fullmatch(text) is None:
+        return None, True
+    return text, False
+
+
+def _current_index_name(root: Path) -> str:
+    """The index file every caller opens. One function, so a reset and a build cannot disagree."""
+    name, bad = _read_pointer(root)
+    if bad or name is None:
+        raise MemoryForestError(
+            "index_unreadable",
+            "The index pointer does not name an index file. Run `forest index reset`.",
+            details={"path": f"{layout.STATE_DIR}/{POINTER_FILENAME}"},
+            next_step="run",
+            command=_RESET_COMMAND,
+        )
+    return name
+
+
+def index_relative(root: str | os.PathLike[str]) -> str:
+    """The forest-relative path of the current index file."""
+    safe = require_real_root(root)
+    return f"{layout.STATE_DIR}/{_current_index_name(safe)}"
+
+
+def _family(name: str) -> tuple[str, str, str]:
+    """Sidecars first, then the database. SQLite appends ``-wal`` and ``-shm`` to the whole file name."""
+    return (name + "-wal", name + "-shm", name)
+
+
+def _base_name(filename: str) -> str | None:
+    for suffix in ("-wal", "-shm"):
+        if filename.endswith(suffix):
+            filename = filename[: -len(suffix)]
+            break
+    if _INDEX_NAME.fullmatch(filename) is None:
+        return None
+    return filename
+
+
+def _index_bases(root: Path) -> list[str]:
+    """Index file names in ``.forest/``, from the directory itself. A symlink or a missing folder is none."""
+    folder = _state_dir(root)
+    try:
+        info = folder.lstat()
+    except FileNotFoundError:
+        return []
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return []
+    found: set[str] = set()
+    with os.scandir(folder) as iterator:
+        for entry in iterator:
+            base = _base_name(entry.name)
+            if base is not None:
+                found.add(base)
+    return sorted(found)
+
+
+def _classify_index_file(path: Path) -> str:
+    """``file``, ``left`` (a symlink or not a file) or ``absent``. Nothing is followed."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return "absent"
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return "left"
+    return "file"
+
+
+def _remove_index_file(path: Path) -> str:
+    """Remove a regular file if it is there. A symlink, a folder and a missing file stay. ``OSError`` is left."""
+    kind = _classify_index_file(path)
+    if kind != "file":
+        return kind
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "left"
+    return "removed"
+
+
+def _unused_index_name(root: Path, reserved: set[str]) -> str:
+    """A generation name that is not on disk and not ``reserved``. A new index never takes an old path."""
+    taken = set(reserved)
+    folder = _state_dir(root)
+    try:
+        info = folder.lstat()
+    except FileNotFoundError:
+        info = None
+    if info is not None and not stat.S_ISLNK(info.st_mode) and stat.S_ISDIR(info.st_mode):
+        with os.scandir(folder) as iterator:
+            for entry in iterator:
+                taken.add(entry.name)
+    for _ in range(8):
+        name = f"index-{secrets.token_hex(8)}.sqlite"
+        if all(candidate not in taken for candidate in _family(name)):
+            return name
+    raise MemoryForestError(
+        "index_failed",
+        "No unused name was left for a new index file.",
+        details={"path": layout.STATE_DIR},
+        next_step="report",
+    )
+
+
+def _publish_pointer(root: Path, name: str) -> None:
+    """Write the pointer and sync it, then rename it into place. Readers see the old name or the new one."""
+    folder = _state_dir(root)
+    if not folder.exists():
+        folder.mkdir(mode=0o700)
+    atomic_write(folder / POINTER_FILENAME, name + "\n", mode=0o600)
+
+
+def _reset_held(root: Path, *, dry_run: bool) -> dict[str, Any]:
+    """Publish a new current name, then remove the old file and any orphan of the index's own pattern."""
+    current, _bad = _read_pointer(root)
+    reserved = set(_family(current)) if current else set()
+    new_name = _unused_index_name(root, reserved)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for base in ([current] if current else []) + _index_bases(root):
+        if base and base != new_name and base not in seen:
+            seen.add(base)
+            ordered.append(base)
+    new_relative = f"{layout.STATE_DIR}/{new_name}"
+    if dry_run:
+        removed, orphans = _plan_removals(root, ordered)
+        return {"dry_run": True, "ok": True, "orphans": orphans, "path": new_relative, "removed": removed}
+    # The pointer moves first. A removal that fails after this is an orphan nothing reads.
+    _publish_pointer(root, new_name)
+    removed, orphans = _apply_removals(root, ordered)
+    return {"dry_run": False, "ok": True, "orphans": orphans, "path": new_relative, "removed": removed}
+
+
+def _plan_removals(root: Path, bases: list[str]) -> tuple[list[str], list[str]]:
+    removed: list[str] = []
+    orphans: list[str] = []
+    for base in bases:
+        for filename in _family(base):
+            kind = _classify_index_file(_state_dir(root) / filename)
+            relative = f"{layout.STATE_DIR}/{filename}"
+            if kind == "file":
+                removed.append(relative)
+            elif kind == "left":
+                orphans.append(relative)
+    return removed, orphans
+
+
+def _apply_removals(root: Path, bases: list[str]) -> tuple[list[str], list[str]]:
+    removed: list[str] = []
+    orphans: list[str] = []
+    for base in bases:
+        for filename in _family(base):
+            relative = f"{layout.STATE_DIR}/{filename}"
+            outcome = _remove_index_file(_state_dir(root) / filename)
+            if outcome == "removed":
+                removed.append(relative)
+            elif outcome == "left":
+                orphans.append(relative)
+    return removed, orphans
+
+
+def _remove_orphans(root: Path) -> None:
+    """Remove index files that are not the current one. A symlink, a folder and a failure stay.
+
+    Called under the index lock, from a build and from a reset. Only names of the index's own pattern
+    in ``.forest/`` are considered.
+    """
+    current = _current_index_name(root)
+    for base in _index_bases(root):
+        if base == current:
+            continue
+        for filename in _family(base):
+            _remove_index_file(_state_dir(root) / filename)
 
 
 def _pause_in_transaction() -> None:
@@ -593,13 +843,13 @@ def _index_writer(root: str | os.PathLike[str], wait_seconds: float) -> Iterator
         _WRITERS.release()
 
 
-def _busy_result(message: str) -> dict[str, Any]:
+def _busy_result(message: str, *, path: str = INDEX_RELATIVE) -> dict[str, Any]:
     result: dict[str, Any] = {
         "busy": True,
         "files": 0,
         "indexed": False,
         "ok": True,
-        "path": INDEX_RELATIVE,
+        "path": path,
         "units": 0,
         "updated": 0,
     }
@@ -618,7 +868,9 @@ def _write_held(
     transaction. Nothing is unlinked: no journal, WAL or shared-memory file another connection may hold.
     """
     masker = _Masker(load_config(root))
+    _remove_orphans(root)
     published = _index_path(root)
+    published_relative = f"{layout.STATE_DIR}/{_current_index_name(root)}"
     published.parent.mkdir(mode=0o700, exist_ok=True)
     _remove_old_staging(published)
     created = not published.exists()
@@ -689,7 +941,7 @@ def _write_held(
         "busy": False,
         "files": files,
         "ok": True,
-        "path": INDEX_RELATIVE,
+        "path": published_relative,
         "tokenizer": tokenizer,
         "units": units,
         "updated": updated,
@@ -1237,7 +1489,25 @@ _CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+")
 
 
 def _index_path(root: Path) -> Path:
-    return layout.resolve(root, INDEX_RELATIVE)
+    """The current index file. Every caller asks here, so a reset and a reader cannot disagree.
+
+    A symlink at the file is refused. A missing file is the path a build will create. The name is one
+    component matched against the index pattern, so this does not walk the forest.
+    """
+    name = _current_index_name(root)
+    path = _state_dir(root) / name
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return path
+    if stat.S_ISLNK(info.st_mode):
+        raise MemoryForestError(
+            "symlink_forbidden",
+            "Symlinks are not allowed inside a Memory Forest.",
+            details={"path": f"{layout.STATE_DIR}/{name}"},
+            next_step="report",
+        )
+    return path
 
 
 def _fsync_directory(path: Path) -> None:

@@ -41,8 +41,10 @@ the version 1 commands replace it.
   file is indexed again before a search answers; a busy file is tried again every tenth of a second until
   the budget is spent, then the search refuses with `index_busy`. When the fingerprint is the same, a busy
   open answers from the rows already on file. Only a file that is corrupt or is not a database is
-  `index_unreadable`, whose next move is `forest index reset`: that command checks the derived file and
-  its `-wal` and `-shm` files and removes all three or none, and nothing else, and exits 2 with
+  `index_unreadable`, whose next move is `forest index reset`: that command publishes a new generation
+  under `.forest/index.current` (with no pointer, `.forest/index.sqlite` stays current) and only then
+  removes the old file and its `-wal` and `-shm` files. A call that already has a file open finishes on
+  it. A file that cannot be removed is an orphan, not a failure. The command exits 2 with
   `index_busy` when the index lock is held. A busy or locked file is the busy path; a read-only file, a
   full disk, an I/O error and a path that cannot be opened have codes of their own whose next move is
   `report`. A file whose first build has not committed is no index yet. A file is skipped when its

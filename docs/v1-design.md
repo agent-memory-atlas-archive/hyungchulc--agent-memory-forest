@@ -216,12 +216,16 @@ is no index yet, for a reader as before any build.
 
 **What SQLite refuses.** One function turns a SQLite error into a refusal, by its result code. Only a file
 that is corrupt or is not a database is `index_unreadable`, and it is refused rather than replaced: its
-next move is `run` with the command `forest index reset`. That command removes the database and its
-`-wal` and `-shm` files and nothing else, after checking all three, so it removes all of them or none. It
-holds the index lock while it does, which keeps builds and updates out; readers take no lock, so the lock
-does not protect a process that has the file open. It is meant for an unreadable file while no forest
-server is running. A held lock is the refusal `index_busy` with a non-zero exit. The next query or
-`forest index build` makes the index again. A busy or locked file is the busy path below. A read-only
+next move is `run` with the command `forest index reset`. The index file's name carries a generation.
+`.forest/index.current` names the current file; with no pointer, `.forest/index.sqlite` is current, so a
+forest made before this still opens. Reset holds the index lock, chooses a name that has not been used,
+and replaces the pointer by writing it and syncing it before the rename. Only then does it remove the old
+database and its `-wal` and `-shm` files, sidecars first, each if it is present. A file that cannot be
+removed is an orphan nothing reads, named in the output, and not a failure. The next reset or build
+removes orphans of the index's own naming pattern in `.forest/`, never a symlink, a folder, or the
+current file. A call that already opened a file finishes on that file, so a server may be running. A
+held lock is the refusal `index_busy` with a non-zero exit. The next query or `forest index build`
+makes the index again at the new path. A busy or locked file is the busy path below. A read-only
 file or folder, a full disk, an I/O error and a path that cannot be opened have codes of their own
 (`index_read_only`, `index_disk_full`, `index_io_error`, `index_cannot_open`) whose next move is
 `report`: no command helps, and resetting a working index on a full disk would only lose it. Publishing a
