@@ -30,12 +30,13 @@ from .common import (
     parse_time,
     place_of,
     relative_key,
-    text_internal,
 )
 
 
 class JsonlAdapter:
     name = "jsonl"
+    # The record's ``id`` is only unique inside its session, so the stored id keeps the session.
+    ids_stand_alone = False
 
     def discover(self, settings: IntakeToolSettings) -> list[Transcript]:
         folder = _root(settings)
@@ -85,14 +86,18 @@ class JsonlAdapter:
         cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
         return Transcript(relative_key(path, folder), path, str(session), cwd, "unknown", described=False)
 
+    def transcript_root(self, settings: IntakeToolSettings) -> Path | None:
+        return _root(settings)
+
     def describe(self, transcript: Transcript, settings: IntakeToolSettings) -> Transcript:
         folder = _root(settings)
         if folder is None:
             return transcript
         return self._open(transcript.path, folder)
 
-    def read(self, transcript: Transcript, offset: int) -> ReadBatch:
-        lines, new_offset = complete_lines(transcript.path, offset)
+    def read(self, transcript: Transcript, offset: int, carry: dict | None = None, max_bytes: int | None = None) -> ReadBatch:
+        del carry
+        lines, new_offset = complete_lines(transcript.path, offset, max_bytes=max_bytes)
         turns: list[Turn] = []
         unknown = 0
         dropped: dict[str, int] = {}
@@ -116,10 +121,10 @@ class JsonlAdapter:
                     label = value.get("type") if isinstance(value.get("type"), str) else "record"
                     dropped[label] = dropped.get(label, 0) + 1
                     continue
-                if text_internal(turn.text):
-                    internal = True
                 turns.append(turn)
-            except Exception as exc:
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:
                 faults.append((exc.__class__.__name__, place))
                 dropped[exc.__class__.__name__] = dropped.get(exc.__class__.__name__, 0) + 1
         if internal:
@@ -179,11 +184,12 @@ def _turn(value: dict, start: int, transcript: Transcript) -> Turn | None:
         name = "tool"
     parts = _parts(value, text)
     turn_id = value.get("id") if isinstance(value.get("id"), str) and value["id"] else None
+    arguments = value.get("arguments") if isinstance(value.get("arguments"), str) and value["arguments"] else None
     source = value.get("source")
     place = place_of(start)
     if isinstance(source, dict) and isinstance(source.get("place"), str) and source["place"]:
         place = source["place"]
-    return Turn(turn_id, at, session, role, text, place, origin, name, parts)
+    return Turn(turn_id, at, session, role, text, place, origin, name, parts, arguments)
 
 
 def _role_ok(role: str) -> bool:

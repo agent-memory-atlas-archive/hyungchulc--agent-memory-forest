@@ -10,6 +10,7 @@ import json
 import random
 import sys
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -156,13 +157,62 @@ class MaskTests(unittest.TestCase):
         self.assertEqual(masked(masked(f"api key {beside}")), masked(f"api key {beside}"))
         git_hash = "0123456789abcdef" * 2 + "01234567"
         self.assertEqual(len(git_hash), 40)
+        hex64 = "0123456789abcdef" * 4
         uuid = "550e8400-e29b-01d4-c716-446655440000"
         image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
         for value in (git_hash, "a" * 24 + git_hash, uuid, image):
             with self.subTest(value=value[:12]):
                 self.assertEqual(masked(f"commit {value} at the kiln"), f"commit {value} at the kiln")
-                self.assertEqual(masked(f"token {git_hash}"), f"token {git_hash}")
-                self.assertEqual(masked(f"token: {uuid}"), f"token: {uuid}")
+        # A look-alike after a label is the value. With no label it stays.
+        self.assertNotIn(git_hash, masked(f"api key: {git_hash}"))
+        self.assertNotIn(hex64, masked(f"password: {hex64}"))
+        self.assertNotIn(uuid, masked(f"API key: {uuid}"))
+        self.assertNotIn(git_hash, masked(f"token {git_hash}"))
+        self.assertNotIn(uuid, masked(f"token: {uuid}"))
+
+    def test_the_secret_part_of_a_header_is_absent(self) -> None:
+        token = "Ab3" * 12
+        basic = "QWxhZGRpbjpvcGVu"
+        forms = (
+            f"Authorization: Bearer {token}",
+            f"authorization=Bearer {token}",
+            f"Authorization: Basic {basic}",
+            f"Basic {basic}",
+        )
+        for text in forms:
+            with self.subTest(text=text[:24]):
+                stored = masked(text)
+                secret = basic if "Basic" in text or "basic" in text else token
+                self.assertNotIn(secret, stored)
+                self.assertIn(R, stored)
+
+    def test_a_key_shape_and_a_named_assignment_are_masked(self) -> None:
+        sk = "sk-" + "Ab9" * 12
+        service = "sk-svcacct-" + "Cd8" * 12
+        admin = "sk-admin-" + "Ef7" * 12
+        hugging = "hf_" + "Gh6" * 12
+        token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJraWxuIn0.Ab9Cd8Ef7Gh6Ij5Kl4"
+        for value in (sk, service, admin, hugging, token):
+            with self.subTest(value=value[:12]):
+                self.assertNotIn(value, masked(f"here: {value}"))
+                self.assertIn(R, masked(f"here: {value}"))
+        self.assertIn("sk-test", masked("the sk-test kiln"))
+        self.assertIn("hf_word", masked("an hf_word on the shelf"))
+        self.assertNotIn("hunter22", masked("export OPENAI_API_KEY=hunter22"))
+        self.assertNotIn("hunter22", masked("db_password: hunter22"))
+        self.assertNotIn("hunter22", masked('"client_secret": "hunter22"'))
+        self.assertEqual(masked("monkey=banana"), "monkey=banana")
+        pasted = "password: <pasted_text>hunter22</pasted_text>"
+        stored = masked(pasted)
+        self.assertNotIn("hunter22", stored)
+        self.assertIn("pasted_text", stored)
+
+    def test_the_masking_fingerprint_moves_when_the_rules_do(self) -> None:
+        current = credentials.fingerprint(DEFAULT_CONFIG, ledger=None)
+        self.assertNotEqual(credentials.MASKING_VERSION, "2")
+        with mock.patch.object(credentials, "MASKING_VERSION", "2"):
+            previous = credentials.fingerprint(DEFAULT_CONFIG, ledger=None)
+        self.assertNotEqual(current, previous)
 
     def test_what_a_tool_shows_is_masked_and_starred(self) -> None:
         shown = credentials.shown({"line": "PIN 4821 to +64 21 555 0199"}, config=DEFAULT_CONFIG)

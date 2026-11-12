@@ -227,7 +227,8 @@ class HookSafetyTests(IntakeTestCase):
         self.assertFalse(any(name.endswith("/notes/other.jsonl") for name in opened), opened)
         self.assertLess(read_bytes["transcript"], 8192, read_bytes)
         self.assertLess(read_bytes["lane"], 8192, read_bytes)
-        self.assertLess(read_bytes["all"], 65536, read_bytes)
+        # One day's id list is read once. The transcript itself stays under the cap above.
+        self.assertLess(read_bytes["all"], 131072, read_bytes)
 
     def test_cursors_belong_to_the_agent(self) -> None:
         folder = self.base / "notes"
@@ -238,8 +239,10 @@ class HookSafetyTests(IntakeTestCase):
         self.invoke(root, "--from", "jsonl", "--as", "kiln-bot", "--once")
         self.assertEqual([row["text"] for row in self.rows(root, "kiln-bot")], ["For the glaze bot."])
         self.assertEqual(self.lane(root, "glaze-bot"), "")
-        self.invoke(root, "--from", "jsonl", "--once")
-        self.assertEqual([row["text"] for row in self.rows(root, "glaze-bot")], ["For the glaze bot."])
+        code, out, _ = self.invoke(root, "--from", "jsonl", "--once")
+        self.assertEqual(code, 0)
+        self.assertIn("rename-agent kiln-bot glaze-bot", out)
+        self.assertEqual(self.lane(root, "glaze-bot"), "")
 
     def test_ids_survive_a_rewind_a_resume_and_a_fork(self) -> None:
         folder = self.base / "notes"
@@ -549,13 +552,10 @@ class PluginTests(IntakeTestCase):
         adapter_loader.entry_points = fake
         adapter_loader.clear_adapter_cache()
         try:
-            from memory_forest.errors import MemoryForestError
-            with self.assertRaises(MemoryForestError) as caught:
-                adapter_loader.load_adapters()
-            self.assertEqual(caught.exception.code, "intake_adapter_clash")
-            self.assertIn("claude-code", caught.exception.message)
-            self.assertIn("builtins", caught.exception.message)
-            self.assertIn("memory_forest.adapters.claude_code", caught.exception.message)
+            loaded = adapter_loader.load_adapters()
+            self.assertIn("claude-code", loaded)
+            self.assertEqual(loaded["claude-code"].name, "claude-code")
+            self.assertEqual(adapter_loader.load_failures().get("claude-code"), "intake_adapter_clash")
         finally:
             adapter_loader.entry_points = real
             adapter_loader.clear_adapter_cache()

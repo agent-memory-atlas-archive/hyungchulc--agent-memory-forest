@@ -90,6 +90,8 @@ _SUBAGENT_TOOLS = frozenset({"Agent", "Task", "spawn_agent", "spawn_subagent"})
 
 class ClaudeCodeAdapter:
     name = "claude-code"
+    # A line's ``uuid`` is its own id. The same uuid in another session file is the same turn.
+    ids_stand_alone = True
 
     def discover(self, settings: IntakeToolSettings) -> list[Transcript]:
         root = tool_home(".claude", "projects", override=settings.path)
@@ -129,14 +131,18 @@ class ClaudeCodeAdapter:
         origin = "subagent" if payload.get("agent_id") or payload.get("agentId") else "unknown"
         return Transcript(relative_key(path, root), path, session, cwd, origin, described=False)
 
+    def transcript_root(self, settings: IntakeToolSettings) -> Path | None:
+        return tool_home(".claude", "projects", override=settings.path)
+
     def describe(self, transcript: Transcript, settings: IntakeToolSettings) -> Transcript:
         root = tool_home(".claude", "projects", override=settings.path)
         if root is None:
             return transcript
         return self._open(transcript.path, root)
 
-    def read(self, transcript: Transcript, offset: int) -> ReadBatch:
-        lines, new_offset = complete_lines(transcript.path, offset)
+    def read(self, transcript: Transcript, offset: int, carry: dict | None = None, max_bytes: int | None = None) -> ReadBatch:
+        del carry
+        lines, new_offset = complete_lines(transcript.path, offset, max_bytes=max_bytes)
         unknown = 0
         dropped: dict[str, int] = {}
         faults: list[tuple[str, str]] = []
@@ -212,7 +218,9 @@ class ClaudeCodeAdapter:
                         pending[turn.turn_id] = turn
                 for tool_id, output in results:
                     _fill(pending, order, tool_id, output)
-            except Exception as exc:
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:
                 faults.append((exc.__class__.__name__, place))
                 dropped[exc.__class__.__name__] = dropped.get(exc.__class__.__name__, 0) + 1
         if internal:
@@ -311,7 +319,12 @@ def _message_turns(value: dict, start: int, transcript: Transcript) -> list[Turn
         if text is None:
             return []
         parts = parts + harness_parts(text or "")
-        if harness_only(text or "") or value.get("isMeta") is True or role == "system":
+        if (
+            harness_only(text or "")
+            or value.get("isMeta") is True
+            or value.get("isCompactSummary") is True
+            or role == "system"
+        ):
             if not text and not parts:
                 return []
             return [Turn(turn_id, at, str(session), "system", text or "", place_of(start), origin, None, parts)]

@@ -19,12 +19,18 @@ A value with no label word (a bare code in a quoted turn) is masked once a
 reader has judged it, through the forest's ledger of keyed digests
 (``credential_ledger``).
 
-A value is also recognised by its shape, in any string: the published key
-prefixes of large providers, an ``Authorization: Bearer`` or ``Basic`` header,
-a private-key block, and a long mixed token beside a word that names access
-(``token``, ``api key``, ``secret``, ``bearer``, ``authorization``). A git
-hash, a UUID and the head of a base64 image are not those shapes and are left
-as written.
+A value is also recognised by its shape, before any label is applied, in any
+string: the published key prefixes below, an ``Authorization`` header
+(``Bearer``, ``Basic`` or ``Digest``, with ``:`` or ``=``), a private-key
+block, a JWT, and a long token beside a word that names access (``token``,
+``api key``, ``secret``, ``bearer``, ``authorization``). A label whose value
+is only the scheme word is not the value: the token after it is. A git hash,
+a UUID and the head of a base64 image are not those shapes and are left as
+written, unless a label stands before them: after a label the value is masked
+whatever its shape. An assignment whose name contains ``KEY``, ``TOKEN``,
+``SECRET``, ``PASSWORD``, ``PASSWD`` or ``CREDENTIAL`` as its own word
+(``OPENAI_API_KEY=…``, ``db_password: …``, ``"client_secret": "…"``) is a
+labelled value.
 
 Each step runs only when the text holds what its pattern cannot match
 without (a guard that is a necessary condition of the pattern, so a guarded
@@ -57,7 +63,7 @@ REDACTED: Final[str] = "[REDACTED]"
 # The version of what ``shown`` does to a text (this module's rules and ``numbers.star_numbers``). Raise it with
 # any change that can make a read show less than before: text kept masked under the old rules (the search
 # index) is then masked again.
-MASKING_VERSION: Final[str] = "2"
+MASKING_VERSION: Final[str] = "3"
 FIX_REASON: Final[str] = "credential-masking"
 MIN_BARE: Final[int] = 3
 MAX_BARE: Final[int] = 64
@@ -136,6 +142,68 @@ def _counted(rules: _Rules, text: str, end: int) -> bool:
     return rules.count is not None and rules.count.match(text, end) is not None
 
 
+# A tag that marks a pasted, attached or quoted span is not a value. The words are the part marks
+# the intake record uses. The tag is skipped and the text after it is the value.
+_PART_TAG_RE: Final = re.compile(
+    r"</?(?:pasted_contents|pasted_text|attached_files|file_contents|ide_opened_file|quoted_message"
+    r"|quoted_selection|ide_selection)\b[^>]*>",
+    re.IGNORECASE,
+)
+# A segment of the name, so ``monkey`` is not a key and ``apiKey`` is. ``(?i)`` stays inside the segment.
+_SECRET_SEGMENT_RE: Final = re.compile(
+    r"(?i)(?:^|_)(?:key|token|secret|password|passwd|credential)(?:_|[^A-Za-z0-9_]|$)"
+)
+_SECRET_CAMEL_RE: Final = re.compile(
+    r"(?:Key|Token|Secret|Password|Passwd|Credential)(?![A-Za-z])"
+)
+_NAMED_ASSIGN_RE: Final = re.compile(
+    r"""(?ix)
+    (?:^|[\s,{;])
+    (?:export[ \t]+)?
+    ["']?
+    (?P<name>[A-Za-z_][A-Za-z0-9_.]*)
+    ["']?
+    [ \t]*
+    [:=]
+    [ \t]*
+    (?P<value>"[^"\n]*"|'[^'\n]*'|`[^`\n]*`|[^\s"',}]+)
+    """
+)
+
+
+def _skip_tags(text: str, pos: int) -> int:
+    while pos < len(text):
+        if text[pos] in " \t":
+            pos += 1
+            continue
+        tag = _PART_TAG_RE.match(text, pos)
+        if tag is None:
+            break
+        pos = tag.end()
+    return pos
+
+
+def _scheme_value(text: str, start: int, end: int) -> tuple[int, int]:
+    """A value that is only a scheme word is not the value. The token after it is."""
+    core = text[start:end]
+    if core.casefold() not in _SCHEME_WORDS:
+        return start, end
+    pos = _skip_tags(text, end)
+    if pos < len(text) and text[pos] in " \t":
+        pos += 1
+        while pos < len(text) and text[pos] in " \t":
+            pos += 1
+    pos = _skip_tags(text, pos)
+    if pos >= len(text) or text[pos].isspace():
+        return start, end
+    value_end = pos
+    while value_end < len(text) and text[value_end] not in " \t\n\r<":
+        value_end += 1
+    if value_end == pos:
+        return start, end
+    return _value_span(text, pos, value_end)
+
+
 def _step(rules: _Rules, text: str, after: re.Pattern[str], accept: Callable[[str], bool]) -> str:
     """Each value that ``after`` finds right after a label word and ``accept`` takes, replaced by REDACTED."""
     assert rules.label is not None
@@ -147,9 +215,64 @@ def _step(rules: _Rules, text: str, after: re.Pattern[str], accept: Callable[[st
         match = after.match(text, found.end())
         if match is None or REDACTED in match.group("value"):
             continue
-        start, end = _value_span(text, *match.span("value"))
+        raw_start, raw_end = match.span("value")
+        if text[raw_start:raw_start + 1] == "<":
+            raw_start = _skip_tags(text, raw_start)
+            raw_end = raw_start
+            while raw_end < len(text) and text[raw_end] not in " \t\n\r<":
+                raw_end += 1
+        start, end = _value_span(text, raw_start, raw_end)
+        if after is rules.assign:
+            start, end = _scheme_value(text, start, end)
         core = text[start:end]
-        if not core or not accept(core) or _counted(rules, text, max(end, match.end("value"))):
+        if not core or REDACTED in core or not accept(core) or _counted(rules, text, max(end, match.end("value"))):
+            continue
+        pieces += [text[cursor:start], REDACTED]
+        cursor = end
+    if not pieces:
+        return text
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def _named_value_span(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """The value of a named assignment. A part tag is not the value, and a value already masked stays."""
+    if REDACTED in text[start:end]:
+        return None
+    if text[start:start + 1] == "<":
+        pos = _skip_tags(text, start)
+        value_end = pos
+        while value_end < len(text) and text[value_end] not in " \t\n\r<":
+            value_end += 1
+        if value_end <= pos:
+            return None
+        start, end = _value_span(text, pos, value_end)
+    else:
+        start, end = _value_span(text, start, end)
+    if start >= end or REDACTED in text[start:end]:
+        return None
+    return start, end
+
+
+def _secret_name(name: str) -> bool:
+    return _SECRET_SEGMENT_RE.search(name) is not None or _SECRET_CAMEL_RE.search(name) is not None
+
+
+def _mask_named(text: str) -> str:
+    """An assignment whose name is a variable or a config key that names a secret. The value is masked."""
+    if _SECRET_SEGMENT_RE.search(text) is None and _SECRET_CAMEL_RE.search(text) is None:
+        return text
+    pieces: list[str] = []
+    cursor = 0
+    for found in _NAMED_ASSIGN_RE.finditer(text):
+        if found.start() < cursor or not _secret_name(found.group("name")):
+            continue
+        span = _named_value_span(text, *found.span("value"))
+        if span is None:
+            continue
+        start, end = span
+        core = text[start:end]
+        if not core or not any(character.isalnum() for character in core):
             continue
         pieces += [text[cursor:start], REDACTED]
         cursor = end
@@ -167,26 +290,56 @@ _UUID_RE: Final = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 _IMAGE_HEADS: Final = ("iVBORw0KGgo", "/9j/", "R0lGODlh", "UklGR")
-# Well-known key prefixes. Each needs a long tail, so a word that merely starts the same way is left.
+# Published key prefixes. Each tail has a floor so a short word with the same head is left alone.
+# Model providers: OpenAI ``sk-``, ``sk-proj-``, ``sk-svcacct-``, ``sk-admin-`` (platform.openai.com admin
+# and project keys), Anthropic ``sk-ant-``, OpenRouter ``sk-or-``, Groq ``gsk_``, xAI ``xai-``,
+# Perplexity ``pplx-``, Fireworks ``fw_``, Hugging Face ``hf_``, Google ``AIza``.
+# Code hosts: GitHub ``ghp_`` ``gho_`` ``ghu_`` ``ghs_`` ``ghr_`` ``github_pat_``, GitLab ``glpat-``
+# ``gldt-`` ``glrt-``.
+# Cloud consoles: AWS ``AKIA`` ``ASIA``, Google ``AIza`` and ``GOCSPX-``, DigitalOcean ``dop_v1_``.
+# Payment and chat: Stripe ``sk_live_`` ``sk_test_`` ``rk_live_`` ``rk_test_`` ``whsec_``, Slack
+# ``xoxb-`` ``xoxp-`` ``xoxa-`` ``xoxr-`` ``xoxs-``, Square ``sq0atp-`` ``sq0csp-``, SendGrid ``SG.``.
+# Package registries: npm ``npm_``, PyPI ``pypi-``.
+# A JWT is three base64url segments, the first starting ``eyJ``.
 _KEY_RE: Final = re.compile(
     r"(?<![A-Za-z0-9])(?:"
-    r"sk-ant-[A-Za-z0-9_\-]{16,}"
+    r"sk-svcacct-[A-Za-z0-9_\-]{16,}"
+    r"|sk-admin-[A-Za-z0-9_\-]{16,}"
     r"|sk-proj-[A-Za-z0-9_\-]{16,}"
+    r"|sk-ant-[A-Za-z0-9_\-]{16,}"
+    r"|sk-or-[A-Za-z0-9_\-]{16,}"
+    r"|sk-[A-Za-z0-9]{20,}"
     r"|github_pat_[A-Za-z0-9_]{16,}"
     r"|gh[pousr]_[A-Za-z0-9_]{16,}"
     r"|glpat-[A-Za-z0-9_\-]{16,}"
+    r"|gldt-[A-Za-z0-9_\-]{16,}"
+    r"|glrt-[A-Za-z0-9_\-]{16,}"
     r"|xox[baprs]-[A-Za-z0-9\-]{16,}"
     r"|sk_(?:live|test)_[A-Za-z0-9]{16,}"
     r"|rk_(?:live|test)_[A-Za-z0-9]{16,}"
+    r"|whsec_[A-Za-z0-9]{16,}"
     r"|AKIA[A-Z0-9]{16}"
     r"|ASIA[A-Z0-9]{16}"
     r"|AIza[0-9A-Za-z_\-]{20,}"
-    r"|SG\.[A-Za-z0-9_\-]{16,}"
+    r"|GOCSPX-[A-Za-z0-9_\-]{16,}"
+    r"|SG\.[A-Za-z0-9_\-]{16,}(?:\.[A-Za-z0-9_\-]{16,})?"
+    r"|hf_[A-Za-z0-9]{20,}"
+    r"|gsk_[A-Za-z0-9]{20,}"
+    r"|xai-[A-Za-z0-9_\-]{16,}"
+    r"|pplx-[A-Za-z0-9_\-]{16,}"
+    r"|fw_[A-Za-z0-9_\-]{16,}"
     r"|npm_[A-Za-z0-9]{16,}"
+    r"|pypi-[A-Za-z0-9_\-]{16,}"
+    r"|dop_v1_[A-Za-z0-9]{16,}"
+    r"|shpat_[A-Za-z0-9]{16,}"
+    r"|sq0(?:atp|csp)-[A-Za-z0-9_\-]{16,}"
+    r"|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
     r")(?![A-Za-z0-9])"
 )
+_SCHEME_WORDS: Final = frozenset({"bearer", "basic", "token", "digest"})
+_AUTH_VALUE_FLOOR: Final = 16
 _AUTH_RE: Final = re.compile(
-    r"(?i)(authorization[ \t]*:[ \t]*(?:bearer|basic)[ \t]+)(?P<value>\S+)"
+    r"(?i)((?:(?<!\w)authorization[ \t]*[:=][ \t]*)?(?<!\w)(?:bearer|basic|digest)[ \t]+)(?P<value>\S+)"
 )
 _PRIVATE_KEY_RE: Final = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
@@ -210,17 +363,23 @@ def _lookalike(core: str) -> bool:
 
 
 def _assigned(core: str) -> bool:
-    return REDACTED not in core and not _lookalike(core) and any(character.isalnum() for character in core)
+    """After a label, a look-alike is still the value. A look-alike is exempt only with no label before it."""
+    return REDACTED not in core and any(character.isalnum() for character in core)
 
 
 def _bare(core: str) -> bool:
     return MIN_BARE <= len(core) <= MAX_BARE and any(character.isdigit() for character in core) \
-        and not _not_a_value(core) and not _lookalike(core)
+        and not _not_a_value(core)
 
 
-def _mixed_token(token: str) -> bool:
-    """A long token that is not a word: a digit, or both cases. A look-alike is not one."""
-    if _lookalike(token) or REDACTED in token:
+def _mixed_token(token: str, *, labelled: bool = False) -> bool:
+    """A long token that is not a word: a digit, or both cases.
+
+    A look-alike is not one, unless a label stands before it: then it is the value.
+    """
+    if REDACTED in token:
+        return False
+    if not labelled and _lookalike(token):
         return False
     lower = any(character.islower() for character in token)
     upper = any(character.isupper() for character in token)
@@ -252,11 +411,12 @@ def mask_shapes(text: str) -> str:
 
         def _auth(match: re.Match[str]) -> str:
             value = match.group("value").strip("\"'`")
-            if not value or _lookalike(value) or REDACTED in match.group("value"):
+            if not value or REDACTED in match.group("value") or len(value) < _AUTH_VALUE_FLOOR:
                 return match.group(0)
             return match.group(1) + REDACTED
 
         text = _AUTH_RE.sub(_auth, text)
+    text = _mask_named(text)
     if _ACCESS_WORD_RE.search(text):
         text = _mask_tokens_near_access(text)
     return text
@@ -278,11 +438,12 @@ def _mask_tokens_near_access(text: str) -> str:
     pieces: list[str] = []
     cursor = 0
     for token in _LONG_TOKEN_RE.finditer(text):
-        if token.start() < cursor or not _mixed_token(token.group(0)):
+        if token.start() < cursor or REDACTED in token.group(0):
             continue
         before = text[max(0, token.start() - 48):token.start()]
         after = text[token.end():token.end() + 48]
-        if not (_beside(before, word_first=True) or _beside(after, word_first=False)):
+        labelled = _beside(before, word_first=True) or _beside(after, word_first=False)
+        if not labelled or not _mixed_token(token.group(0), labelled=True):
             continue
         pieces.append(text[cursor:token.start()])
         pieces.append(REDACTED)
@@ -322,7 +483,9 @@ def mask(text: str, *, config: Config, ledger: Any = _LOOKUP) -> str:
     looked up for each call."""
     from . import credential_ledger
 
-    text = mask_shapes(mask_labelled(text, config=config))
+    # A shape is masked first, whatever stands before it. The label step runs after, so a scheme
+    # word is not taken for the token that follows it.
+    text = mask_labelled(mask_shapes(text), config=config)
     known = credential_ledger.for_config(config) if ledger is _LOOKUP else ledger
     return credential_ledger.mask_known(text, known)
 

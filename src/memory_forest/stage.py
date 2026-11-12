@@ -57,12 +57,20 @@ def record_session(root: str | os.PathLike[str], session_id: str) -> None:
     _append(root, SESSIONS, token + "\n")
 
 
-def session_recorded(root: str | os.PathLike[str], session_id: str) -> bool:
-    """Whether a stage recorded ``session_id``. A missing file is no sessions."""
+def session_recorded(
+    root: str | os.PathLike[str], session_id: str, *, limit: int | None = None
+) -> bool | None:
+    """Whether a stage recorded ``session_id``. A missing file is no sessions.
+
+    ``limit`` is how many bytes a hook will read. None when the file is longer than that:
+    the caller leaves the session for a sweep, which reads the whole list.
+    """
     path = layout.resolve(root, SESSIONS)
     if not path.is_file() or path.is_symlink():
         return False
     try:
+        if limit is not None and path.stat().st_size > limit:
+            return None
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return False

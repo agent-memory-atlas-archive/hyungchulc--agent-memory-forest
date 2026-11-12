@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -53,8 +53,21 @@ LOCK_NAME = "intake"
 LOCK_WAIT_SECONDS = 0.2
 INTAKE_DIR = f"{layout.STATE_DIR}/intake"
 FAILURES = f"{INTAKE_DIR}/failures.jsonl"
+LOCK_BUSY = f"{INTAKE_DIR}/lock-busy"
 PREFIX_BYTES = 64
 _EMPTY_PREFIX = hashlib.sha256(b"").hexdigest()
+# A session with no owner turn is ordinary after this many turns. The adapters
+# turn a short harness preamble into turns before the owner speaks; three was
+# not past that preamble, and holding the cursor longer re-reads a session
+# that is not going to open with the stage marker.
+TURNS_BEFORE_OWNER = 12
+# A hook reads at most this many transcript bytes in one call. Reading and masking
+# 256 KiB of JSONL took about 50 ms on the machine this was written on, and the
+# rest stays for the next call or a sweep.
+HOOK_READ_BYTES = 256 * 1024
+# The stage-session list a hook will read. A longer file is left to the sweep.
+HOOK_LIST_BYTES = 64 * 1024
+_CHECKPOINT: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +140,8 @@ def run(
         )
     with _intake_lock(root) as held:
         if held is None:
+            if hook is not None:
+                _note_lock_busy(root)
             message = "another intake holds the lock; this one left its cursor"
             return Result(
                 (message,),
@@ -205,17 +220,29 @@ def status(root: str | os.PathLike[str]) -> Result:
         settings = config.intake.tool(name)
         agent = settings.agent or "(not set)"
         mode = "on" if settings.enabled else "off"
-        unknown, dropped, rewinds, ahead, version = _adapter_totals(root, config, name, settings)
+        unknown, dropped, rewinds, ahead, version, internal, turn_faults = _adapter_totals(
+            root, config, name, settings
+        )
         line = f"{name}: {mode}, agent {agent}, unknown {unknown}"
         if dropped:
             detail = ", ".join(f"{label} {count}" for label, count in sorted(dropped.items()))
             line += f" ({detail})"
+        if internal:
+            line += f", internal {internal}"
+        if turn_faults:
+            line += f", turn faults {turn_faults}"
         if version:
             line += f", version {version}"
         if rewinds:
             line += f", rewinds {rewinds}"
         if ahead:
             line += ", ahead " + ", ".join(ahead)
+        elsewhere = _state_elsewhere(root, name, settings.agent)
+        if elsewhere:
+            line += f", state under {elsewhere}; run `forest intake rename-agent {elsewhere} {settings.agent}`"
+        deferred = int(_read_meta(root, settings.agent or "", name).get("deferred") or 0) if settings.agent else 0
+        if deferred:
+            line += f", waiting {deferred}"
         if name in failed:
             line += f", plugin failed ({failed[name]})"
         rows.append(line)
@@ -228,7 +255,9 @@ def status(root: str | os.PathLike[str]) -> Result:
                 "enabled": settings.enabled,
                 "loaded": True,
                 "plugin_failed": failed.get(name, ""),
+                "internal": internal,
                 "rewinds": rewinds,
+                "turn_faults": turn_faults,
                 "unknown": unknown,
                 "version": version,
             }
@@ -237,7 +266,64 @@ def status(root: str | os.PathLike[str]) -> Result:
     if failure_count:
         rows.append(f"failures {failure_count}")
         rows.extend(failure_rows)
-    return Result(tuple(rows), {"adapters": listed, "failures": failure_count, "ok": True})
+    busy = _lock_busy_count(root)
+    if busy:
+        rows.append(f"lock busy {busy}")
+    return Result(tuple(rows), {"adapters": listed, "failures": failure_count, "lock_busy": busy, "ok": True})
+
+
+def rename_agent(root: str | os.PathLike[str], old: str, new: str) -> Result:
+    """Move one agent's lane, id index and cursors together. The intake lock is held."""
+    if not layout.is_slug(old) or not layout.is_slug(new):
+        raise MemoryForestError("intake_agent_invalid", "An agent id is a slug.", details={"agent": old})
+    if old == new:
+        return Result((f"{old} is already the name"), {"agent": new, "ok": True, "renamed": False})
+    pairs = (
+        (f"{layout.ISTM}/{old}", f"{layout.ISTM}/{new}"),
+        (f"{INTAKE_DIR}/ids/{old}", f"{INTAKE_DIR}/ids/{new}"),
+        (f"{INTAKE_DIR}/cursors/{old}", f"{INTAKE_DIR}/cursors/{new}"),
+    )
+    with hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest intake rename-agent"):
+        planned = []
+        for source_rel, dest_rel in pairs:
+            source = layout.resolve(root, source_rel)
+            dest = layout.resolve(root, dest_rel)
+            if source.exists():
+                if dest.exists():
+                    raise MemoryForestError(
+                        "intake_rename_exists",
+                        f"{new} already has intake state.",
+                        details={"agent": new},
+                    )
+                planned.append((source, dest))
+        for source, dest in planned:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(source, dest)
+    message = f"renamed {old} to {new}"
+    return Result((message,), {"agent": new, "from": old, "ok": True, "renamed": True})
+
+
+def reread(root: str | os.PathLike[str], adapter_name: str) -> Result:
+    """Read one adapter's transcripts from the start on the next run. Stored turns are kept by their ids."""
+    if not layout.is_slug(adapter_name):
+        raise MemoryForestError("intake_adapter_unknown", f"{adapter_name} is not an adapter name.")
+    moved = 0
+    with hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest intake reread"):
+        base = layout.resolve(root, f"{INTAKE_DIR}/cursors")
+        if base.is_dir() and not base.is_symlink():
+            for agent in sorted(base.iterdir(), key=lambda item: item.name):
+                for path, cursor in _each_cursor(root, agent.name, adapter_name):
+                    cursor["offset"] = 0
+                    cursor["owner"] = ""
+                    cursor["prefix"] = _EMPTY_PREFIX
+                    cursor["seeded"] = False
+                    cursor.pop("dev", None)
+                    cursor.pop("ino", None)
+                    cursor["internal"] = False
+                    _save_cursor(root, agent.name, adapter_name, str(cursor.get("source") or path.stem), cursor)
+                    moved += 1
+    message = f"{adapter_name}: {moved} cursors will be read from the start"
+    return Result((message,), {"adapter": adapter_name, "cursors": moved, "ok": True})
 
 
 def log_failure(root: str | os.PathLike[str], class_name: str, place: str) -> None:
@@ -255,6 +341,30 @@ def log_failure(root: str | os.PathLike[str], class_name: str, place: str) -> No
         return
 
 
+class _WroteSome(Exception):
+    """A write failed after some turns were already stored. ``wrote`` is that count."""
+
+    def __init__(self, wrote: int, cause: BaseException) -> None:
+        self.wrote = wrote
+        self.cause = cause
+
+
+def _plugin(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Call adapter code. ``SystemExit`` becomes an error. ``KeyboardInterrupt`` still propagates."""
+    try:
+        return fn(*args, **kwargs)
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        raise
+    except BaseException as exc:
+        raise MemoryForestError(
+            "plugin_failed",
+            "A plugin ended the process.",
+            details={"class": exc.__class__.__name__},
+        ) from exc
+
+
 def _execute(
     root: str | os.PathLike[str],
     config: Config,
@@ -268,16 +378,42 @@ def _execute(
     dry_run: bool,
 ) -> Result:
     sweep = hook is None and transcript is None
-    if hook is not None:
-        item = adapter.hook(dict(hook), settings)
-        if env_internal(env):
-            item = replace(item, internal=True)
-        discovered = [item]
-    elif transcript is not None:
-        discovered = [adapter.open_path(Path(transcript), settings)]
-    else:
-        discovered = adapter.discover(settings)
-    meta = _read_meta(root, agent, adapter.name) if sweep else {"placed": True}
+    try:
+        if hook is not None:
+            item = _plugin(adapter.hook, dict(hook), settings)
+            if env_internal(env):
+                item = replace(item, internal=True)
+            discovered = [item]
+        elif transcript is not None:
+            discovered = [_plugin(adapter.open_path, Path(transcript), settings)]
+        else:
+            discovered = _plugin(adapter.discover, settings)
+    except MemoryForestError as exc:
+        if exc.code == "transcript_deferred":
+            if not dry_run:
+                _note_deferred(root, agent, adapter.name)
+            message = f"{adapter.name}: waiting for a sweep"
+            return _result(adapter.name, agent, (message,), 0, dry_run=dry_run, placed=True)
+        raise
+    elsewhere = _state_elsewhere(root, adapter.name, agent)
+    if elsewhere:
+        message = (
+            f"intake state for {adapter.name} is under {elsewhere}; "
+            f"run `forest intake rename-agent {elsewhere} {agent}`"
+        )
+        return Result(
+            (message,),
+            {
+                "adapter": adapter.name,
+                "agent": agent,
+                "dry_run": dry_run,
+                "message": message,
+                "ok": True,
+                "rename": elsewhere,
+                "wrote": 0,
+            },
+        )
+    meta = _read_meta(root, agent, adapter.name)
     if sweep and not meta.get("placed") and not settings.import_earlier:
         if dry_run:
             lines = tuple(
@@ -287,44 +423,62 @@ def _execute(
         for item in discovered:
             if _cursor_exists(root, agent, adapter.name, item.key):
                 continue
+            described = _described(adapter, item, settings, payload_cwd=item.cwd)
             _follow_end(
-                root, agent, adapter.name, item,
-                excluded=not _allowed(item, settings),
-                seeded=_allowed(item, settings),
+                root, agent, adapter.name, described,
+                excluded=not _allowed(described, settings),
+                seeded=_allowed(described, settings),
             )
         meta["placed"] = True
+        meta["deferred"] = 0
         _write_meta(root, agent, adapter.name, meta)
-    elif sweep and not meta.get("placed") and not dry_run:
+        _clear_lock_busy(root)
+        return _result(adapter.name, agent, (), 0, dry_run=False, placed=True)
+    if sweep and not meta.get("placed") and not dry_run:
         meta["placed"] = True
         _write_meta(root, agent, adapter.name, meta)
-    requested = []
-    for item in discovered:
-        if _allowed(item, settings):
-            requested.append(item)
-        elif not dry_run:
-            _follow_end(root, agent, adapter.name, item, excluded=True)
-
+    if sweep and not dry_run:
+        meta["deferred"] = 0
+        _write_meta(root, agent, adapter.name, meta)
+    id_cache: dict[tuple[str, str], set[str]] = {}
     reports: list[str] = []
     total = 0
     total_unknown = 0
-    for item in requested:
+    for item in discovered:
+        label = item.key or item.path.name
         try:
             wrote, unknown, note = _one(
-                root, config, adapter, settings, agent, item, dry_run=dry_run
+                root, config, adapter, settings, agent, item,
+                dry_run=dry_run,
+                bounded=hook is not None,
+                id_cache=id_cache,
+                meta_placed=bool(meta.get("placed")),
             )
+        except _WroteSome as exc:
+            if not dry_run:
+                log_failure(
+                    root,
+                    exc.cause.__class__.__name__ if not isinstance(exc.cause, MemoryForestError) else exc.cause.code,
+                    adapter.name,
+                )
+            total += exc.wrote
+            reports.append(f"{Path(label).name}: {exc.wrote} turns, then failed ({exc.cause.__class__.__name__})")
+            continue
         except Exception as exc:
-            log_failure(root, exc.__class__.__name__ if not isinstance(exc, MemoryForestError) else exc.code, adapter.name)
-            label = item.key or item.path.name
-            reports.append(f"{label}: failed ({exc.__class__.__name__})")
+            if not dry_run:
+                log_failure(root, exc.__class__.__name__ if not isinstance(exc, MemoryForestError) else exc.code, adapter.name)
+            reports.append(f"{Path(label).name}: failed ({exc.__class__.__name__})")
             continue
         total += wrote
         total_unknown += unknown
-        label = f"{Path(item.key).name}: {wrote} turn" if wrote == 1 else f"{Path(item.key).name}: {wrote} turns"
+        line = f"{Path(label).name}: {wrote} turn" if wrote == 1 else f"{Path(label).name}: {wrote} turns"
         if unknown:
-            label += f", {unknown} unknown"
+            line += f", {unknown} unknown"
         if note:
-            label += f" ({note})"
-        reports.append(label)
+            line += f" ({note})"
+        reports.append(line)
+    if not dry_run:
+        _clear_lock_busy(root)
     return _result(adapter.name, agent, tuple(reports), total, dry_run=dry_run, placed=True, unknown=total_unknown)
 
 
@@ -337,8 +491,12 @@ def _one(
     transcript: Transcript,
     *,
     dry_run: bool,
+    bounded: bool,
+    id_cache: dict[tuple[str, str], set[str]],
+    meta_placed: bool,
 ) -> tuple[int, int, str]:
-    cursor = _load_cursor(root, agent, adapter.name, transcript.key)
+    payload_cwd = transcript.cwd
+    cursor = _load_cursor(root, agent, adapter.name, transcript.key, dry_run=dry_run)
     # A cursor that only followed an excluded file stays where it is. import_earlier
     # rewinds a cursor that was placed at the end on the first run, not one that
     # was excluded: excluded means those turns are never taken.
@@ -347,6 +505,7 @@ def _one(
         cursor["prefix"] = _EMPTY_PREFIX
         cursor["seeded"] = False
         cursor["excluded"] = False
+        cursor["owner"] = ""
     offset = int(cursor.get("offset") or 0)
     try:
         st = transcript.path.stat()
@@ -362,16 +521,10 @@ def _one(
         offset = 0
         rewind = True
         cursor["rewinds"] = int(cursor.get("rewinds") or 0) + 1
-    if rewind or not cursor.get("described"):
-        hooked_origin = transcript.origin
-        forced_internal = transcript.internal
-        describe = getattr(adapter, "describe", None)
-        if describe is not None:
-            transcript = describe(transcript, settings)
-        if hooked_origin == "subagent":
-            transcript = replace(transcript, origin="subagent")
-        if forced_internal:
-            transcript = replace(transcript, internal=True)
+        cursor["owner"] = ""
+    fresh = "dev" not in cursor and not _cursor_exists(root, agent, adapter.name, transcript.key)
+    if rewind or not cursor.get("described") or fresh:
+        transcript = _described(adapter, transcript, settings, payload_cwd=payload_cwd)
     else:
         transcript = replace(
             transcript,
@@ -384,56 +537,193 @@ def _one(
             described=True,
             parent=str(cursor.get("parent") or ""),
         )
-    internal_note = "session carries MEMORY_FOREST_INTERNAL"
-    if transcript.internal or _stage_session(root, transcript.session):
+    if not _allowed(transcript, settings):
         if not dry_run:
+            _follow_end(root, agent, adapter.name, transcript, excluded=True)
+        return 0, 0, "excluded"
+    # A hook that meets an existing transcript before the first placement does what
+    # the first sweep does: the cursor goes to the end and those turns are not taken.
+    if bounded and not settings.import_earlier and not meta_placed and fresh:
+        if not dry_run:
+            _follow_end(root, agent, adapter.name, transcript, excluded=False, seeded=True)
+        return 0, 0, "the cursor was placed at the end"
+    internal_note = "session carries MEMORY_FOREST_INTERNAL"
+    stage = _stage_session(root, transcript.session, limit=HOOK_LIST_BYTES if bounded else None)
+    if stage is None:
+        if not dry_run:
+            _note_deferred(root, agent, adapter.name)
+        return 0, 0, "waiting for a sweep"
+    if transcript.internal or stage or cursor.get("owner") == "internal":
+        if not dry_run:
+            cursor["owner"] = "internal"
             _store_cursor(root, agent, adapter.name, transcript, cursor, offset=_file_end(transcript.path), internal=True)
         return 0, 0, internal_note
-    batch = adapter.read(transcript, offset)
+    carry = cursor.get("carry") if isinstance(cursor.get("carry"), dict) else None
+    batch = _plugin(
+        adapter.read,
+        transcript,
+        offset,
+        carry=carry,
+        max_bytes=HOOK_READ_BYTES if bounded else None,
+    )
     if batch.faults and not dry_run:
         for class_name, place in batch.faults:
             log_failure(root, class_name, f"{adapter.name} {place}")
-    if batch.internal or (offset == 0 and any(text_internal(turn.text) for turn in batch.turns[:3])):
+    if batch.internal:
         if not dry_run:
+            cursor["owner"] = "internal"
             _remember_batch(root, agent, adapter.name, transcript, cursor, batch, internal=True)
         return 0, batch.unknown, internal_note
+    decided = cursor.get("owner")
+    if decided not in {"ordinary", "internal"} and offset == 0 and not cursor.get("seeded"):
+        owner = next((turn for turn in batch.turns if turn.role == "owner"), None)
+        if owner is not None and text_internal(owner.text):
+            if not dry_run:
+                cursor["owner"] = "internal"
+                _store_cursor(
+                    root, agent, adapter.name, transcript, cursor,
+                    offset=_file_end(transcript.path), internal=True,
+                )
+            return 0, batch.unknown, internal_note
+        if owner is None and len(batch.turns) < TURNS_BEFORE_OWNER:
+            if not dry_run:
+                _store_cursor(root, agent, adapter.name, transcript, cursor, offset=0, internal=False)
+            return 0, batch.unknown, "waiting for the owner turn"
+        cursor["owner"] = "ordinary"
     full = rewind or offset == 0
     records: list[tuple[str, dict[str, Any]]] = []
     seen: set[str] = set()
+    faults = 0
     for turn in batch.turns:
-        record = _record(config, agent, adapter.name, transcript, turn)
-        if record is None:
+        try:
+            record = _record(config, agent, adapter.name, transcript, turn)
+            if record is None:
+                continue
+            day = _day(record["at"], config)
+        except Exception as exc:
+            faults += 1
+            if not dry_run:
+                log_failure(root, exc.__class__.__name__, f"{adapter.name} {turn.place}")
             continue
         if record["id"] in seen:
             continue
-        day = _day(record["at"], config)
-        if _id_taken(root, agent, day, record["id"], full=full):
+        if _id_taken(root, agent, day, record["id"], full=full, persist=not dry_run, cache=id_cache):
             continue
         seen.add(record["id"])
         records.append((record["id"], record))
+    cursor["turn_faults"] = int(cursor.get("turn_faults") or 0) + faults
+    cursor["carry"] = batch.carry
     if dry_run:
         return len(records), batch.unknown, ""
     by_file: dict[str, list[dict[str, Any]]] = {}
     for turn_id, record in records:
         relative = f"{layout.ISTM}/{agent}/{_day(record['at'], config)}.jsonl"
         by_file.setdefault(relative, []).append(record)
-    for relative, group in by_file.items():
-        payload = "".join(_encode(item) for item in group)
-        _append(root, relative, payload)
-        day = Path(relative).stem
-        _note_ids(root, agent, day, [item["id"] for item in group])
-    _remember_batch(root, agent, adapter.name, transcript, cursor, batch, internal=False)
+    written = 0
+    try:
+        for relative, group in by_file.items():
+            payload = "".join(_encode(item) for item in group)
+            _append(root, relative, payload)
+            written += len(group)
+            _checkpoint("append")
+            day = Path(relative).stem
+            _note_ids(root, agent, day, [item["id"] for item in group])
+            id_cache.setdefault((agent, day), set()).update(item["id"] for item in group)
+        _remember_batch(root, agent, adapter.name, transcript, cursor, batch, internal=False)
+    except OSError as exc:
+        raise _WroteSome(written, exc) from exc
     return len(records), batch.unknown, ""
+
+
+def _described(adapter: Any, transcript: Transcript, settings: IntakeToolSettings, *, payload_cwd: str) -> Transcript:
+    """The transcript after ``describe``. The payload folder counts only when the file states none."""
+    hooked_origin = transcript.origin
+    forced_internal = transcript.internal
+    describe = getattr(adapter, "describe", None)
+    if describe is not None:
+        transcript = _plugin(describe, transcript, settings)
+    if not transcript.cwd and payload_cwd:
+        transcript = replace(transcript, cwd=payload_cwd)
+    if hooked_origin == "subagent":
+        transcript = replace(transcript, origin="subagent")
+    if forced_internal:
+        transcript = replace(transcript, internal=True)
+    return transcript
+
+
+def _checkpoint(step: str) -> None:
+    hook = _CHECKPOINT
+    if hook is not None:
+        hook(step)
+
+
+def _note_lock_busy(root) -> None:
+    """One short line, appended without the intake lock. A hook that found the lock held."""
+    try:
+        layout.ensure_folder(root, INTAKE_DIR)
+        path = layout.resolve(root, LOCK_BUSY)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            os.write(descriptor, b".\n")
+        finally:
+            os.close(descriptor)
+    except (OSError, MemoryForestError):
+        return
+
+
+def _clear_lock_busy(root) -> None:
+    path = layout.resolve(root, LOCK_BUSY)
+    try:
+        if path.is_file() and not path.is_symlink():
+            path.write_bytes(b"")
+    except OSError:
+        return
+
+
+def _lock_busy_count(root) -> int:
+    path = layout.resolve(root, LOCK_BUSY)
+    if not path.is_file() or path.is_symlink():
+        return 0
+    try:
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line)
+    except (OSError, UnicodeError):
+        return 0
+
+
+def _note_deferred(root, agent: str, adapter_name: str) -> None:
+    meta = _read_meta(root, agent, adapter_name)
+    meta["deferred"] = int(meta.get("deferred") or 0) + 1
+    _write_meta(root, agent, adapter_name, meta)
+
+
+def _state_elsewhere(root, adapter_name: str, configured: str) -> str:
+    """Another agent holds this tool's cursors, and the configured name holds none."""
+    if not configured or _each_cursor(root, configured, adapter_name):
+        return ""
+    base = layout.resolve(root, f"{INTAKE_DIR}/cursors")
+    if not base.is_dir() or base.is_symlink():
+        return ""
+    for agent in sorted(base.iterdir(), key=lambda item: item.name):
+        if agent.name == configured or not agent.is_dir() or agent.is_symlink():
+            continue
+        if _each_cursor(root, agent.name, adapter_name):
+            return agent.name
+    return ""
 
 
 def _record(
     config: Config,
-    agent: str,
+    _agent: str,
     adapter_name: str,
     transcript: Transcript,
     turn: Turn,
 ) -> dict[str, Any] | None:
+    del _agent
     role = turn.role
+    if role.startswith("other:"):
+        masked_name, _changed = _repair(_mask(role.removeprefix("other:"), config))
+        role = "other:" + masked_name
     if not _role_ok(role):
         return None
     origin = turn.origin if turn.origin in ORIGINS else transcript.origin
@@ -459,7 +749,7 @@ def _record(
         source["parent"] = transcript.parent
     record: dict[str, Any] = {
         "at": at.isoformat(),
-        "id": _compose_id(agent, turn.session or transcript.session, turn),
+        "id": _compose_id(turn.session or transcript.session, turn, stand_alone=_stand_alone(adapter_name)),
         "origin": origin,
         "role": role,
         "session": turn.session or transcript.session,
@@ -473,9 +763,21 @@ def _record(
     if parts:
         record["parts"] = [{"end": part.end, "kind": part.kind, "start": part.start} for part in parts]
     repaired = _mask_strings(record, config) or repaired
+    for key in ("text", "arguments"):
+        value = record.get(key)
+        if isinstance(value, str):
+            record[key] = _fold_home(value)
     if repaired:
         record["repaired"] = True
     return record
+
+
+def _fold_home(text: str) -> str:
+    """Write ``~`` in place of the home folder. Only a text or a kept tool argument is folded."""
+    home = str(Path.home())
+    if len(home) > 1 and home in text:
+        return text.replace(home, "~")
+    return text
 
 
 def _role_ok(role: str) -> bool:
@@ -484,10 +786,37 @@ def _role_ok(role: str) -> bool:
     return role.startswith("other:") and bool(role.removeprefix("other:").strip())
 
 
-def _compose_id(agent: str, session: str, turn: Turn) -> str:
-    """The source's own id, or a hash of the turn's content and time. The byte offset is not part of it."""
+def _stand_alone(adapter_name: str) -> bool:
+    """Whether this adapter's own turn id is unique without the session. The lane names the agent."""
+    try:
+        adapter = adapter_loader.get_adapter(adapter_name)
+    except MemoryForestError:
+        return False
+    return bool(getattr(adapter, "ids_stand_alone", False))
+
+
+def _id_part(value: str) -> str:
+    """A session or turn id that can be written as it is, or a hash of its exact code points."""
+    try:
+        value.encode("utf-8")
+        encodable = True
+    except UnicodeEncodeError:
+        encodable = False
+    if not encodable or any(character in value for character in "\r\n") or len(value) > 200:
+        return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
+    return value
+
+
+def _compose_id(session: str, turn: Turn, *, stand_alone: bool) -> str:
+    """The source's own id, or a hash of the turn's content and time. The byte offset is not part of it.
+
+    The agent is not part of the id: the lane names the agent. The session is part of it only when the
+    source's turn id is not unique by itself. A part that cannot be encoded, holds a line break or is
+    longer than 200 characters is a hash of its exact code points, so two raw ids never fold into one
+    and the stored id is the computed one.
+    """
     token = turn.turn_id or ""
-    if not token or any(character in token for character in "\r\n") or len(token) > 200:
+    if not token:
         material = "\0".join(
             (
                 turn.session or session,
@@ -497,9 +826,12 @@ def _compose_id(agent: str, session: str, turn: Turn) -> str:
                 turn.name or "",
             )
         )
-        token = hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:20]
-    safe_session = session.replace("\n", "").replace("\r", "")
-    return f"{agent}:{safe_session}:{token}"
+        token = hashlib.sha256(material.encode("utf-8", "surrogatepass")).hexdigest()[:20]
+    else:
+        token = _id_part(token)
+    if stand_alone:
+        return token
+    return f"{_id_part(session)}:{token}"
 
 
 def _day(at_text: str, config: Config) -> str:
@@ -518,6 +850,11 @@ def _repair(text: str) -> tuple[str, bool]:
 
 
 def _mask_parts(text: str, parts: tuple[Part, ...], config: Config) -> tuple[str, tuple[Part, ...], bool]:
+    """Mask the whole text, then map part boundaries onto it.
+
+    A boundary that falls inside a replaced value moves to the nearer edge of the replacement.
+    A tag that marks a part is not a value: the masker skips it.
+    """
     text, repaired = _repair(text)
     valid = []
     for part in parts:
@@ -527,39 +864,69 @@ def _mask_parts(text: str, parts: tuple[Part, ...], config: Config) -> tuple[str
         end = max(start, min(len(text), part.end))
         if end > start:
             valid.append(Part(start, end, part.kind))
+    masked, changed = _repair(_mask(text, config))
+    repaired = repaired or changed
     if not valid:
-        masked, changed = _repair(_mask(text, config))
-        return masked, (), repaired or changed
-    cuts = {0, len(text)}
-    for part in valid:
-        cuts.add(part.start)
-        cuts.add(part.end)
-    ordered = sorted(cuts)
-    pieces: list[str] = []
-    spans: list[tuple[int, int, int, int]] = []
-    cursor = 0
-    for left, right in zip(ordered, ordered[1:]):
-        piece, changed = _repair(_mask(text[left:right], config))
-        repaired = repaired or changed
-        spans.append((left, right, cursor, cursor + len(piece)))
-        pieces.append(piece)
-        cursor += len(piece)
-
-    def mapped(point: int) -> int:
-        for old_start, old_end, new_start, new_end in spans:
-            if point == old_start:
-                return new_start
-            if point == old_end:
-                return new_end
-        return cursor
-
+        return masked, (), repaired
+    mapping = _offset_map(text, masked)
     mapped_parts = []
     for part in valid:
-        start = mapped(part.start)
-        end = mapped(part.end)
+        start = mapping[min(part.start, len(mapping) - 1)]
+        end = mapping[min(part.end, len(mapping) - 1)]
         if end > start:
             mapped_parts.append(Part(start, end, part.kind))
-    return "".join(pieces), tuple(mapped_parts), repaired
+    return masked, tuple(mapped_parts), repaired
+
+
+def _offset_map(original: str, masked: str) -> list[int]:
+    """For each offset in ``original``, including the end, the offset in ``masked``."""
+    mapping = [0] * (len(original) + 1)
+    index = 0
+    point = 0
+    while index < len(original) and point < len(masked):
+        if original[index] == masked[point]:
+            mapping[index] = point
+            index += 1
+            point += 1
+            continue
+        if masked.startswith(credentials.REDACTED, point):
+            after = point + len(credentials.REDACTED)
+            tail = masked[after:after + 24]
+            found = original.find(tail, index) if tail else len(original)
+            if found < 0:
+                found = len(original)
+            span = max(1, found - index)
+            for cursor in range(index, found):
+                mapping[cursor] = point if (cursor - index) * 2 <= span else after
+            mapping[found] = after
+            index, point = found, after
+            continue
+        found_at = False
+        for shift in range(1, 64):
+            if point + shift > len(masked):
+                break
+            window = masked[point + shift:point + shift + 12]
+            if len(window) < 3:
+                continue
+            found = original.find(window, index)
+            if index <= found <= index + 80:
+                span = max(1, found - index)
+                for cursor in range(index, found):
+                    mapping[cursor] = point if (cursor - index) * 2 <= span else point + shift
+                mapping[found] = point + shift
+                index, point = found, point + shift
+                found_at = True
+                break
+        if not found_at:
+            mapping[index] = point
+            index += 1
+            if point < len(masked):
+                point += 1
+    while index <= len(original):
+        mapping[index] = min(point, len(masked))
+        index += 1
+    mapping[len(original)] = len(masked)
+    return mapping
 
 
 def _mask(text: str, config: Config) -> str:
@@ -619,12 +986,13 @@ def _normal(path: str) -> Path:
         return Path(os.path.abspath(candidate))
 
 
-def _stage_session(root, session: str) -> bool:
+def _stage_session(root, session: str, *, limit: int | None = None) -> bool | None:
+    """Whether a stage recorded ``session``. None means the list is longer than a hook reads."""
     if not session:
         return False
     from .stage import session_recorded
 
-    return session_recorded(root, session)
+    return session_recorded(root, session, limit=limit)
 
 
 def _identity_ok(cursor: Mapping[str, Any], st: os.stat_result, prefix: str, offset: int) -> bool:
@@ -712,19 +1080,21 @@ def _cursor_exists(root, agent: str, adapter_name: str, source_key: str) -> bool
     return path.is_file() and not path.is_symlink()
 
 
-def _load_cursor(root, agent: str, adapter_name: str, source_key: str) -> dict[str, Any]:
+def _load_cursor(root, agent: str, adapter_name: str, source_key: str, *, dry_run: bool = False) -> dict[str, Any]:
     path = cursor_file(root, agent, adapter_name, source_key)
     if not path.is_file() or path.is_symlink():
         return {"source": source_key}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
-        _set_aside(path)
-        log_failure(root, "intake_state_invalid", adapter_name)
+        if not dry_run:
+            _set_aside(path)
+            log_failure(root, "intake_state_invalid", adapter_name)
         return {"source": source_key}
     if not isinstance(value, dict):
-        _set_aside(path)
-        log_failure(root, "intake_state_invalid", adapter_name)
+        if not dry_run:
+            _set_aside(path)
+            log_failure(root, "intake_state_invalid", adapter_name)
         return {"source": source_key}
     value.setdefault("source", source_key)
     return value
@@ -750,6 +1120,7 @@ def _save_cursor(root, agent: str, adapter_name: str, source_key: str, cursor: M
         cursor_file(root, agent, adapter_name, source_key),
         json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     )
+    _checkpoint("cursor")
 
 
 def _follow_end(root, agent: str, adapter_name: str, transcript: Transcript, *, excluded: bool, seeded: bool = False) -> None:
@@ -768,6 +1139,7 @@ def _follow_end(root, agent: str, adapter_name: str, transcript: Transcript, *, 
             "ino": st.st_ino,
             "offset": end,
             "prefix": _prefix_hash(transcript.path, end),
+            "owner": "ordinary" if seeded and not excluded else "",
             "seeded": seeded and not excluded,
             "session": transcript.session,
             "size": st.st_size,
@@ -794,8 +1166,8 @@ def _store_cursor(root, agent, adapter_name, transcript: Transcript, cursor: dic
             "internal": internal,
             "offset": offset,
             "prefix": _prefix_hash(transcript.path, offset),
-        "seeded": bool(cursor.get("seeded")),
-        "size": st.st_size,
+            "seeded": bool(cursor.get("seeded")),
+            "size": st.st_size,
         }
     )
     _save_cursor(root, agent, adapter_name, transcript.key, cursor)
@@ -868,17 +1240,26 @@ def _each_cursor(root, agent: str, adapter_name: str) -> list[tuple[Path, dict[s
     return found
 
 
-def _adapter_totals(root, config: Config, adapter_name: str, settings: IntakeToolSettings) -> tuple[int, dict[str, int], int, list[str], str]:
+def _adapter_totals(
+    root, config: Config, adapter_name: str, settings: IntakeToolSettings
+) -> tuple[int, dict[str, int], int, list[str], str, int, int]:
+    del config
     unknown = 0
     dropped: dict[str, int] = {}
     rewinds = 0
     ahead: list[str] = []
     version = ""
+    internal = 0
+    turn_faults = 0
+    transcript_root = _transcript_root(adapter_name, settings)
     agents = _agents_with_cursors(root, adapter_name, settings.agent)
     for agent in agents:
         for _path, cursor in _each_cursor(root, agent, adapter_name):
             unknown += int(cursor.get("unknown") or 0)
             rewinds += int(cursor.get("rewinds") or 0)
+            turn_faults += int(cursor.get("turn_faults") or 0)
+            if cursor.get("internal") or cursor.get("owner") == "internal":
+                internal += 1
             raw_dropped = cursor.get("dropped")
             if isinstance(raw_dropped, dict):
                 for label, count in raw_dropped.items():
@@ -889,9 +1270,9 @@ def _adapter_totals(root, config: Config, adapter_name: str, settings: IntakeToo
             if not version and isinstance(cursor.get("version"), str):
                 version = cursor["version"]
             source = cursor.get("source")
-            if isinstance(source, str) and source and _ahead(settings, source, cursor):
+            if isinstance(source, str) and source and _ahead(transcript_root, source, cursor):
                 ahead.append(Path(source).name)
-    return unknown, dropped, rewinds, ahead, version
+    return unknown, dropped, rewinds, ahead, version, internal, turn_faults
 
 
 def _agents_with_cursors(root, adapter_name: str, configured: str) -> list[str]:
@@ -906,11 +1287,22 @@ def _agents_with_cursors(root, adapter_name: str, configured: str) -> list[str]:
     return found
 
 
-def _ahead(settings: IntakeToolSettings, source: str, cursor: Mapping[str, Any]) -> bool:
-    if not settings.path:
+def _transcript_root(adapter_name: str, settings: IntakeToolSettings) -> Path | None:
+    try:
+        adapter = adapter_loader.get_adapter(adapter_name)
+    except MemoryForestError:
+        return None
+    root_of = getattr(adapter, "transcript_root", None)
+    if root_of is None:
+        return Path(settings.path).expanduser() if settings.path else None
+    found = root_of(settings)
+    return found if isinstance(found, Path) else None
+
+
+def _ahead(transcript_root: Path | None, source: str, cursor: Mapping[str, Any]) -> bool:
+    if transcript_root is None:
         return False
-    root = Path(settings.path).expanduser()
-    path = root / source
+    path = transcript_root / source
     try:
         if not path.is_file() or path.is_symlink():
             return False
@@ -938,10 +1330,52 @@ def _failure_lines(root) -> tuple[list[str], int]:
     return shown, len(lines)
 
 
-def _id_taken(root, agent: str, day: str, turn_id: str, *, full: bool) -> bool:
-    if full:
-        return turn_id in _day_ids(root, agent, day)
-    return turn_id in _gap_ids(root, agent, day)
+def _id_taken(
+    root,
+    agent: str,
+    day: str,
+    turn_id: str,
+    *,
+    full: bool,
+    persist: bool = True,
+    cache: dict[tuple[str, str], set[str]] | None = None,
+) -> bool:
+    if cache is None:
+        cache = {}
+    return turn_id in _known_ids(root, agent, day, cache, full=full, persist=persist)
+
+
+def _known_ids(
+    root, agent: str, day: str, cache: dict[tuple[str, str], set[str]], *, full: bool, persist: bool
+) -> set[str]:
+    """The ids the day's lane holds, read once per day per run: the ids file and the bytes after ``.end``.
+
+    A rewind, or a missing ids file, also reads that one lane file. The read is not repeated in the run.
+    """
+    key = (agent, day)
+    if key in cache:
+        return cache[key]
+    path = _ids_path(root, agent, day)
+    has_file = path.is_file() and not path.is_symlink()
+    file_ids: set[str] = set()
+    if has_file:
+        try:
+            file_ids = {line for line in path.read_text(encoding="utf-8").splitlines() if line}
+        except (OSError, UnicodeError):
+            file_ids = set()
+    found = set(file_ids) | _gap_ids(root, agent, day)
+    if full or not has_file:
+        lane = _lane_path(root, agent, day)
+        try:
+            data = lane.read_bytes() if lane.is_file() and not lane.is_symlink() else b""
+        except OSError:
+            data = b""
+        found |= _ids_in(data)
+        if persist and not has_file:
+            _covered_size = _covered(root, agent, day)[1]
+            _write_ids(root, agent, day, found, _covered_size)
+    cache[key] = found
+    return found
 
 
 def _id_dir(root, agent: str) -> Path:
@@ -1044,6 +1478,7 @@ def _note_ids(root, agent: str, day: str, ids: list[str]) -> None:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+    _checkpoint("ids")
     _write_end(root, agent, day, _lane_path(root, agent, day).stat().st_size)
 
 
@@ -1051,13 +1486,15 @@ def _write_ids(root, agent: str, day: str, ids: set[str], size: int) -> None:
     folder = _id_dir(root, agent)
     folder.mkdir(parents=True, exist_ok=True)
     atomic_write(_ids_path(root, agent, day), "".join(item + "\n" for item in sorted(ids)))
-    _write_end(root, agent, day, size)
+    _write_end(root, agent, day, size, mark=False)
 
 
-def _write_end(root, agent: str, day: str, size: int) -> None:
+def _write_end(root, agent: str, day: str, size: int, *, mark: bool = True) -> None:
     folder = _id_dir(root, agent)
     folder.mkdir(parents=True, exist_ok=True)
     atomic_write(_end_path(root, agent, day), f"{size}\n")
+    if mark:
+        _checkpoint("end")
 
 
 def _append(root: str | os.PathLike[str], relative: str, payload: str) -> None:

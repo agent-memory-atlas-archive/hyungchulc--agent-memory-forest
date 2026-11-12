@@ -21,6 +21,9 @@ from ..errors import MemoryForestError
 
 
 MARKER: str = "MEMORY_FOREST_INTERNAL"
+# A hook that has to search for a session stops after this many transcript files.
+# Past that, the sweep walks the tree. Measured as a directory listing, not a read of each file.
+HOOK_WALK_FILES: int = 48
 # The first line of a prompt a stage sends. Intake treats that line, in a session's
 # first message, as the same mark as the environment variable.
 MARKER_LINE: str = MARKER
@@ -47,10 +50,16 @@ _HARNESS_TAGS: tuple[str, ...] = (
     "system-reminder",
     "task-notification",
     "local-command-caveat",
+    "local-command-stdout",
+    "local-command-stderr",
+    "bash-stdout",
+    "bash-stderr",
     "command-name",
     "command-message",
     "command-args",
     "scheduled-task",
+    "user_instructions",
+    "environment_context",
 )
 _HARNESS_RE = re.compile(
     "|".join(rf"<{tag}\b[^>]*>.*?</{tag}>" for tag in _HARNESS_TAGS),
@@ -112,6 +121,8 @@ class ReadBatch:
     # that could not be taken at all. The cursor still moves past both.
     dropped: tuple[tuple[str, int], ...] = ()
     faults: tuple[tuple[str, str], ...] = ()
+    # A tool call whose output has not arrived yet. The cursor keeps it for the next read.
+    carry: dict[str, Any] | None = None
 
 
 def env_internal(environ: Mapping[str, str]) -> bool:
@@ -329,16 +340,25 @@ def parse_object(raw: bytes) -> dict[str, Any] | None | bool:
     return value if isinstance(value, dict) else False
 
 
-def complete_lines(path: Path, offset: int) -> tuple[list[tuple[int, bytes]], int]:
+def complete_lines(
+    path: Path, offset: int, *, max_bytes: int | None = None
+) -> tuple[list[tuple[int, bytes]], int]:
     """Complete lines at and after ``offset``, and where the next read starts.
 
     The returned offset is the start of a trailing line that has no newline,
     or the end of the file when every line is complete. The trailing line is
-    not returned.
+    not returned. ``max_bytes`` stops the read after that many bytes, or after
+    the one line that crosses the limit, so a hook's work stays bounded and the
+    cursor can still move.
     """
     with path.open("rb") as handle:
         handle.seek(max(0, offset))
-        data = handle.read()
+        if max_bytes is None:
+            data = handle.read()
+        else:
+            data = handle.read(max(0, max_bytes))
+            if b"\n" not in data:
+                data += handle.readline(1024 * 1024)
     if not data:
         return [], offset
     lines: list[tuple[int, bytes]] = []

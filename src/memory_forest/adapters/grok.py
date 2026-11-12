@@ -41,6 +41,7 @@ from .common import (
     complete_lines,
     confine_file,
     counts_of,
+    HOOK_WALK_FILES,
     find_marks,
     harness_only,
     harness_parts,
@@ -51,7 +52,6 @@ from .common import (
     relative_key,
     session_token,
     stated_version,
-    text_internal,
     tool_home,
 )
 
@@ -62,6 +62,8 @@ _SUBAGENT_TOOLS = frozenset({"spawn_subagent", "spawn_agent", "Agent", "Task"})
 
 class GrokAdapter:
     name = "grok"
+    # ``eventId`` and ``toolCallId`` are opaque tokens, unique without the session.
+    ids_stand_alone = True
 
     def discover(self, settings: IntakeToolSettings) -> list[Transcript]:
         root = _sessions_root(settings)
@@ -96,7 +98,7 @@ class GrokAdapter:
                 "The hook payload has no session id.",
                 details={"adapter": self.name},
             )
-        path = _locate(root, session, cwd)
+        path = _locate(root, session, cwd, max_dirs=HOOK_WALK_FILES)
         if path is None:
             raise MemoryForestError(
                 "transcript_missing",
@@ -108,6 +110,9 @@ class GrokAdapter:
         if isinstance(event, str) and "subagent" in event.casefold():
             origin = "subagent"
         return Transcript(relative_key(path, root), path, session, cwd, origin, described=False)
+
+    def transcript_root(self, settings: IntakeToolSettings) -> Path | None:
+        return _sessions_root(settings)
 
     def describe(self, transcript: Transcript, settings: IntakeToolSettings) -> Transcript:
         root = _sessions_root(settings)
@@ -121,8 +126,10 @@ class GrokAdapter:
             )
         return opened
 
-    def read(self, transcript: Transcript, offset: int) -> ReadBatch:
-        lines, new_offset = complete_lines(transcript.path, offset)
+    def read(
+        self, transcript: Transcript, offset: int, carry: dict | None = None, max_bytes: int | None = None
+    ) -> ReadBatch:
+        lines, new_offset = complete_lines(transcript.path, offset, max_bytes=max_bytes)
         unknown = 0
         dropped: dict[str, int] = {}
         faults: list[tuple[str, str]] = []
@@ -164,18 +171,18 @@ class GrokAdapter:
                     unknown += 1
                     dropped[kind] = dropped.get(kind, 0) + 1
                     continue
-                if text_internal(_content_text(update.get("content"))[0]):
-                    internal = True
                 events.append({"kind": kind, "at": at, "start": start, "update": update, "turn_id": _event_id(value, update)})
-            except Exception as exc:
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:
                 faults.append((exc.__class__.__name__, place))
                 dropped[exc.__class__.__name__] = dropped.get(exc.__class__.__name__, 0) + 1
-        turns = _coalesce(events, transcript)
+        turns, pending = _coalesce(events, transcript, carry)
         if transcript.origin == "subagent" and turns:
             turns = _as_subagent_turns(turns)
         if internal:
             return ReadBatch((), new_offset, unknown, True, counts_of(dropped), tuple(faults))
-        return ReadBatch(tuple(turns), new_offset, unknown, False, counts_of(dropped), tuple(faults))
+        return ReadBatch(tuple(turns), new_offset, unknown, False, counts_of(dropped), tuple(faults), carry=pending)
 
     def _open(self, path: Path, root: Path) -> Transcript:
         folder = path.parent
@@ -247,17 +254,64 @@ def _updates(root: Path) -> list[Path]:
     return found
 
 
-def _locate(root: Path, session: str, cwd: str) -> Path | None:
+def _locate(root: Path, session: str, cwd: str, *, max_dirs: int | None = None) -> Path | None:
+    """The session's ``updates.jsonl``. A hook stops the fallback walk after ``max_dirs``."""
     if session_token(session) is None:
         return None
     if cwd:
         direct = root / quote(cwd, safe="~") / session / "updates.jsonl"
         if direct.is_file() and not direct.is_symlink():
             return direct
-    for path in _updates(root):
-        if path.parent.name == session:
-            return path
+    if not root.is_dir() or root.is_symlink():
+        return None
+    seen = 0
+    for group in sorted(root.iterdir(), key=lambda item: item.name):
+        if not group.is_dir() or group.is_symlink() or group.name.startswith("."):
+            continue
+        for folder in sorted(group.iterdir(), key=lambda item: item.name):
+            if not folder.is_dir() or folder.is_symlink():
+                continue
+            seen += 1
+            if max_dirs is not None and seen > max_dirs:
+                raise MemoryForestError(
+                    "transcript_deferred",
+                    "The hook left this session for a sweep.",
+                    details={"adapter": "grok"},
+                )
+            path = folder / "updates.jsonl"
+            if path.is_file() and not path.is_symlink() and folder.name == session:
+                return path
     return None
+
+
+def _pending_from(carry: dict | None, transcript: Transcript) -> Turn | None:
+    if not isinstance(carry, dict) or not isinstance(carry.get("turn_id"), str):
+        return None
+    moment = parse_time(carry.get("at"))
+    if moment is None:
+        return None
+    return Turn(
+        carry["turn_id"],
+        moment,
+        str(carry.get("session") or transcript.session),
+        "tool",
+        str(carry.get("text") or ""),
+        str(carry.get("place") or "byte 0"),
+        str(carry.get("origin") or transcript.origin),
+        str(carry.get("name") or "tool"),
+    )
+
+
+def _pending_carry(turn: Turn) -> dict:
+    return {
+        "at": turn.at.isoformat(),
+        "name": turn.name or "tool",
+        "origin": turn.origin,
+        "place": turn.place,
+        "session": turn.session,
+        "text": turn.text,
+        "turn_id": turn.turn_id,
+    }
 
 
 def _read_json(path: Path) -> object:
@@ -297,7 +351,7 @@ def _event_id(value: dict, update: dict) -> str | None:
     return tool_call if isinstance(tool_call, str) and tool_call else None
 
 
-def _coalesce(events: list[dict], transcript: Transcript) -> list[Turn]:
+def _coalesce(events: list[dict], transcript: Transcript, carry: dict | None) -> tuple[list[Turn], dict | None]:
     turns: list[Turn] = []
     pending: dict | None = None
 
@@ -332,7 +386,7 @@ def _coalesce(events: list[dict], transcript: Transcript) -> list[Turn]:
         turns.append(pending_tool)
         pending_tool = None
 
-    pending_tool: Turn | None = None
+    pending_tool: Turn | None = _pending_from(carry, transcript)
     for event in events:
         kind = event["kind"]
         update = event["update"]
@@ -376,8 +430,9 @@ def _coalesce(events: list[dict], transcript: Transcript) -> list[Turn]:
             continue
         # An update with no call beside it is bookkeeping for a call already recorded.
     flush_chunk()
-    flush_tool()
-    return turns
+    if pending_tool is not None:
+        return turns, _pending_carry(pending_tool)
+    return turns, None
 
 
 def _add_text(pending: dict, update: dict) -> None:

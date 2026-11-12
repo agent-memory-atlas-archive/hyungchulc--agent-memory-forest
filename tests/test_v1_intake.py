@@ -25,6 +25,18 @@ from memory_forest.intake import cursor_file  # noqa: E402
 from memory_forest.layout import initialize  # noqa: E402
 
 
+def _tree_bytes(root: Path) -> dict[str, tuple[int, bytes]]:
+    found = {}
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            path = Path(dirpath) / name
+            if path.is_symlink():
+                continue
+            stat = path.stat()
+            found[str(path.relative_to(root))] = (stat.st_mtime_ns, path.read_bytes())
+    return found
+
+
 def record(**fields: object) -> str:
     body = {
         "at": "2051-03-02T09:00:00+00:00",
@@ -196,12 +208,13 @@ class WriterTests(IntakeTestCase):
         folder = self.base / "notes"
         folder.mkdir()
         (folder / "kiln.jsonl").write_text(
-            record(id="turn-1", role="tool", name="read", text="secret kiln log"),
+            record(id="turn-0", text="Look at the log.")
+            + record(id="turn-1", role="tool", name="read", text="secret kiln log"),
             encoding="utf-8",
         )
         omitted = self.forest(self.tool(folder))
         self.invoke(omitted, "--from", "jsonl", "--once")
-        row = self.rows(omitted)[0]
+        row = next(item for item in self.rows(omitted) if item["role"] == "tool")
         self.assertEqual(row["text"], "ran read")
         self.assertEqual(row["name"], "read")
         self.assertNotIn("secret kiln log", self.lane(omitted))
@@ -212,7 +225,8 @@ class WriterTests(IntakeTestCase):
         )
         (kept_root / "forest.toml").write_text(settings + self.tool(folder), encoding="utf-8")
         self.invoke(kept_root, "--from", "jsonl", "--once")
-        self.assertEqual(self.rows(kept_root)[0]["text"], "secret kiln log")
+        kept = next(item for item in self.rows(kept_root) if item["role"] == "tool")
+        self.assertEqual(kept["text"], "secret kiln log")
 
     def test_include_and_exclude_follow_the_session_folder(self) -> None:
         folder = self.base / "notes"
@@ -306,17 +320,18 @@ class WriterTests(IntakeTestCase):
         (folder / "kiln.jsonl").write_text(record(id="turn-1"), encoding="utf-8")
         root = self.forest(self.tool(folder))
         holder = (
-            "import sys, time\n"
+            "import sys\n"
             "from memory_forest.locking import hold_lock\n"
             "with hold_lock(sys.argv[1], 'intake', label='held'):\n"
             "    sys.stdout.write('held\\n')\n"
             "    sys.stdout.flush()\n"
-            "    time.sleep(30)\n"
+            "    sys.stdin.readline()\n"
         )
         env = dict(os.environ)
         env["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
         proc = subprocess.Popen(
             [sys.executable, "-c", holder, str(root)],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             env=env,
         )
@@ -326,8 +341,17 @@ class WriterTests(IntakeTestCase):
             self.assertEqual(code, 0, err)
             self.assertIn("left its cursor", out)
             self.assertEqual(self.lane(root), "")
+            code, out, err = self.invoke(root, "--from", "jsonl", "--hook", "--once", stdin=json.dumps({
+                "transcript_path": str(folder / "kiln.jsonl"), "cwd": "/studio/kiln",
+            }))
+            self.assertEqual((code, out, err), (0, "", ""))
+            code, status_out, _ = self.invoke(root, "status")
+            self.assertEqual(code, 0)
+            self.assertIn("lock busy 1", status_out)
         finally:
-            proc.kill()
+            if proc.stdin is not None:
+                proc.stdin.write(b"\n")
+                proc.stdin.close()
             if proc.stdout is not None:
                 proc.stdout.close()
             proc.wait(timeout=5)
@@ -379,11 +403,12 @@ class WriterTests(IntakeTestCase):
         folder.mkdir()
         (folder / "kiln.jsonl").write_text(record(id="turn-1"), encoding="utf-8")
         root = self.forest(self.tool(folder))
+        before = _tree_bytes(root)
         code, out, _ = self.invoke(root, "--from", "jsonl", "--once", "--dry-run")
         self.assertEqual(code, 0)
         self.assertIn("1 turn would be taken in", out)
+        self.assertEqual(_tree_bytes(root), before)
         self.assertEqual(self.lane(root), "")
-        self.assertFalse((root / ".forest" / "intake" / "jsonl.json").exists())
 
     def test_an_internal_session_is_not_taken_in(self) -> None:
         folder = self.base / "notes"

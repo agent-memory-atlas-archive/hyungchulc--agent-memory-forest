@@ -3,24 +3,44 @@
 from __future__ import annotations
 
 import json
+import select
 import sys
-from typing import Any
+import time
+from typing import Any, BinaryIO, Callable
 
 from .cli import ForestCommand, _print_json, _print_lines, arg, forest_root
 from .errors import MemoryForestError
-from .intake import Result, run, status
+from .intake import Result, rename_agent, reread, run, status
 
 
 _HOOK_LIMIT = 8 * 1024 * 1024
+# A hook does not wait on a payload that never closes. Two seconds is enough for a client
+# that writes the object and closes, and short enough that a stuck pipe ends the hook.
+HOOK_PAYLOAD_SECONDS = 2.0
 
 
 def cmd_intake(arguments: Any) -> int:
     root = forest_root(arguments)
-    if arguments.action not in (None, "status"):
+    if arguments.action not in (None, "status", "reread", "rename-agent"):
         raise MemoryForestError(
             "intake_arguments",
-            "The only word after `intake` is `status`.",
+            "The word after `intake` is `status`, `reread` or `rename-agent`.",
         )
+    if arguments.action == "rename-agent":
+        if not arguments.left or not arguments.right:
+            raise MemoryForestError(
+                "intake_arguments",
+                "`forest intake rename-agent` takes the current agent id and the new one.",
+            )
+        result = rename_agent(root, arguments.left, arguments.right)
+        _show(arguments, result)
+        return 0
+    if arguments.action == "reread":
+        if not arguments.adapter:
+            raise MemoryForestError("intake_adapter_unset", "Name the adapter with --from.")
+        result = reread(root, arguments.adapter)
+        _show(arguments, result)
+        return 0
     if arguments.action == "status":
         if any((arguments.adapter, arguments.agent, arguments.transcript, arguments.hook, arguments.dry_run, arguments.once)):
             raise MemoryForestError(
@@ -53,8 +73,61 @@ def cmd_intake(arguments: Any) -> int:
 
 
 def _hook_payload() -> dict[str, Any]:
-    raw = sys.stdin.buffer.read(_HOOK_LIMIT + 1)
-    if len(raw) > _HOOK_LIMIT:
+    return read_hook_payload(sys.stdin.buffer)
+
+
+def read_hook_payload(
+    stream: BinaryIO,
+    *,
+    limit: int = _HOOK_LIMIT,
+    seconds: float = HOOK_PAYLOAD_SECONDS,
+    wait: Callable[[BinaryIO, float], bool] | None = None,
+    clock: Callable[[], float] | None = None,
+) -> dict[str, Any]:
+    """The hook's JSON object. A stream that is not a pipe is read up to ``limit``.
+
+    A pipe is read until the object is complete, the byte limit, or ``seconds``. A payload
+    that does not arrive is ``hook_timeout``.
+    """
+    try:
+        stream.fileno()
+        piped = True
+    except (AttributeError, OSError, ValueError):
+        piped = False
+    if not piped:
+        return _parse_hook(stream.read(limit + 1), limit)
+    now = clock or time.monotonic
+    deadline = now() + seconds
+    waiting = wait or _wait_for_pipe
+    buf = b""
+    while len(buf) <= limit:
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise MemoryForestError("hook_timeout", "The hook payload did not arrive.")
+        if not waiting(stream, remaining):
+            raise MemoryForestError("hook_timeout", "The hook payload did not arrive.")
+        chunk = stream.read(min(65536, limit + 1 - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+        if len(buf) > limit:
+            raise MemoryForestError("hook_too_large", "The hook payload is larger than intake reads.")
+        try:
+            value = json.loads(buf.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            return value
+    return _parse_hook(buf, limit)
+
+
+def _wait_for_pipe(stream: BinaryIO, remaining: float) -> bool:
+    ready, _ignored, _also = select.select([stream], [], [], remaining)
+    return bool(ready)
+
+
+def _parse_hook(raw: bytes, limit: int) -> dict[str, Any]:
+    if len(raw) > limit:
         raise MemoryForestError("hook_too_large", "The hook payload is larger than intake reads.")
     try:
         value = json.loads(raw.decode("utf-8"))
@@ -82,8 +155,10 @@ COMMANDS: list[ForestCommand] = [
                 "action",
                 nargs="?",
                 default=None,
-                help="`status` shows each adapter, its agent and how many lines it did not understand",
+                help="`status`, `reread` or `rename-agent`",
             ),
+            arg("left", nargs="?", default=None, help="with rename-agent, the current agent id"),
+            arg("right", nargs="?", default=None, help="with rename-agent, the new agent id"),
             arg("--from", dest="adapter", default=None, help="which adapter reads the transcripts"),
             arg("--as", dest="agent", default=None, help="the agent these turns belong to"),
             arg("--transcript", default=None, help="read this transcript file only"),

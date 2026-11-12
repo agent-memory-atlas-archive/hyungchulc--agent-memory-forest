@@ -42,7 +42,9 @@ from .common import (
     complete_lines,
     confine_file,
     counts_of,
+    HOOK_WALK_FILES,
     find_marks,
+    harness_only,
     harness_parts,
     head_internal,
     head_objects,
@@ -70,6 +72,8 @@ _SUBAGENT_TOOLS = frozenset({"spawn_agent", "spawn_subagent", "Agent", "Task"})
 
 class CodexAdapter:
     name = "codex"
+    # ``payload.id`` and ``call_id`` are opaque tokens, unique without the session.
+    ids_stand_alone = True
 
     def discover(self, settings: IntakeToolSettings) -> list[Transcript]:
         root = _sessions_root(settings)
@@ -106,7 +110,7 @@ class CodexAdapter:
         else:
             session = session_token(payload.get("session_id") or payload.get("sessionId"))
             if session is not None:
-                path = _find_rollout(root, session)
+                path = _find_rollout(root, session, max_files=HOOK_WALK_FILES)
         if path is None:
             raise MemoryForestError(
                 "hook_incomplete",
@@ -117,14 +121,18 @@ class CodexAdapter:
         cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
         return Transcript(relative_key(path, root), path, session, cwd, "unknown", described=False)
 
+    def transcript_root(self, settings: IntakeToolSettings) -> Path | None:
+        return _sessions_root(settings)
+
     def describe(self, transcript: Transcript, settings: IntakeToolSettings) -> Transcript:
         root = _sessions_root(settings)
         if root is None:
             return transcript
         return self._open(transcript.path, root)
 
-    def read(self, transcript: Transcript, offset: int) -> ReadBatch:
-        lines, new_offset = complete_lines(transcript.path, offset)
+    def read(self, transcript: Transcript, offset: int, carry: dict | None = None, max_bytes: int | None = None) -> ReadBatch:
+        del carry
+        lines, new_offset = complete_lines(transcript.path, offset, max_bytes=max_bytes)
         unknown = 0
         dropped: dict[str, int] = {}
         faults: list[tuple[str, str]] = []
@@ -144,6 +152,15 @@ class CodexAdapter:
                 if marked_internal(value):
                     internal = True
                 kind = value.get("type")
+                if kind == "compacted":
+                    moment = parse_time(value.get("timestamp"))
+                    if moment is None:
+                        dropped["compacted"] = dropped.get("compacted", 0) + 1
+                    else:
+                        order.append(
+                            Turn(None, moment, transcript.session, "system", "compaction", place_of(start), transcript.origin)
+                        )
+                    continue
                 if kind in _SKIP or kind == "session_meta":
                     label = kind if isinstance(kind, str) else "invalid"
                     dropped[label] = dropped.get(label, 0) + 1
@@ -193,7 +210,9 @@ class CodexAdapter:
                 unknown += 1
                 label = item if isinstance(item, str) else "response_item"
                 dropped[label] = dropped.get(label, 0) + 1
-            except Exception as exc:
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:
                 faults.append((exc.__class__.__name__, place))
                 dropped[exc.__class__.__name__] = dropped.get(exc.__class__.__name__, 0) + 1
         if transcript.origin == "subagent" and order:
@@ -239,12 +258,32 @@ def _sessions_root(settings: IntakeToolSettings) -> Path | None:
     return tool_home(".codex", "sessions")
 
 
-def _find_rollout(root: Path, session_id: str) -> Path | None:
+def _find_rollout(root: Path, session_id: str, *, max_files: int | None = None) -> Path | None:
+    """The rollout named ``session_id``. A hook stops after ``max_files`` and leaves the rest to a sweep."""
     token = session_token(session_id)
     if token is None:
         return None
-    for path in walk_jsonl(root, lambda name: name.startswith("rollout-") and name.endswith(".jsonl") and name_has_id(name, token)):
-        return path
+    seen = 0
+    if not root.is_dir() or root.is_symlink():
+        return None
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [name for name in dirs if not name.startswith(".") and not Path(dirpath, name).is_symlink()]
+        for name in sorted(files):
+            if name.startswith(".") or not (name.startswith("rollout-") and name.endswith(".jsonl")):
+                continue
+            seen += 1
+            if max_files is not None and seen > max_files:
+                raise MemoryForestError(
+                    "transcript_deferred",
+                    "The hook left this session for a sweep.",
+                    details={"adapter": "codex"},
+                )
+            if not name_has_id(name, token):
+                continue
+            path = Path(dirpath) / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            return path
     return None
 
 
@@ -309,8 +348,8 @@ def _user_pieces(payload: dict) -> tuple[str, tuple[Part, ...], bool]:
         kind = item.get("type")
         if kind == "input_text" and isinstance(item.get("text"), str):
             text = item["text"]
-            harness = provenance in _HARNESS_PROVENANCE
-            if provenance in (None, "user"):
+            harness = provenance in _HARNESS_PROVENANCE or harness_only(text)
+            if provenance == "user" or (provenance is None and not harness):
                 owner = True
             if pieces:
                 pieces.append("\n")
@@ -319,6 +358,8 @@ def _user_pieces(payload: dict) -> tuple[str, tuple[Part, ...], bool]:
                 parts.append(Part(cursor, cursor + len(text), "harness"))
             else:
                 for part in find_marks(text):
+                    parts.append(Part(part.start + cursor, part.end + cursor, part.kind))
+                for part in harness_parts(text):
                     parts.append(Part(part.start + cursor, part.end + cursor, part.kind))
             pieces.append(text)
             cursor += len(text)

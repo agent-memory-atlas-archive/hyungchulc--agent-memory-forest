@@ -70,8 +70,6 @@ def load_adapters() -> dict[str, Adapter]:
     global _CACHE
     if _CACHE is not None:
         return _CACHE
-    from ..errors import MemoryForestError
-
     found: dict[str, Adapter] = {}
     failed: dict[str, str] = {}
     try:
@@ -81,26 +79,22 @@ def load_adapters() -> dict[str, Adapter]:
     for item in group:
         try:
             loaded = item.load()
-        except Exception as exc:
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:
             failed[item.name] = exc.__class__.__name__
             continue
         previous = found.get(item.name)
         if previous is not None and not _same_adapter(previous, loaded):
-            raise MemoryForestError(
-                "intake_adapter_clash",
-                f"{item.name} is claimed by {type(previous).__module__} and {type(loaded).__module__}.",
-                details={"adapter": item.name},
-            )
+            # The plugin that arrived second is off. The first one, or the built-in below, stays.
+            failed[item.name] = "intake_adapter_clash"
+            continue
         found[item.name] = loaded
     for name, module_name in _BUILTINS.items():
         builtin = importlib.import_module(module_name).adapter
         other = found.get(name)
         if other is not None and not _same_adapter(other, builtin):
-            raise MemoryForestError(
-                "intake_adapter_clash",
-                f"{name} is claimed by {type(other).__module__} and {type(builtin).__module__}.",
-                details={"adapter": name},
-            )
+            failed[name] = "intake_adapter_clash"
         found[name] = builtin
     _FAILED.clear()
     _FAILED.update(failed)

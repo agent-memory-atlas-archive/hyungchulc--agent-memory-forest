@@ -599,15 +599,26 @@ from .cli_find import COMMANDS as _FIND_COMMANDS  # noqa: E402
 FOREST_COMMANDS += _FIND_COMMANDS
 
 
+class ForestArgumentParser(argparse.ArgumentParser):
+    """In hook mode ``error`` writes nothing: a client's hook shows stderr to the model."""
+
+    quiet_errors = False
+
+    def error(self, message: str) -> NoReturn:
+        if ForestArgumentParser.quiet_errors:
+            self.exit(2)
+        super().error(message)
+
+
 def build_forest_parser(commands: Sequence[ForestCommand] | None = None) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = ForestArgumentParser(
         prog="forest",
         description="Keep an Agent Memory Forest: a local, plain-Markdown memory. Commands never use the network.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    common = argparse.ArgumentParser(add_help=False)
+    common = ForestArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print JSON")
-    rooted = argparse.ArgumentParser(add_help=False, parents=[common])
+    rooted = ForestArgumentParser(add_help=False, parents=[common])
     rooted.add_argument("--root", default=argparse.SUPPRESS, help=_ROOT_HELP)
     parser.add_argument("--json", action="store_true", default=False, help="print JSON")
     parser.add_argument("--root", default=None, help=_ROOT_HELP)
@@ -661,16 +672,16 @@ def _hook_place(argv: Sequence[str]) -> str:
 def _root_for_hook_log(argv: Sequence[str]):
     from pathlib import Path
 
-    candidate = None
+    from .config import find_root
+
     if "--root" in argv:
         index = argv.index("--root")
         if index + 1 < len(argv):
             candidate = Path(argv[index + 1])
-    if candidate is None:
-        candidate = Path.cwd()
-    if (candidate / "forest.toml").is_file():
-        return candidate
-    return None
+            if (candidate / "forest.toml").is_file():
+                return candidate
+        return None
+    return find_root(Path.cwd())
 
 
 def _silent_hook_failure(argv: Sequence[str], class_name: str) -> int:
@@ -685,6 +696,7 @@ def _silent_hook_failure(argv: Sequence[str], class_name: str) -> int:
 def forest_main(argv: Sequence[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     hook = _intake_hook(raw)
+    ForestArgumentParser.quiet_errors = hook
     parser = build_forest_parser()
     try:
         arguments = parser.parse_args(raw)
@@ -692,6 +704,8 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
         if hook:
             return _silent_hook_failure(raw, "intake_arguments")
         raise
+    finally:
+        ForestArgumentParser.quiet_errors = False
     global _SHOWN_CONFIG
     _SHOWN_CONFIG = None
     try:
