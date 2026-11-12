@@ -15,7 +15,10 @@ the version 1 commands replace it.
 
 - `forest index build | status` writes `.forest/index.sqlite`, one row per page section, collection
   entry, daily block and raw-lane turn. The stored text is what a read prints. The build holds the
-  `index` lock and publishes by replacing the file, so a reader never waits. A file is skipped when its
+  `index` lock and writes the file in place in WAL mode, in one transaction, so a reader never waits and
+  no journal file is unlinked under one. A lane that only grew is read from its last indexed line. The
+  index keeps a fingerprint of the masking; when settings, the ledger or the masking rules change, every
+  file is indexed again before a search answers. A file is skipped when its
   size and time are unchanged, and hashed when either changed, when `build --verify` is given, or when
   the stored hash is more than a day old. A CJK word of one or two characters is found inside a longer
   word. A page that is not valid UTF-8 is read with replacement characters and named in the status.
@@ -37,7 +40,8 @@ the version 1 commands replace it.
 - `forest mcp --as <agent> [--http HOST:PORT]` serves `memory_search`, `memory_read`, `memory_timeline`,
   `memory_navigate` and `memory_log` over newline-delimited stdio and streamable HTTP, for protocol
   versions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25. A JSON-RPC batch is accepted for 2025-03-26
-  only. The server's instructions stay under 2,048 characters. `memory_log` appends through the intake
+  only, after `initialize` and without it. A tool's input validation error is `isError: true` under
+  2025-11-25 and `-32602` before it. A stdio line is bounded while it is read. The server's instructions stay under 2,048 characters. `memory_log` appends through the intake
   writer and reports whether that line was indexed; the server sets the role and the origin. Every HTTP
   bind, loopback included, uses `.forest/mcp/token` in mode 0600. The first start creates it and the
   token is never printed. A non-loopback `Origin`, a non-loopback `Host` on a loopback bind, and a body

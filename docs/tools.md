@@ -457,15 +457,22 @@ sections.
 `forest index build` writes `.forest/index.sqlite`. The file is derived: delete it and build again and
 the same rows come back. One row is one page section, one collection entry, one marked block of a daily
 page, or one raw-lane turn. The text in the row is the text a read would print, with sign-in values
-masked and numbers starred. The build holds the `index` lock and publishes the file by replacing it, so
-a search that is already running does not wait. A second build that finds the lock held says so and
-returns. A file whose size and time are unchanged is skipped. `forest index build --verify`, and a build
+masked and numbers starred. The build holds the `index` lock and writes the file in place, in one
+transaction in WAL mode, so a search that is already running keeps reading the last committed index and
+does not wait. Nothing replaces or unlinks the file or its journal files. A second build that finds the
+lock held says so and returns. A file whose size and time are unchanged is skipped. A raw lane that only
+grew is read from the end of its last indexed line, and a last line without its newline waits for it. `forest index build --verify`, and a build
 whose stored hash is more than a day old, hashes those files too and rewrites a file only when the bytes
 changed. A page that is not valid UTF-8 is read with replacement characters, named in the status, and
 does not stop the build.
 
-`forest index status` prints the tokenizer, the counts, how many files have changed since the build, and
-any page that was not valid UTF-8. Where this machine's SQLite has the trigram tokenizer, the line says
+When the masking changes (a `[credentials]` or `[numbers]` setting, a value judged into the ledger, or
+the package's masking rules), the next build, update or search indexes every file again before it
+answers, so a search cannot find a value a read now hides. A file SQLite cannot read is refused with
+`index_unreadable`: delete it with its `-wal` and `-shm` files when no forest process runs, and build again.
+
+`forest index status` prints the tokenizer, the counts, whether the masking is current, how many files
+have changed since the build, and any page that was not valid UTF-8. Where this machine's SQLite has the trigram tokenizer, the line says
 `trigram+unicode61`: a run of three or more characters is found inside unspaced text, and spaced words of
 any length are found too. A CJK word of one or two characters is found inside a longer word either way.
 Where trigram is absent, the line says `unicode61`.
@@ -555,7 +562,10 @@ index lock was busy.
 The clients checked here, `claude mcp`, `codex mcp` and `grok mcp`, speak protocol versions
 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also
 offer the older SSE transport. This server does not. It answers with the newest of those versions that
-the client names. A JSON-RPC batch is accepted for 2025-03-26 and refused for the other three. The HTTP
+the client names. A JSON-RPC batch is accepted for 2025-03-26, after `initialize` and without it, and
+refused for the other three. An argument a tool does not accept is a tool result with `isError: true`
+under 2025-11-25 and a `-32602` error under the earlier versions; an unknown tool is `-32602` under all.
+A stdio line over 1,000,000 bytes gets one error and the next line is read. The HTTP
 `MCP-Protocol-Version` response header is the version negotiated with that client.
 
 The first tool call of each agent is recorded in `.forest/mcp/seen.json`, with the agent, the time, the
