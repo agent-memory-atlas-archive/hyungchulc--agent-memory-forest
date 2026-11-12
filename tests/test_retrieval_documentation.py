@@ -101,5 +101,16 @@ class RetrievalDocumentationTests(unittest.TestCase):
         )
 
 
+class PublicationSurfaceTests(unittest.TestCase):
+    def test_the_comparison_dates_the_other_projects_documents_once(self) -> None:
+        body = (ROOT / "docs" / "comparison.md").read_text(encoding="utf-8")
+        self.assertEqual(body.count("2026-11-11"), 1)
+        self.assertIn("The other projects' documents\nwere read on 2026-11-11.", body)
+
+    def test_ci_runs_on_pushes_to_v1(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("branches: [main, v1]", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -123,6 +123,8 @@ the tree until the version 1 commands replace it.
 
 ### Changed
 
+- CI also runs on pushes to `v1`. The comparison states 2026-11-11 once, as the day the other projects'
+  documents were read
 - the package version is `1.0.0a1`, defined once as `memory_forest.__version__`. The `forest` command and
   the package metadata read it, and a test checks the citation, this heading and the CI smoke assertion
   against it. The `memory-forest` command reports `0.3.0`, the release that command is

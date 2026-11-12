@@ -1,15 +1,14 @@
 # Comparison with other open memory systems
 
 This page compares Agent Memory Forest version 1 with four other ways to give an agent memory. For the
-other systems it states only what their own public pages say, with the page and the date it was read
-beside each claim. Where a page did not say something, the table says "not stated" rather than guessing.
-Projects change quickly; check the linked pages before relying on a row.
+other systems it states only what their own public pages say, with the page beside each claim. Where a
+page did not say something, the table says "not stated" rather than guessing.
+Projects change quickly; check the linked pages before relying on a row. The other projects' documents
+were read on 2026-11-11.
 
 For Agent Memory Forest the row describes [the v1 design](v1-design.md). The code is being ported in
 milestones (design, section 14), so some of what the row describes is designed and not yet released. No
 benchmark results of Agent Memory Forest are published, and this page claims none.
-
-All pages below were read on 2026-11-11.
 
 ## At a glance
 
@@ -85,7 +84,7 @@ Agent Memory Forest:
 
 - [d] [`docs/v1-design.md`](v1-design.md), this repository; section numbers as `d§n`.
 
-Mem0 (read on 2026-11-11):
+Mem0:
 
 - [m1] README: <https://github.com/mem0ai/mem0>
 - [m2] How it works: <https://docs.mem0.ai/core-concepts/how-it-works> and open-source overview:
@@ -98,7 +97,7 @@ Mem0 (read on 2026-11-11):
 - [m8] Memory history API: <https://docs.mem0.ai/api-reference/memory/history-memory>
 - [m9] Platform and open source compared: <https://docs.mem0.ai/platform/platform-vs-oss>
 
-GBrain (read on 2026-11-11):
+GBrain:
 
 - [g1] README: <https://github.com/garrytan/gbrain>
 - [g2] System of record: <https://github.com/garrytan/gbrain/blob/master/docs/architecture/system-of-record.md>
@@ -107,12 +106,12 @@ GBrain (read on 2026-11-11):
 - [g4] Entity-scoped facts: <https://github.com/garrytan/gbrain/blob/master/docs/guides/entity-scoped-facts.md>
 - [g5] README sections on schema packs, linking, network use and hosting: <https://github.com/garrytan/gbrain>
 
-LLM Wiki (read on 2026-11-11):
+LLM Wiki:
 
 - [k1] <https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f> (the gist's comment thread was
   not read)
 
-Plain vector-store RAG (read on 2026-11-11):
+Plain vector-store RAG:
 
 - [r1] LangChain RAG tutorial: <https://docs.langchain.com/oss/python/langchain/rag>
 
