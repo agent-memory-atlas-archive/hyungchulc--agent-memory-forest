@@ -1,0 +1,1411 @@
+"""The search index and the reads that use it (design, sections 6, 9 and 10).
+
+``.forest/index.sqlite`` is derived. Deleting it and running ``forest index
+build`` makes it again. One row is one page section, one collection entry, one
+marked block of a daily page, or one raw-lane turn. The build holds the
+``index`` lock and publishes the file by replacing it, so a reader opens the
+published file and never waits for a build.
+
+Word search uses FTS5. Where this SQLite has the trigram tokenizer, a run of
+three or more characters is findable inside unspaced text, and a unicode61
+index beside it finds spaced words of any length. Where trigram is absent,
+only unicode61 is built: unspaced text is one token, and ``index status`` says
+so.
+
+Aliases are matched from the registry before words. Vectors run only when
+``[embeddings] provider`` is not ``none`` and a provider of that name is
+registered. Nothing here opens a network connection.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import sqlite3
+from collections.abc import Iterable, Sequence
+from datetime import datetime, timedelta, timezone
+from pathlib import Path, PurePosixPath
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from . import embeddings, layout, registry as registry_mod
+from .collections import owner_of
+from .config import Config, load_config
+from .credentials import shown
+from .errors import MemoryForestError
+from .locking import hold_lock
+from .model import TimelineLine, parse_page
+from .registry import COLLECTION_OWN_SECTIONS, about_ids, normalize_name
+from .safety import require_real_root
+from .scope import Scope, for_reader
+
+
+INDEX_RELATIVE = f"{layout.STATE_DIR}/index.sqlite"
+SCHEMA = "1"
+LOCK_NAME = "index"
+VECTOR_FLOOR = 0.2
+_STAGING_SUFFIX = ".building"
+_H2_RE = re.compile(r"##[ \t]+(?P<text>.+?)[ \t]*$")
+_BLOCK_RE = re.compile(r"<!--[ \t]*block:[ \t]*(\S+)[ \t]+(\S+)[ \t]*-->[ \t]*$")
+_FENCE_RE = re.compile(r"^[ \t]{0,3}```")
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+_TOKEN_STRIP = ".,;:!?\"'()[]{}"
+
+
+def trigram_available() -> bool:
+    """Whether this SQLite can build an FTS5 trigram index."""
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute("CREATE VIRTUAL TABLE t USING fts5(x, tokenize = 'trigram')")
+    except sqlite3.OperationalError:
+        return False
+    else:
+        return True
+    finally:
+        connection.close()
+
+
+def tokenizer_name() -> str:
+    """``trigram+unicode61`` where trigram exists, otherwise ``unicode61``."""
+    return "trigram+unicode61" if trigram_available() else "unicode61"
+
+
+# ─────────────────────────────── build ───────────────────────────────
+
+
+def build(
+    root: str | os.PathLike[str],
+    *,
+    only: Sequence[str] | None = None,
+    wait_seconds: float = 0.0,
+) -> dict[str, Any]:
+    """Build or update the index. A lock held elsewhere returns ``busy`` without waiting past ``wait_seconds``."""
+    try:
+        with hold_lock(root, LOCK_NAME, wait_seconds=wait_seconds, label="forest index"):
+            return _build_held(root, only=only)
+    except MemoryForestError as exc:
+        if exc.code != "lock_busy":
+            raise
+        return {
+            "busy": True,
+            "files": 0,
+            "message": "an index build is already running",
+            "ok": True,
+            "path": INDEX_RELATIVE,
+            "units": 0,
+            "updated": 0,
+        }
+
+
+def status(root: str | os.PathLike[str]) -> dict[str, Any]:
+    """Counts, the tokenizer, and whether a file has changed since the build. This does not take the lock."""
+    safe = require_real_root(root)
+    connection = connect(safe)
+    if connection is None:
+        return {
+            "available": False,
+            "exists": _index_path(safe).is_file(),
+            "ok": True,
+            "path": INDEX_RELATIVE,
+        }
+    try:
+        meta = _metadata(connection)
+        files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
+        stale = _stale_files(safe, connection)
+    finally:
+        connection.close()
+    return {
+        "available": True,
+        "built_at": meta.get("built_at", ""),
+        "exists": True,
+        "files": files,
+        "ok": True,
+        "path": INDEX_RELATIVE,
+        "schema": meta.get("schema", ""),
+        "stale": stale,
+        "tokenizer": meta.get("tokenizer", ""),
+        "units": units,
+    }
+
+
+def connect(root: str | os.PathLike[str]) -> sqlite3.Connection | None:
+    """Open the published index read-only, or None when it is absent. Does not wait on a build."""
+    path = _index_path(require_real_root(root))
+    if not path.is_file() or path.is_symlink():
+        return None
+    uri = path.resolve().as_uri() + "?mode=ro"
+    for _attempt in (1, 2):
+        try:
+            connection = sqlite3.connect(uri, uri=True, timeout=0.0)
+        except sqlite3.OperationalError:
+            continue
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            schema = connection.execute(
+                "SELECT value FROM metadata WHERE key = 'schema'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            connection.close()
+            continue
+        if schema is None or schema[0] != SCHEMA:
+            connection.close()
+            return None
+        return connection
+    return None
+
+
+def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
+    connection = connect(root)
+    if connection is None:
+        raise MemoryForestError(
+            "index_missing",
+            "The forest has no search index. Run `forest index build`.",
+            details={"path": INDEX_RELATIVE},
+        )
+    return connection
+
+
+def _build_held(root: str | os.PathLike[str], *, only: Sequence[str] | None) -> dict[str, Any]:
+    safe = require_real_root(root)
+    config = load_config(safe)
+    published = _index_path(safe)
+    published.parent.mkdir(mode=0o700, exist_ok=True)
+    staging = published.with_name(published.name + _STAGING_SUFFIX)
+    if staging.exists():
+        staging.unlink()
+    tokenizer = tokenizer_name()
+    recreate = not published.is_file()
+    if not recreate:
+        current = connect(safe)
+        if current is None:
+            recreate = True
+        else:
+            meta = _metadata(current)
+            current.close()
+            recreate = meta.get("schema") != SCHEMA or meta.get("tokenizer") != tokenizer
+    connection = sqlite3.connect(staging)
+    try:
+        connection.execute("PRAGMA journal_mode = DELETE")
+        connection.execute("PRAGMA synchronous = FULL")
+        if not recreate and published.is_file():
+            source = sqlite3.connect(published)
+            try:
+                source.backup(connection)
+            finally:
+                source.close()
+        else:
+            _create_schema(connection, trigram="trigram" in tokenizer)
+            recreate = True
+        present = {relative: path for relative, path in _source_files(safe)}
+        wanted = set(present) if only is None or recreate else {layout.normalize(item) for item in only}
+        updated = 0
+        for relative in sorted(wanted):
+            path = present.get(relative)
+            if path is None:
+                _drop_path(connection, relative)
+                updated += 1
+                continue
+            if _unchanged(connection, relative, path):
+                continue
+            _replace_path(connection, config, relative, path, tokenizer)
+            updated += 1
+        if recreate or only is None:
+            stored = {row[0] for row in connection.execute("SELECT path FROM files")}
+            for relative in sorted(stored - set(present)):
+                _drop_path(connection, relative)
+                updated += 1
+        _set_meta(connection, "schema", SCHEMA)
+        _set_meta(connection, "tokenizer", tokenizer)
+        _set_meta(connection, "built_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        connection.commit()
+        files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
+    except BaseException:
+        connection.close()
+        staging.unlink(missing_ok=True)
+        raise
+    connection.close()
+    os.chmod(staging, 0o600)
+    os.replace(staging, published)
+    os.chmod(published, 0o600)
+    _fsync_directory(published.parent)
+    return {
+        "busy": False,
+        "files": files,
+        "ok": True,
+        "path": INDEX_RELATIVE,
+        "tokenizer": tokenizer,
+        "units": units,
+        "updated": updated,
+    }
+
+
+def _create_schema(connection: sqlite3.Connection, *, trigram: bool) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE files (
+            path TEXT PRIMARY KEY,
+            size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            sha256 TEXT NOT NULL
+        );
+        CREATE TABLE units (
+            id INTEGER PRIMARY KEY,
+            path TEXT NOT NULL,
+            address TEXT NOT NULL,
+            layer TEXT NOT NULL,
+            tree TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            subjects TEXT NOT NULL,
+            heading TEXT NOT NULL,
+            text TEXT NOT NULL,
+            line_start INTEGER NOT NULL,
+            line_end INTEGER NOT NULL
+        );
+        CREATE INDEX units_path ON units(path);
+        CREATE INDEX units_address ON units(address);
+        CREATE TABLE times (
+            unit_id INTEGER NOT NULL,
+            start_utc TEXT NOT NULL,
+            end_utc TEXT NOT NULL,
+            zone TEXT NOT NULL
+        );
+        CREATE INDEX times_start ON times(start_utc);
+        CREATE TABLE vectors (
+            unit_id INTEGER PRIMARY KEY,
+            vector TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE units_words USING fts5(heading, text, tokenize = 'unicode61 remove_diacritics 2');
+        """
+    )
+    if trigram:
+        connection.execute("CREATE VIRTUAL TABLE units_tri USING fts5(heading, text, tokenize = 'trigram')")
+
+
+def _source_files(root: Path) -> list[tuple[str, Path]]:
+    found: list[tuple[str, Path]] = []
+    for layer in (*layout.FOREST_LAYERS, layout.DAILY):
+        for relative in layout.iter_pages(root, (layer,)):
+            found.append((relative, layout.resolve(root, relative)))
+    top = root / layout.ISTM
+    if not top.exists():
+        return found
+    if top.is_symlink() or not top.is_dir():
+        raise MemoryForestError("symlink_forbidden", "Symlinks are not allowed inside a Memory Forest.")
+    for agent in sorted(os.scandir(top), key=lambda entry: entry.name):
+        if agent.name.startswith(".") or agent.is_symlink():
+            if agent.is_symlink():
+                raise MemoryForestError(
+                    "symlink_forbidden", "Symlinks are not allowed inside a Memory Forest."
+                )
+            continue
+        if not agent.is_dir(follow_symlinks=False):
+            continue
+        for entry in sorted(os.scandir(agent.path), key=lambda item: item.name):
+            if entry.is_symlink():
+                raise MemoryForestError(
+                    "symlink_forbidden", "Symlinks are not allowed inside a Memory Forest."
+                )
+            if entry.name.startswith(".") or not entry.name.endswith(".jsonl") or not entry.is_file(follow_symlinks=False):
+                continue
+            relative = f"{layout.ISTM}/{agent.name}/{entry.name}"
+            found.append((relative, Path(entry.path)))
+    return found
+
+
+def _unchanged(connection: sqlite3.Connection, relative: str, path: Path) -> bool:
+    info = path.stat()
+    row = connection.execute(
+        "SELECT size, mtime_ns, sha256 FROM files WHERE path = ?", (relative,)
+    ).fetchone()
+    if row is None or row[0] != info.st_size or row[1] != info.st_mtime_ns:
+        return False
+    return True
+
+
+def _replace_path(
+    connection: sqlite3.Connection,
+    config: Config,
+    relative: str,
+    path: Path,
+    tokenizer: str,
+) -> None:
+    info = path.stat()
+    digest = _hash(path)
+    row = connection.execute("SELECT sha256 FROM files WHERE path = ?", (relative,)).fetchone()
+    if row is not None and row[0] == digest:
+        connection.execute(
+            "UPDATE files SET size = ?, mtime_ns = ? WHERE path = ?",
+            (info.st_size, info.st_mtime_ns, relative),
+        )
+        return
+    text = path.read_text(encoding="utf-8")
+    units = units_of(relative, text, config)
+    _drop_path(connection, relative)
+    provider = embeddings.get(config.embeddings.provider)
+    vectors: Sequence[Sequence[float]] | None = None
+    if provider is not None and units:
+        try:
+            vectors = provider.embed([unit["text"] for unit in units])
+        except Exception as exc:
+            raise MemoryForestError(
+                "embeddings_failed",
+                "The registered embedding provider failed. Nothing was published.",
+                details={"provider": provider.name},
+            ) from exc
+        if len(vectors) != len(units):
+            raise MemoryForestError(
+                "embeddings_failed",
+                "The embedding provider returned a different number of vectors than texts.",
+                details={"provider": provider.name},
+            )
+    trigram = "trigram" in tokenizer
+    for index, unit in enumerate(units):
+        cursor = connection.execute(
+            "INSERT INTO units (path, address, layer, tree, agent, kind, subjects, heading, text, line_start, line_end) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                unit["path"],
+                unit["address"],
+                unit["layer"],
+                unit["tree"],
+                unit["agent"],
+                unit["kind"],
+                json.dumps(unit["subjects"], ensure_ascii=False),
+                unit["heading"],
+                unit["text"],
+                unit["line_start"],
+                unit["line_end"],
+            ),
+        )
+        unit_id = int(cursor.lastrowid)
+        connection.execute(
+            "INSERT INTO units_words (rowid, heading, text) VALUES (?, ?, ?)",
+            (unit_id, unit["heading"], unit["text"]),
+        )
+        if trigram:
+            connection.execute(
+                "INSERT INTO units_tri (rowid, heading, text) VALUES (?, ?, ?)",
+                (unit_id, unit["heading"], unit["text"]),
+            )
+        for start, end, zone in unit["times"]:
+            connection.execute(
+                "INSERT INTO times (unit_id, start_utc, end_utc, zone) VALUES (?, ?, ?, ?)",
+                (unit_id, _stamp(start), _stamp(end), zone),
+            )
+        if vectors is not None:
+            connection.execute(
+                "INSERT INTO vectors (unit_id, vector) VALUES (?, ?)",
+                (unit_id, json.dumps(list(vectors[index]))),
+            )
+    connection.execute(
+        "INSERT INTO files (path, size, mtime_ns, sha256) VALUES (?, ?, ?, ?)",
+        (relative, info.st_size, info.st_mtime_ns, digest),
+    )
+
+
+def _drop_path(connection: sqlite3.Connection, relative: str) -> None:
+    rows = connection.execute("SELECT id FROM units WHERE path = ?", (relative,)).fetchall()
+    for (unit_id,) in rows:
+        connection.execute("DELETE FROM units_words WHERE rowid = ?", (unit_id,))
+        if _has_trigram(connection):
+            connection.execute("DELETE FROM units_tri WHERE rowid = ?", (unit_id,))
+        connection.execute("DELETE FROM times WHERE unit_id = ?", (unit_id,))
+        connection.execute("DELETE FROM vectors WHERE unit_id = ?", (unit_id,))
+    connection.execute("DELETE FROM units WHERE path = ?", (relative,))
+    connection.execute("DELETE FROM files WHERE path = ?", (relative,))
+
+
+def _has_trigram(connection: sqlite3.Connection) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'units_tri'"
+    ).fetchone()
+    return row is not None
+
+
+def _stale_files(root: Path, connection: sqlite3.Connection) -> list[str]:
+    present = {relative: path for relative, path in _source_files(root)}
+    stored = {
+        row[0]: (row[1], row[2], row[3])
+        for row in connection.execute("SELECT path, size, mtime_ns, sha256 FROM files")
+    }
+    stale: list[str] = []
+    for relative, path in present.items():
+        info = path.stat()
+        old = stored.get(relative)
+        if old is None or old[0] != info.st_size or old[1] != info.st_mtime_ns:
+            if old is None or _hash(path) != old[2]:
+                stale.append(relative)
+    for relative in stored:
+        if relative not in present:
+            stale.append(relative)
+    return sorted(stale)
+
+
+def _metadata(connection: sqlite3.Connection) -> dict[str, str]:
+    return {row[0]: row[1] for row in connection.execute("SELECT key, value FROM metadata")}
+
+
+def _set_meta(connection: sqlite3.Connection, key: str, value: str) -> None:
+    connection.execute(
+        "INSERT INTO metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+def _hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _index_path(root: Path) -> Path:
+    return layout.resolve(root, INDEX_RELATIVE)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _parse_stamp(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+
+
+# ─────────────────────────────── units ───────────────────────────────
+
+
+def units_of(relative: str, text: str, config: Config) -> list[dict[str, Any]]:
+    """The index rows of one file, in file order."""
+    info = layout.classify(relative)
+    if info.role is layout.PageRole.RAW_FILE:
+        return _turn_units(relative, text, info, config)
+    if info.role is layout.PageRole.DAILY_PAGE:
+        return _daily_units(relative, text, config)
+    return _page_units(relative, text, info, config)
+
+
+def _page_units(relative: str, text: str, info: layout.PathInfo, config: Config) -> list[dict[str, Any]]:
+    lines = text.splitlines()
+    page = parse_page(text)
+    zone = _page_zone(page, config)
+    subjects = _page_subjects(page)
+    entries = _entry_table(text) if info.role is layout.PageRole.COLLECTION_PAGE else {}
+    headings = _heading_lines(lines)
+    units: list[dict[str, Any]] = []
+    used: set[str] = set()
+    preamble_end = headings[0] if headings else len(lines)
+    body_start = _frontmatter_end(lines)
+    if any(line.strip() for line in lines[body_start:preamble_end]):
+        units.append(
+            _unit(
+                relative,
+                _unique_address(relative, "head", used),
+                info,
+                "head",
+                subjects,
+                "",
+                "\n".join(lines[body_start:preamble_end]),
+                body_start + 1,
+                preamble_end,
+                zone,
+                config,
+            )
+        )
+    names = [item[0] for item in entries.values()]
+    timeline_by_entry: dict[str, list[tuple[datetime, datetime, str]]] = {}
+    for index, start in enumerate(headings):
+        end = headings[index + 1] if index + 1 < len(headings) else len(lines)
+        heading = _H2_RE.fullmatch(lines[start])
+        title = heading["text"] if heading else lines[start][3:].strip()
+        entry = entries.get(start + 1)
+        if entry is not None:
+            address = _unique_address(relative, entry[1], used)
+            kind = "entry"
+            entry_subjects = [entry[1], *subjects]
+        else:
+            slug = layout.slugify(title) or f"s{start + 1}"
+            address = _unique_address(relative, slug, used)
+            kind = "section"
+            entry_subjects = list(subjects)
+        unit = _unit(
+            relative, address, info, kind, entry_subjects, title,
+            "\n".join(lines[start:end]), start + 1, end, zone, config,
+        )
+        units.append(unit)
+        if entry is not None:
+            timeline_by_entry.setdefault(entry[0], []).append(unit)
+    timeline = next((unit for unit in units if unit["heading"].casefold() == "timeline"), None)
+    if timeline is not None and names:
+        for line in timeline["text"].splitlines():
+            owner = owner_of(line, names)
+            if owner is None:
+                continue
+            parsed = TimelineLine.match(line)
+            if parsed is None:
+                continue
+            interval = _timeline_interval(parsed, zone, config.zone)
+            if interval is None:
+                continue
+            for unit in timeline_by_entry.get(owner, ()):
+                unit["times"].append(interval)
+    return units
+
+
+def _daily_units(relative: str, text: str, config: Config) -> list[dict[str, Any]]:
+    lines = text.splitlines()
+    marks = [index for index, line in enumerate(lines) if _BLOCK_RE.fullmatch(line)]
+    info = layout.classify(relative)
+    zone = config.zone
+    if not marks:
+        return [
+            _unit(
+                relative, f"{relative}#page", info, "block", [], "", text, 1, len(lines) or 1, zone, config,
+                agent="",
+            )
+        ]
+    units = []
+    if marks[0] > 0 and any(line.strip() for line in lines[: marks[0]]):
+        units.append(
+            _unit(
+                relative, f"{relative}#preamble", info, "block", [], "",
+                "\n".join(lines[: marks[0]]), 1, marks[0], zone, config,
+            )
+        )
+    for position, start in enumerate(marks):
+        match = _BLOCK_RE.fullmatch(lines[start])
+        assert match is not None
+        agent, stamp = match.group(1), match.group(2)
+        end = marks[position + 1] if position + 1 < len(marks) else len(lines)
+        moment = _parse_moment(stamp, zone)
+        slug = layout.slugify(f"{agent}-{stamp}") or f"block-{start + 1}"
+        unit = _unit(
+            relative, f"{relative}#{slug}", info, "block", [agent] if layout.is_slug(agent) else [],
+            f"{agent} {stamp}", "\n".join(lines[start:end]), start + 1, end, zone, config, agent=agent,
+        )
+        if moment is not None:
+            following = None
+            if position + 1 < len(marks):
+                next_match = _BLOCK_RE.fullmatch(lines[marks[position + 1]])
+                if next_match is not None:
+                    following = _parse_moment(next_match.group(2), zone)
+            stop = following if following is not None and following > moment else _end_of_local_day(moment)
+            if stop <= moment:
+                stop = moment + timedelta(microseconds=1)
+            unit["times"] = [(moment, stop, _zone_name(moment)), *unit["times"]]
+        units.append(unit)
+    return units
+
+
+def _turn_units(relative: str, text: str, info: layout.PathInfo, config: Config) -> list[dict[str, Any]]:
+    agent = info.tree or ""
+    units = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        body = value.get("text") if isinstance(value.get("text"), str) else ""
+        if not body:
+            body = " ".join(str(item) for item in value.values() if isinstance(item, str))
+        turn_id = value.get("id") if isinstance(value.get("id"), str) and value.get("id") else f"L{number}"
+        moment = _parse_moment(str(value.get("at") or ""), config.zone)
+        unit = _unit(
+            relative, f"{relative}#{turn_id}", info, "turn", [agent] if agent else [],
+            turn_id, body, number, number, config.zone, config, agent=agent,
+        )
+        if moment is not None:
+            unit["times"] = [(moment, moment + timedelta(microseconds=1), _zone_name(moment))]
+        units.append(unit)
+    return units
+
+
+def _unit(
+    relative: str,
+    address: str,
+    info: layout.PathInfo,
+    kind: str,
+    subjects: list[str],
+    heading: str,
+    text: str,
+    line_start: int,
+    line_end: int,
+    zone: ZoneInfo,
+    config: Config,
+    *,
+    agent: str = "",
+) -> dict[str, Any]:
+    layer = PurePosixPath(relative).parts[0]
+    tree = "" if kind in {"turn", "block"} or info.role in (layout.PageRole.DAILY_PAGE, layout.PageRole.ROOT_INDEX) else (info.tree or "")
+    times = _times_in(text, zone, config.zone) if kind != "turn" else []
+    return {
+        "address": address,
+        "agent": agent,
+        "heading": heading,
+        "kind": kind,
+        "layer": layer,
+        "line_end": max(line_start, line_end),
+        "line_start": line_start,
+        "path": relative,
+        "subjects": [item for item in subjects if item],
+        "text": text,
+        "times": times,
+        "tree": tree,
+    }
+
+
+def _entry_table(text: str) -> dict[int, tuple[str, str]]:
+    """Map a heading's 1-based line to ``(entry name, entry id)``."""
+    found, _problems = registry_mod.parse_collection_page(text)
+    return {entry.line: (entry.name, entry.id) for entry in found}
+
+
+def _page_subjects(page: Any) -> list[str]:
+    subjects: list[str] = []
+    entity = page.field("entity").strip()
+    if entity:
+        subjects.append(entity)
+    for item in about_ids(page.field("about") or None):
+        if item not in subjects:
+            subjects.append(item)
+    return subjects
+
+
+def _page_zone(page: Any, config: Config) -> ZoneInfo:
+    name = page.field("timezone").strip()
+    if not name:
+        return config.zone
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return config.zone
+
+
+def _heading_lines(lines: list[str]) -> list[int]:
+    found = []
+    fenced = False
+    for index, line in enumerate(lines):
+        if _FENCE_RE.match(line):
+            fenced = not fenced
+            continue
+        if not fenced and _H2_RE.fullmatch(line):
+            found.append(index)
+    return found
+
+
+def _frontmatter_end(lines: list[str]) -> int:
+    if not lines or lines[0].strip() != "---":
+        return 0
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return index + 1
+    return 0
+
+
+def _unique_address(relative: str, slug: str, used: set[str]) -> str:
+    base = slug or "section"
+    name = base
+    number = 2
+    while f"{relative}#{name}" in used:
+        name = f"{base}-{number}"
+        number += 1
+    address = f"{relative}#{name}"
+    used.add(address)
+    return address
+
+
+def _times_in(text: str, zone: ZoneInfo, forest_zone: ZoneInfo) -> list[tuple[datetime, datetime, str]]:
+    found = []
+    for line in text.splitlines():
+        parsed = TimelineLine.match(line)
+        if parsed is None:
+            continue
+        interval = _timeline_interval(parsed, zone, forest_zone)
+        if interval is not None:
+            found.append(interval)
+    return found
+
+
+def _timeline_interval(
+    line: TimelineLine, page_zone: ZoneInfo, forest_zone: ZoneInfo
+) -> tuple[datetime, datetime, str] | None:
+    zone = _zone_of(line.zone, page_zone, forest_zone)
+    span = _calendar_span(line.date, zone)
+    if span is None:
+        return None
+    start, end = span
+    if line.start and re.fullmatch(r"\d{4}-\d{2}-\d{2}", line.date):
+        start = _clock(start, line.start)
+        if line.end:
+            stop = _clock(span[0], line.end)
+            if stop <= start:
+                stop += timedelta(days=1)
+            end = stop
+        else:
+            end = start + timedelta(microseconds=1)
+    return start, end, line.zone or _zone_name(start)
+
+
+def _calendar_span(date_text: str, zone: ZoneInfo) -> tuple[datetime, datetime] | None:
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_text):
+        year, month, day = (int(part) for part in date_text.split("-"))
+        start = datetime(year, month, day, tzinfo=zone)
+        return start, start + timedelta(days=1)
+    if re.fullmatch(r"\d{4}-\d{2}", date_text):
+        year, month = (int(part) for part in date_text.split("-"))
+        start = datetime(year, month, 1, tzinfo=zone)
+        end = datetime(year + (month == 12), 1 if month == 12 else month + 1, 1, tzinfo=zone)
+        return start, end
+    quarter = re.fullmatch(r"(\d{4})-q([1-4])", date_text)
+    if quarter:
+        year = int(quarter.group(1))
+        month = (int(quarter.group(2)) - 1) * 3 + 1
+        start = datetime(year, month, 1, tzinfo=zone)
+        end_month = month + 3
+        end_year = year + (end_month > 12)
+        end_month = end_month - 12 if end_month > 12 else end_month
+        return start, datetime(end_year, end_month, 1, tzinfo=zone)
+    if re.fullmatch(r"\d{4}", date_text):
+        year = int(date_text)
+        return datetime(year, 1, 1, tzinfo=zone), datetime(year + 1, 1, 1, tzinfo=zone)
+    return None
+
+
+def _clock(day: datetime, clock: str) -> datetime:
+    hour, minute = (int(part) for part in clock.split(":", 1))
+    return day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _zone_of(name: str | None, page_zone: ZoneInfo, forest_zone: ZoneInfo) -> ZoneInfo | timezone:
+    if not name:
+        return page_zone or forest_zone
+    parsed = _fixed_zone(name)
+    if parsed is not None:
+        return parsed
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return page_zone or forest_zone
+
+
+def _fixed_zone(name: str) -> timezone | ZoneInfo | None:
+    if name in {"Z", "UTC"}:
+        return timezone.utc
+    match = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", name)
+    if match is None:
+        return None
+    sign = 1 if match.group(1) == "+" else -1
+    return timezone(sign * timedelta(hours=int(match.group(2)), minutes=int(match.group(3))))
+
+
+def _zone_name(moment: datetime) -> str:
+    """A zone name that parses again: an area name, ``UTC``, or a numeric offset."""
+    name = moment.tzname() or ""
+    if "/" in name:
+        return name
+    offset = moment.utcoffset() or timedelta(0)
+    if offset == timedelta(0):
+        return "UTC"
+    total = int(offset.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    return f"{sign}{total // 3600:02d}:{total % 3600 // 60:02d}"
+
+
+def _parse_moment(value: str, fallback: ZoneInfo) -> datetime | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=fallback)
+    return parsed
+
+
+def _end_of_local_day(moment: datetime) -> datetime:
+    zone = moment.tzinfo or timezone.utc
+    local = moment.astimezone(zone)
+    start = datetime(local.year, local.month, local.day, tzinfo=zone)
+    return start + timedelta(days=1)
+
+
+# ─────────────────────────────── search ───────────────────────────────
+
+
+def query(
+    root: str | os.PathLike[str],
+    question: str,
+    *,
+    reader: str | None = None,
+    named: Iterable[str] = (),
+    limit: int = 10,
+    config: Config | None = None,
+) -> dict[str, Any]:
+    """Registry names first, then words, then vectors when a provider is registered."""
+    safe = require_real_root(root)
+    config = config or load_config(safe)
+    words = question.strip()
+    if not words:
+        raise MemoryForestError("search_empty", "Search needs the words to look for.")
+    if limit < 1:
+        raise MemoryForestError("search_limit", "The limit is at least 1.", details={"limit": limit})
+    built = registry_mod.build(safe, config=config)
+    scope = for_reader(config, built, reader, named=named, root=safe)
+    connection = require_index(safe)
+    try:
+        pages: dict[str, dict[str, Any]] = {}
+        _add_alias_hits(connection, pages, words, built, scope)
+        _add_word_hits(connection, pages, words, scope)
+        vector_note = _add_vector_hits(connection, pages, words, config, scope)
+        ordered = sorted(pages.values(), key=lambda item: (item["tier"], -item["score"], item["path"]))[:limit]
+        return _envelope(scope, ordered, vectors=vector_note, question=words)
+    finally:
+        connection.close()
+
+
+def read(
+    root: str | os.PathLike[str],
+    spec: str,
+    *,
+    reader: str | None = None,
+    named: Iterable[str] = (),
+    lines: tuple[int, int] | None = None,
+    config: Config | None = None,
+) -> dict[str, Any]:
+    """The page, or the addressed section, as written. Masking is the caller's, at the edge that prints."""
+    safe = require_real_root(root)
+    config = config or load_config(safe)
+    path, _, address = spec.strip().partition("#")
+    path = layout.normalize(path)
+    info = layout.classify(path)
+    built = registry_mod.build(safe, config=config)
+    scope = for_reader(config, built, reader, named=named, root=safe)
+    if not scope.allows(info):
+        raise MemoryForestError(
+            "out_of_scope",
+            "That path is outside this reader's trees and lane.",
+            details={"path": path},
+        )
+    try:
+        file_text = layout.resolve(safe, path, must_exist=True).read_text(encoding="utf-8")
+    except MemoryForestError:
+        raise
+    except OSError as exc:
+        raise MemoryForestError("read_failed", "The page could not be read.", details={"path": path}) from exc
+    start, end, body, heading = _addressed(path, file_text, address, config)
+    if lines is not None:
+        want_start, want_end = lines
+        if want_start < 1 or want_end < want_start:
+            raise MemoryForestError("read_lines", "Lines are written A-B, with A at least 1.")
+        overlap_start = max(start, want_start)
+        overlap_end = min(end, want_end)
+        if overlap_start > overlap_end:
+            raise MemoryForestError(
+                "read_lines_empty",
+                "Those lines fall outside the addressed section.",
+                details={"lines": f"{want_start}-{want_end}", "path": path},
+            )
+        file_lines = file_text.splitlines()
+        body = "\n".join(file_lines[overlap_start - 1 : overlap_end])
+        start, end = overlap_start, overlap_end
+    tree = info.tree or ""
+    return _envelope(
+        scope,
+        [
+            {
+                "path": path,
+                "score": 1,
+                "sections": [
+                    {
+                        "address": f"{path}#{address}" if address else path,
+                        "agent": info.tree if info.role is layout.PageRole.RAW_FILE else "",
+                        "heading": heading,
+                        "kind": "read",
+                        "line_end": end,
+                        "line_start": start,
+                        "text": body,
+                        "tree": tree if info.role is not layout.PageRole.RAW_FILE else "",
+                        "why": ["read"],
+                    }
+                ],
+                "tier": 0,
+                "tree": tree if tree in scope.trees else "",
+                "why": ["read"],
+            }
+        ],
+    )
+
+
+def navigate(
+    root: str | os.PathLike[str],
+    *,
+    reader: str | None = None,
+    path: str | None = None,
+    named: Iterable[str] = (),
+    config: Config | None = None,
+) -> dict[str, Any]:
+    """One level down from the root index. Each returned line is a line of the page, not a summary."""
+    safe = require_real_root(root)
+    config = config or load_config(safe)
+    built = registry_mod.build(safe, config=config)
+    scope = for_reader(config, built, reader, named=named, root=safe)
+    target = _navigate_target(path, built, scope)
+    info = layout.classify(target)
+    if not scope.allows(info):
+        raise MemoryForestError(
+            "out_of_scope",
+            "That path is outside this reader's trees and lane.",
+            details={"path": target},
+        )
+    file_text = layout.resolve(safe, target, must_exist=True).read_text(encoding="utf-8")
+    kept = [
+        {"line": number, "text": line}
+        for number, line in enumerate(file_text.splitlines(), start=1)
+        if line.strip() and _line_visible(line, scope, built)
+    ]
+    return {
+        "consulted": list(scope.trees),
+        "lanes": [],
+        "ok": True,
+        "path": target,
+        "reader": scope.reader,
+        "results": [
+            {
+                "path": target,
+                "sections": [
+                    {
+                        "address": target,
+                        "heading": "",
+                        "kind": "navigate",
+                        "line_end": kept[-1]["line"] if kept else 0,
+                        "line_start": kept[0]["line"] if kept else 0,
+                        "text": "\n".join(item["text"] for item in kept),
+                        "why": ["navigate"],
+                    }
+                ],
+                "tree": info.tree or "",
+                "why": ["navigate"],
+            }
+        ],
+        "trees": [info.tree] if info.tree and info.tree in scope.trees else [],
+    }
+
+
+def _navigate_target(path: str | None, built: registry_mod.Registry, scope: Scope) -> str:
+    if path is None or not path.strip():
+        return layout.ROOT_INDEX
+    text = layout.normalize(path)
+    if "/" not in text and layout.is_slug(text):
+        if text not in scope.trees:
+            raise MemoryForestError(
+                "out_of_scope",
+                "That tree is outside this reader's scope.",
+                details={"path": text},
+            )
+        if text in built.tree_kinds:
+            return layout.tree_page(text)
+    return text
+
+
+def _line_visible(line: str, scope: Scope, built: registry_mod.Registry) -> bool:
+    from .model import code_spans
+
+    for span in code_spans(line):
+        named = span.text.strip().strip("`")
+        if _hides(named, scope, built):
+            return False
+    return True
+
+
+def _hides(named: str, scope: Scope, built: registry_mod.Registry) -> bool:
+    if not named:
+        return False
+    if "/" in named or named.endswith(".md"):
+        info = layout.classify(named if named.endswith(".md") else named)
+        return not scope.allows(info)
+    if layout.is_slug(named) and named in built.tree_kinds and named not in scope.trees:
+        return True
+    return False
+
+
+def _add_alias_hits(
+    connection: sqlite3.Connection,
+    pages: dict[str, dict[str, Any]],
+    question: str,
+    built: registry_mod.Registry,
+    scope: Scope,
+) -> None:
+    folded = normalize_name(question)
+    matches: list[tuple[int, str, str, str, str, list[str]]] = []
+    for subject_id, subject in built.entities.items():
+        labels = [(subject.get("name") or "", "name"), (subject_id, "id")]
+        labels += [(alias, "alias") for alias in subject.get("aliases") or ()]
+        for text, kind in labels:
+            key = normalize_name(text)
+            if key and (len(key) >= 2 or key == folded) and _contains_name(folded, key):
+                home = str(subject.get("home") or "")
+                about = list(subject.get("about_leaves") or built.about_index.get(subject_id) or ())
+                matches.append((len(key), subject_id, text, kind, home, about))
+        for entry in subject.get("entries") or ():
+            labels = [(entry.get("name") or "", "name"), (entry.get("id") or "", "id")]
+            labels += [(alias, "alias") for alias in entry.get("aliases") or ()]
+            for text, kind in labels:
+                key = normalize_name(text)
+                if not key or (len(key) < 2 and key != folded) or not _contains_name(folded, key):
+                    continue
+                home = f"{entry.get('page')}#{entry.get('id')}"
+                about = list(entry.get("about_leaves") or ())
+                matches.append((len(key), str(entry.get("id")), text, kind, home, about))
+    matches.sort(key=lambda item: -item[0])
+    seen: set[tuple[str, str]] = set()
+    for length, subject_id, text, kind, home, about in matches:
+        if (subject_id, home) in seen:
+            continue
+        seen.add((subject_id, home))
+        why = f'{kind}: "{text}" names {subject_id}'
+        _attach(connection, pages, home, scope, why, tier=0, score=length + 1000)
+        for leaf in about:
+            if (subject_id, leaf) in seen:
+                continue
+            seen.add((subject_id, leaf))
+            _attach(connection, pages, leaf, scope, f"about: names {subject_id}", tier=0, score=length)
+
+
+def _attach(
+    connection: sqlite3.Connection,
+    pages: dict[str, dict[str, Any]],
+    spec: str,
+    scope: Scope,
+    why: str,
+    *,
+    tier: int,
+    score: int,
+) -> None:
+    path, _, address = spec.partition("#")
+    path = layout.normalize(path)
+    info = layout.classify(path)
+    if not scope.allows(info):
+        return
+    rows = connection.execute(
+        "SELECT * FROM units WHERE path = ? ORDER BY line_start, id", (path,)
+    ).fetchall()
+    if address:
+        rows = [row for row in rows if row["address"] == f"{path}#{address}"] or rows[:1]
+    elif rows:
+        heads = [row for row in rows if row["kind"] == "head"]
+        rows = heads[:1] or rows[:1]
+    for row in rows:
+        _add_row(pages, _row_dict(row), why, tier=tier, score=score, scope=scope)
+
+
+def _add_word_hits(
+    connection: sqlite3.Connection,
+    pages: dict[str, dict[str, Any]],
+    question: str,
+    scope: Scope,
+) -> None:
+    tokens = _tokens(question)
+    if not tokens:
+        return
+    ids: set[int] = set()
+    quoted = [_quote(token) for token in tokens]
+    if quoted:
+        try:
+            for row in connection.execute(
+                "SELECT rowid FROM units_words WHERE units_words MATCH ?",
+                (" OR ".join(quoted),),
+            ):
+                ids.add(int(row[0]))
+        except sqlite3.OperationalError:
+            pass
+    if _has_trigram(connection):
+        for token in tokens:
+            if len(token) < 3:
+                continue
+            try:
+                for row in connection.execute(
+                    "SELECT rowid FROM units_tri WHERE units_tri MATCH ?",
+                    (_quote(token),),
+                ):
+                    ids.add(int(row[0]))
+            except sqlite3.OperationalError:
+                continue
+    if not ids:
+        return
+    for row in connection.execute(
+        f"SELECT * FROM units WHERE id IN ({','.join('?' for _ in ids)})",
+        tuple(ids),
+    ):
+        unit = _row_dict(row)
+        if not _visible(scope, unit["path"]):
+            continue
+        matched = [token for token in tokens if _token_in(token, unit["heading"] + "\n" + unit["text"])]
+        if not matched:
+            continue
+        _add_row(pages, unit, "words: " + ", ".join(matched), tier=1, score=len(matched), scope=scope)
+
+
+def _add_vector_hits(
+    connection: sqlite3.Connection,
+    pages: dict[str, dict[str, Any]],
+    question: str,
+    config: Config,
+    scope: Scope,
+) -> str:
+    if config.embeddings.provider == "none":
+        return "off"
+    provider = embeddings.get(config.embeddings.provider)
+    if provider is None:
+        return "skipped"
+    stored = connection.execute("SELECT unit_id, vector FROM vectors").fetchall()
+    if not stored:
+        return "skipped"
+    try:
+        query_vector = list(provider.embed([question])[0])
+    except Exception as exc:
+        raise MemoryForestError(
+            "embeddings_failed",
+            "The registered embedding provider failed. No network call was made by this package.",
+            details={"provider": provider.name},
+        ) from exc
+    ranked: list[tuple[float, int]] = []
+    for unit_id, raw in stored:
+        try:
+            vector = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        score = _cosine(query_vector, vector)
+        if score >= VECTOR_FLOOR:
+            ranked.append((score, int(unit_id)))
+    ranked.sort(key=lambda item: -item[0])
+    if not ranked:
+        return "used"
+    ids = [unit_id for _score, unit_id in ranked]
+    rows = {
+        int(row["id"]): row
+        for row in connection.execute(
+            f"SELECT * FROM units WHERE id IN ({','.join('?' for _ in ids)})", tuple(ids)
+        )
+    }
+    for score, unit_id in ranked:
+        row = rows.get(unit_id)
+        if row is None:
+            continue
+        unit = _row_dict(row)
+        if not _visible(scope, unit["path"]):
+            continue
+        _add_row(pages, unit, f"vector: {score:.2f}", tier=2, score=int(score * 100), scope=scope)
+    return "used"
+
+
+def _add_row(
+    pages: dict[str, dict[str, Any]],
+    unit: dict[str, Any],
+    why: str,
+    *,
+    tier: int,
+    score: int,
+    scope: Scope,
+) -> None:
+    tree = unit["tree"] or (unit["agent"] if unit["agent"] in scope.trees else "")
+    page = pages.get(unit["path"])
+    if page is None:
+        page = {"path": unit["path"], "score": score, "sections": [], "tier": tier, "tree": tree, "why": []}
+        pages[unit["path"]] = page
+    page["tier"] = min(page["tier"], tier)
+    page["score"] = max(page["score"], score)
+    if tree and not page["tree"]:
+        page["tree"] = tree
+    section = next((item for item in page["sections"] if item["address"] == unit["address"]), None)
+    if section is None:
+        section = {
+            "address": unit["address"],
+            "agent": unit["agent"],
+            "heading": unit["heading"],
+            "kind": unit["kind"],
+            "line_end": unit["line_end"],
+            "line_start": unit["line_start"],
+            "text": unit["text"],
+            "tree": tree,
+            "why": [],
+        }
+        page["sections"].append(section)
+    if why not in section["why"]:
+        section["why"].append(why)
+    if why not in page["why"]:
+        page["why"].append(why)
+
+
+def _envelope(
+    scope: Scope,
+    pages: list[dict[str, Any]],
+    *,
+    vectors: str = "off",
+    question: str | None = None,
+) -> dict[str, Any]:
+    lanes = sorted({section["agent"] for page in pages for section in page["sections"] if section.get("agent")})
+    trees = sorted({page["tree"] for page in pages if page.get("tree")})
+    results = []
+    for page in pages:
+        results.append(
+            {
+                "path": page["path"],
+                "sections": [
+                    {
+                        "address": section["address"],
+                        "heading": section["heading"],
+                        "kind": section["kind"],
+                        "lines": [section["line_start"], section["line_end"]],
+                        "text": section["text"],
+                        "why": list(section["why"]),
+                    }
+                    for section in page["sections"]
+                ],
+                "tree": page.get("tree") or "",
+                "why": list(page["why"]),
+            }
+        )
+    payload: dict[str, Any] = {
+        "consulted": list(scope.trees),
+        "lanes": lanes,
+        "ok": True,
+        "reader": scope.reader,
+        "results": results,
+        "trees": trees,
+        "vectors": vectors,
+    }
+    if question is not None:
+        payload["question"] = question
+    return payload
+
+
+def _row_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "address": row["address"],
+        "agent": row["agent"],
+        "heading": row["heading"],
+        "kind": row["kind"],
+        "line_end": row["line_end"],
+        "line_start": row["line_start"],
+        "path": row["path"],
+        "subjects": json.loads(row["subjects"]),
+        "text": row["text"],
+        "tree": row["tree"],
+    }
+
+
+def _visible(scope: Scope, path: str) -> bool:
+    return scope.allows(layout.classify(path))
+
+
+def _contains_name(question: str, name: str) -> bool:
+    if _CJK_RE.search(name):
+        return name in question
+    start = 0
+    while True:
+        index = question.find(name, start)
+        if index < 0:
+            return False
+        before = question[index - 1] if index else " "
+        after = question[index + len(name)] if index + len(name) < len(question) else " "
+        if not before.isalnum() and not after.isalnum():
+            return True
+        start = index + 1
+
+
+def _tokens(question: str) -> list[str]:
+    tokens = []
+    for raw in normalize_name(question).split():
+        token = raw.strip(_TOKEN_STRIP)
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _token_in(token: str, text: str) -> bool:
+    haystack = normalize_name(text)
+    if _CJK_RE.search(token):
+        return token in haystack
+    return _contains_name(haystack, token)
+
+
+def _quote(token: str) -> str:
+    return '"' + token.replace('"', '""') + '"'
+
+
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    if len(left) != len(right) or not left:
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = sum(a * a for a in left) ** 0.5
+    right_norm = sum(b * b for b in right) ** 0.5
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
+def _addressed(path: str, text: str, address: str, config: Config) -> tuple[int, int, str, str]:
+    lines = text.splitlines()
+    if not address:
+        return 1, len(lines) or 1, text, ""
+    if path.startswith(layout.ISTM + "/"):
+        for number, line in enumerate(lines, start=1):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                value = None
+            turn_id = value.get("id") if isinstance(value, dict) else None
+            if turn_id == address or (not turn_id and address == f"L{number}"):
+                return number, number, line, address
+        raise MemoryForestError("address_unknown", "That address is not a turn in the file.", details={"path": path})
+    for unit in units_of(path, text, config):
+        fragment = unit["address"].split("#", 1)[1]
+        if fragment == address:
+            return unit["line_start"], unit["line_end"], unit["text"], unit["heading"]
+    raise MemoryForestError(
+        "address_unknown",
+        "That address is not a section of the page.",
+        details={"path": path},
+    )
+
+
+def mask_result(value: Any, *, config: Config) -> Any:
+    """What a command or the MCP server returns: sign-in values masked, numbers starred."""
+    return shown(value, config=config)
+
+
+def parse_lines(text: str | None) -> tuple[int, int] | None:
+    """``A-B`` as a 1-based inclusive range, or None when ``text`` is empty."""
+    if text is None or not str(text).strip():
+        return None
+    match = re.fullmatch(r"(\d+)-(\d+)", str(text).strip())
+    if match is None:
+        raise MemoryForestError("read_lines", "Lines are written A-B, for example 4-12.")
+    start, end = int(match.group(1)), int(match.group(2))
+    if start < 1 or end < start:
+        raise MemoryForestError("read_lines", "Lines are written A-B, with A at least 1.")
+    return start, end

@@ -60,3 +60,6 @@ version = {attr = "memory_forest.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+memory_forest = ["phrases/*.json"]

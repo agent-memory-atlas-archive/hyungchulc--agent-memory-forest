@@ -137,6 +137,68 @@ def run(
         )
 
 
+def append_owned(
+    root: str | os.PathLike[str],
+    agent: str,
+    text: str,
+    *,
+    role: str,
+    origin: str,
+    session: str = "mcp",
+    at: datetime | None = None,
+) -> dict[str, Any]:
+    """Append one turn to ``agent``'s raw lane. The caller has already chosen role and origin.
+
+    ``memory_log`` uses this. The same masking, id index and single writer as
+    ``forest intake`` apply. A second call with the same text at a different
+    instant is a second turn.
+    """
+    if not layout.is_slug(agent):
+        raise MemoryForestError("intake_agent_invalid", f"{agent} is not a slug.", details={"agent": agent})
+    if role not in {"owner", "agent", "tool"} and not (
+        role.startswith("other:") and role.removeprefix("other:").strip()
+    ):
+        raise MemoryForestError("intake_role_invalid", "That role is not one the lane records.", details={"role": role})
+    if origin not in ORIGINS:
+        raise MemoryForestError(
+            "intake_origin_invalid", "That origin is not one the lane records.", details={"origin": origin}
+        )
+    if not str(text).strip():
+        raise MemoryForestError("intake_text_empty", "A turn needs text.")
+    config = load_config(root)
+    moment = at or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    session_name = session.strip() or "mcp"
+    turn = Turn(
+        turn_id=None,
+        at=moment,
+        session=session_name,
+        role=role,
+        text=text,
+        place=moment.isoformat(),
+        origin=origin,
+    )
+    transcript = Transcript(key="mcp", path=Path("mcp"), session=session_name, cwd="", origin=origin)
+    record = _record(config, agent, "mcp", transcript, turn)
+    if record is None:
+        raise MemoryForestError("intake_turn_rejected", "The turn was not a record the lane keeps.")
+    with hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="memory_log"):
+        ids, sizes = _load_ids(root, write=True)
+        if record["id"] in ids:
+            record["path"] = ids[record["id"]]
+            record["wrote"] = False
+            return record
+        relative = f"{layout.ISTM}/{agent}/{_day(record['at'], config)}.jsonl"
+        _append(root, relative, _encode(record))
+        ids[record["id"]] = relative
+        sizes[relative] = layout.resolve(root, relative).stat().st_size
+        _save_index(root, sizes, ids)
+    record["path"] = relative
+    record["wrote"] = True
+    return record
+
+
 def status(root: str | os.PathLike[str]) -> Result:
     """Each adapter, whether it is on, which agent it files under, and unknown lines."""
     config = load_config(root)
