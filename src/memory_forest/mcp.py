@@ -43,7 +43,10 @@ added batches; the revision before it had none, and 2025-06-18 removed them.
 A tool that refuses answers ``isError: true`` with one JSON object as its text:
 ``code``, ``message``, ``details`` and, when there is one, the next move
 (``next`` with ``command`` or ``after_seconds``). An input validation error
-under 2025-11-25 is ``arguments_invalid`` in the same shape.
+under 2025-11-25 is ``arguments_invalid`` in the same shape. A host name, a
+process id, a user name and an absolute path are removed at that one door.
+``lock_busy`` and ``lock_already_held`` leave as one busy refusal, next
+``retry``. Threads of this server wait their turn for ``memory_log``.
 
 The reader's id is ``--as``. A tool argument cannot set it, and cannot set the
 role or origin of ``memory_log``. The first tool call of each agent is recorded
@@ -498,8 +501,7 @@ def _call(
         _remember(root, reader, name, transport)
     except Exception:
         _log("forest mcp: the seen record could not be written")
-    config = load_config(root)
-    text = json.dumps(search.mask_result(payload, config=config), ensure_ascii=False, indent=2, sort_keys=True)
+    text = _tool_text(payload, root, indent=2)
     return {"content": [{"type": "text", "text": text}], "isError": False}
 
 
@@ -927,17 +929,77 @@ def _port(text: str) -> int:
     return port
 
 
+# What a tool must not send on. The caller can retry; it cannot use a machine's name or a process id.
+_MACHINE_KEYS = frozenset({"gid", "host", "hostname", "pid", "ppid", "uid", "user", "username"})
+_LOCK_BUSY = frozenset({"lock_already_held", "lock_busy"})
+_DROPPED = object()
+
+
+def _absolute_path(text: str) -> bool:
+    """A string whose whole value is an absolute path. A sentence that mentions one is left."""
+    stripped = text.strip()
+    return bool(stripped) and stripped.startswith("/") and "\n" not in stripped and " " not in stripped
+
+
+def _without_machine_identity(value: Any) -> Any:
+    """Drop a host name, a process id, a user name, and a value that is an absolute path.
+
+    This is the rule for every tool answer, a refusal or a result. Keys name the class; a path is a
+    value, so a relative forest path stays.
+    """
+    if isinstance(value, dict):
+        kept: dict[Any, Any] = {}
+        for key, item in value.items():
+            if str(key) in _MACHINE_KEYS:
+                continue
+            cleaned = _without_machine_identity(item)
+            if cleaned is _DROPPED:
+                continue
+            kept[key] = cleaned
+        return kept
+    if isinstance(value, list):
+        return [item for item in (_without_machine_identity(entry) for entry in value) if item is not _DROPPED]
+    if isinstance(value, str) and _absolute_path(value):
+        return _DROPPED
+    return value
+
+
+def _tool_body(refusal: MemoryForestError) -> dict[str, Any]:
+    """The refusal a tool sends. Two lock codes are one busy refusal, and its next move is to retry."""
+    if refusal.code in _LOCK_BUSY:
+        details = {key: value for key, value in refusal.details.items() if key != "token"}
+        return {
+            "after_seconds": search.RETRY_AFTER_SECONDS,
+            "code": "lock_busy",
+            "details": details,
+            "message": "The lock is held, so this call did not run. Ask again.",
+            "next": "retry",
+            "stop_after_seconds": search.RETRY_STOP_SECONDS,
+            "waited_seconds": 0.0,
+        }
+    return refusal.as_dict()
+
+
+def _tool_text(body: Any, root: str | os.PathLike[str], *, indent: int | None = None, drop_details: bool = False) -> str:
+    """The one door a tool answer leaves through: mask it, then apply the machine-identity rule."""
+    try:
+        masked = search.mask_result(body, config=load_config(root))
+    except Exception:
+        if not drop_details or not isinstance(body, dict):
+            raise
+        masked = dict(body)
+        masked["details"] = {}
+    text = _without_machine_identity(masked)
+    return json.dumps(text, ensure_ascii=False, indent=indent, sort_keys=True)
+
+
 def _tool_error(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dict[str, Any]:
-    """Every refusal of a tool is one JSON object (``MemoryForestError.as_dict``), with or without a next move.
+    """Every refusal of a tool is one JSON object, with or without a next move.
 
     Its strings are masked like every answer; when the settings cannot be read for that, the details go.
+    Machine identity is removed with every other tool answer.
     """
-    body = refusal.as_dict()
-    try:
-        body = search.mask_result(body, config=load_config(root))
-    except Exception:
-        body["details"] = {}
-    text = json.dumps(body, ensure_ascii=False, sort_keys=True)
+    text = _tool_text(_tool_body(refusal), root, drop_details=True)
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 

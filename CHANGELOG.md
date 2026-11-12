@@ -13,6 +13,9 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- A tool answer never carries a host name, a process id, a user name, or an absolute path. `lock_busy`
+  and `lock_already_held` leave a tool as one busy refusal, next `retry`. Two `memory_log` calls in one
+  server process wait their turn. The command line still shows a lock's owner.
 - Intake masks a sign-in value by its shape before a label, including a token after `Bearer`, `Basic`
   or `Digest`, a value after a label that looks like a hash or a UUID, and the published key prefixes
   of the model providers, code hosts, cloud consoles, payment and chat services and package registries,

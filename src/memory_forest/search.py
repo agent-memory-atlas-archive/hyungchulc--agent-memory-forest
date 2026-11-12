@@ -93,6 +93,8 @@ WRITER_TIMEOUT_SECONDS = 5.0
 RETRY_INTERVAL_SECONDS = 0.1
 # What a busy refusal tells the caller to wait before the same call again.
 RETRY_AFTER_SECONDS = 2.0
+# The caller adds each answer's waited time and this wait, and reports once the sum reaches the total.
+RETRY_STOP_SECONDS = 60.0
 # Ids passed to one ``IN (...)``: below the 999 host parameters of an older stock SQLite build.
 IN_CHUNK = 500
 VECTOR_FLOOR = 0.2

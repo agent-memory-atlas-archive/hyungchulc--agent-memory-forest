@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -51,6 +52,9 @@ from .locking import atomic_write, hold_lock
 
 LOCK_NAME = "intake"
 LOCK_WAIT_SECONDS = 0.2
+# Threads of this process take the intake lock one at a time. ``hold_lock`` refuses a second take in the
+# same process, and the HTTP server runs one thread per request.
+_INTAKE_TURN = threading.Lock()
 INTAKE_DIR = f"{layout.STATE_DIR}/intake"
 FAILURES = f"{INTAKE_DIR}/failures.jsonl"
 LOCK_BUSY = f"{INTAKE_DIR}/lock-busy"
@@ -192,7 +196,7 @@ def append_owned(
     if record is None:
         raise MemoryForestError("intake_turn_rejected", "The turn was not a record the lane keeps.")
     day = _day(record["at"], config)
-    with hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="memory_log"):
+    with _intake_turn(), hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="memory_log"):
         if _id_taken(root, agent, day, record["id"], full=True):
             record["path"] = f"{layout.ISTM}/{agent}/{day}.jsonl"
             record["wrote"] = False
@@ -283,7 +287,7 @@ def rename_agent(root: str | os.PathLike[str], old: str, new: str) -> Result:
         (f"{INTAKE_DIR}/ids/{old}", f"{INTAKE_DIR}/ids/{new}"),
         (f"{INTAKE_DIR}/cursors/{old}", f"{INTAKE_DIR}/cursors/{new}"),
     )
-    with hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest intake rename-agent"):
+    with _intake_turn(), hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest intake rename-agent"):
         planned = []
         for source_rel, dest_rel in pairs:
             source = layout.resolve(root, source_rel)
@@ -308,7 +312,7 @@ def reread(root: str | os.PathLike[str], adapter_name: str) -> Result:
     if not layout.is_slug(adapter_name):
         raise MemoryForestError("intake_adapter_unknown", f"{adapter_name} is not an adapter name.")
     moved = 0
-    with hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest intake reread"):
+    with _intake_turn(), hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest intake reread"):
         base = layout.resolve(root, f"{INTAKE_DIR}/cursors")
         if base.is_dir() and not base.is_symlink():
             for agent in sorted(base.iterdir(), key=lambda item: item.name):
@@ -1054,14 +1058,29 @@ def _result(
 
 
 @contextmanager
-def _intake_lock(root: str | os.PathLike[str]) -> Iterator[object | None]:
+def _intake_turn() -> Iterator[None]:
+    """Wait for this process's other intake, then let it go when the file lock does.
+
+    Two ``memory_log`` calls on the threaded server would otherwise refuse each other with ``lock_already_held``
+    and tell the caller to pass a token it was never given.
+    """
+    _INTAKE_TURN.acquire()
     try:
-        with hold_lock(root, LOCK_NAME, wait_seconds=LOCK_WAIT_SECONDS, label="forest intake") as token:
-            yield token
-    except MemoryForestError as exc:
-        if exc.code != "lock_busy":
-            raise
-        yield None
+        yield
+    finally:
+        _INTAKE_TURN.release()
+
+
+@contextmanager
+def _intake_lock(root: str | os.PathLike[str]) -> Iterator[object | None]:
+    with _intake_turn():
+        try:
+            with hold_lock(root, LOCK_NAME, wait_seconds=LOCK_WAIT_SECONDS, label="forest intake") as token:
+                yield token
+        except MemoryForestError as exc:
+            if exc.code != "lock_busy":
+                raise
+            yield None
 
 
 def cursor_file(root: str | os.PathLike[str], agent: str, adapter_name: str, source_key: str) -> Path:

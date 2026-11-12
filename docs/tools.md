@@ -618,7 +618,11 @@ Every refusal of a tool is a result with `isError: true` whose text is one JSON 
 `run` with `command`, `retry` with `after_seconds` (the same call again after that wait), or `report`
 (tell the owner the message; no command helps). A refusal with no next move, such as `search_empty`,
 has no `next`. An argument that fails a tool's schema under 2025-11-25 is `arguments_invalid` in the
-same shape. The strings are masked like every answer.
+same shape. The strings are masked like every answer. A tool answer, a refusal or a result, never
+carries a host name, a process id, a user name, or an absolute path: the caller cannot act on them.
+`lock_busy` and `lock_already_held` leave a tool as one busy refusal, next `retry`. The command line
+still shows the lock's owner to the person at the terminal. Two `memory_log` calls in one server
+process wait their turn.
 
 The clients checked here, `claude mcp`, `codex mcp` and `grok mcp`, speak protocol versions
 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also
