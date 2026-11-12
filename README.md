@@ -124,7 +124,7 @@ python -m pip install -e .
 ```
 
 The version 1 commands are the `forest …` commands of the [design's package map](docs/v1-design.md#13-package-map).
-**Version 1.0.0 is not released.** The milestone 1 commands below are in this tree and installed with it;
+**Version 1.0.0a1 is this tree's alpha, not a stable release.** The milestone 1 commands below are in this tree and installed with it;
 the milestone 2 and 3 commands do not exist yet. The 0.3 `memory-forest` command (documented in
 [`docs/archive-0.3/`](docs/archive-0.3/cli.md)) stays installed beside them.
 
@@ -191,7 +191,7 @@ Details: [Agents](docs/multi-agent.md).
 
 ## Status
 
-Agent Memory Forest is alpha software. Version 1.0.0 is unreleased.
+Agent Memory Forest is alpha software. The version in this tree is 1.0.0a1.
 
 - **Written:** the contract, the design, the concepts and agents guides, and an invented synthetic forest
   that follows the contract.

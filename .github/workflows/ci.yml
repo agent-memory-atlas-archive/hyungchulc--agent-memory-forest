@@ -35,7 +35,7 @@ jobs:
           smoke_root="${RUNNER_TEMP}/memory-forest-wheel-smoke"
           python -m venv "$smoke_root/venv"
           "$smoke_root/venv/bin/python" -m pip install --no-index --no-deps dist/*.whl
-          "$smoke_root/venv/bin/python" -c 'import memory_forest; assert memory_forest.__version__ == "0.3.0"'
+          "$smoke_root/venv/bin/python" -c 'import memory_forest; from importlib.metadata import version; assert memory_forest.__version__ == "1.0.0a1" == version("memory-forest")'
           "$smoke_root/venv/bin/memory-forest" --version
           "$smoke_root/venv/bin/memory-forest" --help >/dev/null
           "$smoke_root/venv/bin/memory-forest" init "$smoke_root/forest" --example

@@ -35,6 +35,11 @@ from .writer import (
 )
 
 
+# The `memory-forest` command is the 0.3 CLI. It reports that release, not the package version
+# (`memory_forest.__version__`) that the `forest` command reports.
+LEGACY_VERSION: Final[str] = "0.3.0"
+
+
 class JsonArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise MemoryForestError(
@@ -60,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {__version__}",
+        version=f"%(prog)s {LEGACY_VERSION}",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 

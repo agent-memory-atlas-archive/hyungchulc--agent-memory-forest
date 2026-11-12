@@ -122,7 +122,7 @@ python -m pip install -e .
 ```
 
 버전 1의 명령은 [설계 문서의 package map](docs/v1-design.md#13-package-map)에 있는 `forest …` 명령들입니다.
-**버전 1.0.0은 아직 배포되지 않았습니다.** 아래 milestone 1 명령은 이 저장소에 들어 있고 함께 설치됩니다.
+**버전 1.0.0a1은 이 트리의 alpha이며, 안정 배포는 아닙니다.** 아래 milestone 1 명령은 이 저장소에 들어 있고 함께 설치됩니다.
 milestone 2와 3의 명령은 아직 없습니다. 0.3의 `memory-forest` 명령([`docs/archive-0.3/`](docs/archive-0.3/cli.md)에
 설명)도 나란히 설치된 채로 남아 있습니다.
 
@@ -191,7 +191,7 @@ forest stage …                                 # 원하는 model을 둘러싼 
 
 ## 현재 상태
 
-Agent Memory Forest는 alpha 단계이며, 버전 1.0.0은 아직 배포되지 않았습니다.
+Agent Memory Forest는 alpha 단계이며, 이 트리의 버전은 1.0.0a1입니다.
 
 - **작성 완료:** contract, 설계, concepts와 agents 안내서, contract를 따르는 가상의 synthetic forest.
 - **Milestone 1, 뼈대 (이 저장소에 있음, 미배포):** `forest` 구조 명령(registry, move, levels, collections,

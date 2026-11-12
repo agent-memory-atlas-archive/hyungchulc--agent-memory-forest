@@ -105,10 +105,43 @@ class ForestCommandTests(ForestTestCase):
     def test_the_0_3_command_still_works(self) -> None:
         environment = dict(os.environ, PYTHONPATH=str(REPOSITORY_ROOT / "src"))
         result = subprocess.run(
-            [sys.executable, "-m", "memory_forest", "--version"], capture_output=True, env=environment, check=False
+            [sys.executable, "-m", "memory_forest", "--version"],
+            capture_output=True,
+            env=environment,
+            cwd=self.base,
+            check=False,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertIn(b"memory-forest", result.stdout)
+        self.assertEqual(result.stdout.decode().strip(), f"memory-forest {cli.LEGACY_VERSION}")
+        self.assertEqual(cli.LEGACY_VERSION, "0.3.0")
+
+    def test_one_version_string_is_what_the_package_and_forest_command_report(self) -> None:
+        import tomllib
+
+        from memory_forest import __version__
+
+        self.assertEqual(__version__, "1.0.0a1")
+        project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual(project["project"]["dynamic"], ["version"])
+        self.assertEqual(project["tool"]["setuptools"]["dynamic"]["version"]["attr"], "memory_forest.__version__")
+        self.assertNotIn("version", project["project"])
+        citation = (REPOSITORY_ROOT / "CITATION.cff").read_text(encoding="utf-8")
+        self.assertIn('title: "Agent Memory Forest"', citation)
+        self.assertIn(f"version: {__version__}", citation)
+        self.assertNotIn("date-released:", citation)
+        for name in ("README.md", "README.ko.md", "CHANGELOG.md"):
+            text = (REPOSITORY_ROOT / name).read_text(encoding="utf-8")
+            self.assertIn(__version__, text, name)
+            self.assertNotIn("1.0.0 (alpha)", text, name)
+            self.assertNotIn("Version 1.0.0 is not released", text, name)
+            self.assertNotIn("Version 1.0.0 is unreleased", text, name)
+            self.assertNotIn("버전 1.0.0은 아직 배포되지 않았습니다", text, name)
+        self.assertIn(f"## Unreleased — {__version__}", (REPOSITORY_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"))
+        workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn(f'memory_forest.__version__ == "{__version__}" == version("memory-forest")', workflow)
+        reported = forest("--version", cwd=self.base)
+        self.assertEqual(reported.returncode, 0, reported.stderr)
+        self.assertEqual(reported.stdout.decode().strip(), f"forest {__version__}")
 
     def test_the_console_scripts_are_declared(self) -> None:
         text = (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")

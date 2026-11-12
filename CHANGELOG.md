@@ -2,7 +2,7 @@
 
 All notable changes to Memory Forest are documented in this file. The project follows [Semantic Versioning](https://semver.org/) once a version is released.
 
-## Unreleased — 1.0.0 (alpha)
+## Unreleased — 1.0.0a1
 
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones. The
 `forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests;
@@ -123,6 +123,9 @@ the tree until the version 1 commands replace it.
 
 ### Changed
 
+- the package version is `1.0.0a1`, defined once as `memory_forest.__version__`. The `forest` command and
+  the package metadata read it, and a test checks the citation, this heading and the CI smoke assertion
+  against it. The `memory-forest` command reports `0.3.0`, the release that command is
 - the project is presented as "Agent Memory Forest"; `README.md` and `README.ko.md` are rewritten for
   version 1, with a quick start that marks which milestone brings each command
 - `docs/privacy-and-trust.md` and `docs/roadmap.md` are rewritten for version 1
