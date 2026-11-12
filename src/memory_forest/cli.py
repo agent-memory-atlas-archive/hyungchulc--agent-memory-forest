@@ -590,6 +590,10 @@ from . import cli_upkeep as _cli_upkeep  # noqa: E402
 
 FOREST_COMMANDS += _cli_upkeep.COMMANDS
 
+from .cli_intake import COMMANDS as _INTAKE_COMMANDS  # noqa: E402
+
+FOREST_COMMANDS += _INTAKE_COMMANDS
+
 
 def build_forest_parser(commands: Sequence[ForestCommand] | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

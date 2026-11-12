@@ -29,6 +29,7 @@ MAX_CONFIG_BYTES: Final[int] = 256 * 1024
 POLICIES: Final[tuple[str, ...]] = ("subject-first", "agent-first")
 SCOPES: Final[tuple[str, ...]] = ("own+shared", "all")
 EMBEDDING_PROVIDERS: Final[tuple[str, ...]] = ("none", "openai-compatible")
+TOOL_OUTPUTS: Final[tuple[str, ...]] = ("omit", "keep")
 
 # Types every forest has, whatever its settings say (contract, section 2).
 REQUIRED_TYPES: Final[tuple[str, ...]] = ("agent", "collection")
@@ -247,6 +248,45 @@ class EmbeddingSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class IntakeToolSettings:
+    """One adapter's intake, ``[intake.tools.<adapter>]``.
+
+    ``enabled`` stays false until setup turns intake on for that tool. ``include``
+    and ``exclude`` are folders the session ran in; an empty ``include`` is every
+    folder. ``import_earlier`` stays false, so the first run places cursors at the
+    end of what already exists. ``path`` is the folder of ``jsonl`` files, and for
+    another adapter the place to look instead of the tool's own.
+    """
+
+    id: str
+    enabled: bool = False
+    agent: str = ""
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    import_earlier: bool = False
+    path: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class IntakeSettings:
+    """How conversations enter the raw lane (design, section 15.1).
+
+    ``tool_output`` is ``omit`` or ``keep``. Omitted, a tool turn records that the
+    tool ran and not what it printed.
+    """
+
+    tool_output: str = "omit"
+    tools: tuple[IntakeToolSettings, ...] = ()
+
+    def tool(self, adapter_id: str) -> IntakeToolSettings:
+        """The settings for ``adapter_id``, or the defaults when it is not written."""
+        for item in self.tools:
+            if item.id == adapter_id:
+                return item
+        return IntakeToolSettings(adapter_id)
+
+
+@dataclass(frozen=True, slots=True)
 class SubjectSettings:
     types: tuple[str, ...] = (
         "person",
@@ -344,6 +384,7 @@ class Config:
     levels: LevelSettings = field(default_factory=LevelSettings)
     agents: AgentSettings = field(default_factory=AgentSettings)
     embeddings: EmbeddingSettings = field(default_factory=EmbeddingSettings)
+    intake: IntakeSettings = field(default_factory=IntakeSettings)
     subjects: SubjectSettings = field(default_factory=SubjectSettings)
     names: NameSettings = field(default_factory=NameSettings)
     lint: LintSettings = field(default_factory=LintSettings)
@@ -386,6 +427,7 @@ _SECTIONS: Final[dict[str, type]] = {
     "levels": LevelSettings,
     "agents": AgentSettings,
     "embeddings": EmbeddingSettings,
+    "intake": IntakeSettings,
     "subjects": SubjectSettings,
     "names": NameSettings,
     "lint": LintSettings,
@@ -457,6 +499,42 @@ def _known_agents(key: str, raw: Any, source: str | None) -> tuple[KnownAgent, .
     return tuple(sorted(found, key=lambda item: item.id))
 
 
+_INTAKE_FIELDS: Final[tuple[str, ...]] = ("enabled", "agent", "include", "exclude", "import_earlier", "path")
+
+
+def _intake_tools(key: str, raw: Any, source: str | None) -> tuple[IntakeToolSettings, ...]:
+    """``[intake.tools.<adapter>]`` tables. The adapter id is a slug; an unknown field is an error."""
+    if not isinstance(raw, Mapping):
+        raise _error(key, "must be a table of adapters, one `[intake.tools.<adapter>]` each", source)
+    found = []
+    for adapter_id, table in raw.items():
+        dotted = f"{key}.{adapter_id}"
+        if _SLUG_RE.fullmatch(str(adapter_id)) is None:
+            raise _error(dotted, f"{adapter_id!r} is not a slug", source)
+        if not isinstance(table, Mapping):
+            raise _error(dotted, "must be a table", source)
+        values: dict[str, Any] = {}
+        defaults = IntakeToolSettings(str(adapter_id))
+        for field_name, value in table.items():
+            item_key = f"{dotted}.{field_name}"
+            if field_name not in _INTAKE_FIELDS:
+                raise _error(item_key, "is not a known setting", source)
+            default = getattr(defaults, field_name)
+            if isinstance(default, bool):
+                if not isinstance(value, bool):
+                    raise _error(item_key, "must be true or false", source)
+                values[field_name] = value
+            elif isinstance(default, tuple):
+                items = _strings(item_key, value, source)
+                if any(not item.strip() for item in items):
+                    raise _error(item_key, "must not hold an empty path", source)
+                values[field_name] = items
+            else:
+                values[field_name] = _string(item_key, value, source)
+        found.append(IntakeToolSettings(str(adapter_id), **values))
+    return tuple(sorted(found, key=lambda item: item.id))
+
+
 def _section(name: str, raw: Any, source: str | None) -> Any:
     settings_type = _SECTIONS[name]
     if not isinstance(raw, Mapping):
@@ -476,6 +554,8 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
             )
         elif name == "agents" and key == "known":
             values[key] = _known_agents(dotted, value, source)
+        elif name == "intake" and key == "tools":
+            values[key] = _intake_tools(dotted, value, source)
         elif isinstance(default, bool):
             if not isinstance(value, bool):
                 raise _error(dotted, "must be true or false", source)
@@ -538,6 +618,15 @@ def _validate(config: Config) -> Config:
             raise _error(f"levels.{key}", f"{getattr(levels, key)!r} is not a slug", source)
     if config.embeddings.provider not in EMBEDDING_PROVIDERS:
         raise _error("embeddings.provider", f"must be one of {', '.join(EMBEDDING_PROVIDERS)}", source)
+    if config.intake.tool_output not in TOOL_OUTPUTS:
+        raise _error("intake.tool_output", f"must be one of {', '.join(TOOL_OUTPUTS)}", source)
+    for tool in config.intake.tools:
+        if tool.agent and _SLUG_RE.fullmatch(tool.agent) is None:
+            raise _error(
+                f"intake.tools.{tool.id}.agent",
+                f"{tool.agent!r} is not a slug",
+                source,
+            )
     for key in ("phone_patterns", "keep_whole"):
         for value in getattr(config.numbers, key):
             try:
@@ -634,7 +723,15 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
         for item in fields(section):
             if name == "agents" and item.name == "known":
                 continue
+            if name == "intake" and item.name == "tools":
+                continue
             lines.append(f"{item.name} = {_toml_value(getattr(section, item.name))}")
+        if name == "intake":
+            for tool in section.tools:
+                lines.append("")
+                lines.append(f"[intake.tools.{tool.id}]")
+                for key in _INTAKE_FIELDS:
+                    lines.append(f"{key} = {_toml_value(getattr(tool, key))}")
         if name == "agents":
             for agent in section.known:
                 lines.append("")
