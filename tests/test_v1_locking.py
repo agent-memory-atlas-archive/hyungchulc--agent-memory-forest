@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from v1_support import REPOSITORY_ROOT, ForestTestCase  # noqa: E402
+from wait_child import read_fifo, write_fifo  # noqa: E402
 
 from memory_forest.errors import MemoryForestError  # noqa: E402
+from memory_forest.leaving import body as leaving_body  # noqa: E402
 from memory_forest.locking import (  # noqa: E402
     append_lines,
     atomic_write,
@@ -115,6 +119,57 @@ class WriterLockTests(ForestTestCase):
             self.assertEqual(lock_status(root).owner["label"], "after")
             self.assertNotEqual(token.value, "a" * 32)
         self.assertFalse(lock_status(root).stale)
+
+    def test_a_stopped_holder_is_not_cured_by_waiting(self) -> None:
+        """The holder is stopped: another code, move report, the same for the owner and an agent."""
+        root = self.make_forest()
+        held = self.base / "held"
+        release = self.base / "release"
+        os.mkfifo(held)
+        os.mkfifo(release)
+        child = textwrap.dedent(
+            """
+            import os, sys
+            from memory_forest.locking import writer_lock
+            root, held_path, release_path = sys.argv[1:]
+            with writer_lock(root, label="stopped"):
+                writer = os.open(held_path, os.O_WRONLY)
+                os.write(writer, b"held\\n")
+                os.close(writer)
+                reader = os.open(release_path, os.O_RDONLY)
+                os.read(reader, 1)
+                os.close(reader)
+            """
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child, str(root), str(held), str(release)],
+            env={**os.environ, "PYTHONPATH": str(REPOSITORY_ROOT / "src")},
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            read_fifo(proc, str(held), what="the child to hold the lock")
+            os.kill(proc.pid, signal.SIGSTOP)
+            started = time.monotonic()
+            with self.assertRaises(MemoryForestError) as caught:
+                with writer_lock(root, wait_seconds=30):
+                    pass
+            self.assertLess(time.monotonic() - started, 2.0)
+            refusal = caught.exception
+            self.assertEqual((refusal.code, refusal.next_step), ("lock_holder_stopped", "report"))
+            self.assertIn("stopped", refusal.message)
+            self.assertNotIn("token", refusal.details)
+            owner = leaving_body(refusal, reader="owner", masking=None, plain=True)
+            agent = leaving_body(refusal, reader="agent", masking=None, root=str(root), plain=True)
+            self.assertEqual((owner["code"], owner["next"]), (agent["code"], agent["next"]))
+            self.assertEqual(agent["next"], "report")
+        finally:
+            if proc.poll() is None:
+                os.kill(proc.pid, signal.SIGCONT)
+            write_fifo(proc, str(release), b"go\n", what="the child to release the lock")
+            proc.wait(timeout=30)
+            if proc.stderr is not None:
+                proc.stderr.close()
 
     def test_stage_locks_are_separate_from_the_writer_lock(self) -> None:
         root = self.make_forest()

@@ -371,7 +371,8 @@ class IndexSearchTests(ForestTestCase):
             with self.assertRaises(MemoryForestError) as still_held:
                 with hold_lock(self.root, "index", wait_seconds=0, label="test"):
                     pass
-        self.assertEqual(still_held.exception.code, "lock_already_held")
+        self.assertEqual(still_held.exception.code, "lock_busy")
+        self.assertEqual(still_held.exception.next_step, "retry")
         self.assertIn("유약", _texts(found))
 
     def test_read_masks_a_sign_in_value_and_the_command_prints_json(self) -> None:
@@ -1226,7 +1227,8 @@ class ReviewPathTests(ForestTestCase):
                 with self.assertRaises(MemoryForestError) as still_held:
                     with hold_lock(self.root, "index", wait_seconds=0, label="test"):
                         pass
-            self.assertEqual(still_held.exception.code, "lock_already_held")
+            self.assertEqual(still_held.exception.code, "lock_busy")
+            self.assertEqual(still_held.exception.next_step, "retry")
             body = json.loads(logged["result"]["content"][0]["text"])
             self.assertTrue(body["wrote"])
             self.assertFalse(body["indexed"])

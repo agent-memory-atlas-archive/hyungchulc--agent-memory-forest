@@ -180,6 +180,7 @@ REFUSALS: dict[str, tuple[str, str]] = {
     "lint_code_unknown": ("fix", ""),
     "lock_already_held": ("fix", ""),
     "lock_busy": ("retry", ""),
+    "lock_holder_stopped": ("report", ""),
     "lock_release_failed": ("report", ""),
     "lock_token_invalid": ("report", ""),
     "lock_unsupported": ("report", ""),

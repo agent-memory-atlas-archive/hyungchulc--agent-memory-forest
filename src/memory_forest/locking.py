@@ -7,11 +7,14 @@ write helpers every module uses for pages and kept state follow below it.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
 import secrets
 import socket
+import sys
+import threading
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -126,8 +129,10 @@ class LockStatus:
         return {"held": self.held, "name": self.name, "owner": self.owner, "path": self.path, "stale": self.stale}
 
 
-# Locks this process holds: lock file path -> (open lock file, token).
-_HELD: dict[str, tuple[system.LockFile, LockToken]] = {}
+# Locks this process holds: lock file path -> (open lock file, token, the thread that took it).
+_HELD: dict[str, tuple[system.LockFile, LockToken, int]] = {}
+# A stopped process (mach SSTOP, Linux state T). Waiting does not release its lock.
+_STOPPED = 4
 
 
 def _lock_file(root: str | os.PathLike[str], name: str) -> Path:
@@ -149,6 +154,55 @@ def _read_owner(path: Path) -> dict[str, object] | None:
     except ValueError:
         return None
     return owner if isinstance(owner, dict) else None
+
+
+def _process_status(pid: int) -> int | None:
+    """The process state, or None when this system will not say. ``_STOPPED`` is a stopped process."""
+    if sys.platform == "darwin":
+        library = ctypes.CDLL("/usr/lib/libproc.dylib")
+        info = _DarwinStatus()
+        read = library.proc_pidinfo(
+            ctypes.c_int(pid), ctypes.c_int(13), ctypes.c_uint64(0),
+            ctypes.byref(info), ctypes.c_int(ctypes.sizeof(info)),
+        )
+        if read <= 0:
+            return None
+        return int(info.pbsi_status)
+    try:
+        text = system.read_text(f"/proc/{pid}/stat")
+    except system.Outcome:
+        return None
+    end = text.rfind(")")
+    if end < 0 or end + 2 >= len(text):
+        return None
+    return _STOPPED if text[end + 2] == "T" else 0
+
+
+class _DarwinStatus(ctypes.Structure):
+    """``proc_bsdshortinfo``. ``pbsi_status`` is the kernel's ``p_stat`` (4 is stopped)."""
+
+    _fields_ = (
+        ("pbsi_pid", ctypes.c_uint32),
+        ("pbsi_ppid", ctypes.c_uint32),
+        ("pbsi_pgid", ctypes.c_uint32),
+        ("pbsi_status", ctypes.c_uint32),
+        ("pbsi_comm", ctypes.c_char * 16),
+        ("pbsi_flags", ctypes.c_uint32),
+        ("pbsi_uid", ctypes.c_uint32),
+        ("pbsi_gid", ctypes.c_uint32),
+        ("pbsi_ruid", ctypes.c_uint32),
+        ("pbsi_rgid", ctypes.c_uint32),
+        ("pbsi_svuid", ctypes.c_uint32),
+        ("pbsi_svgid", ctypes.c_uint32),
+        ("pbsi_rfu", ctypes.c_uint32),
+    )
+
+
+def _holder_stopped(pid: object) -> bool:
+    """Whether ``pid`` is a stopped process. This process is answering, so it is not stopped."""
+    if type(pid) is not int or pid <= 0 or pid == os.getpid():
+        return False
+    return _process_status(pid) == _STOPPED
 
 
 def _process_alive(pid: object) -> bool:
@@ -227,7 +281,8 @@ def hold_lock(
             )
         yield held
         return
-    if str(path) in _HELD:
+    current = _HELD.get(str(path))
+    if current is not None and current[2] == threading.get_ident():
         raise MemoryForestError(
             "lock_already_held",
             "This process already holds the lock; pass its token to re-enter it.",
@@ -237,8 +292,16 @@ def hold_lock(
     deadline = time.monotonic() + max(0.0, wait_seconds)
     try:
         while not handle.take():
+            owner = _read_owner(path)
+            if owner is not None and owner.get("host") == socket.gethostname() and _holder_stopped(owner.get("pid")):
+                raise MemoryForestError(
+                    "lock_holder_stopped",
+                    "The process that holds the lock is stopped, so waiting does not release it. "
+                    "Continue that process, or end it, and ask again.",
+                    details={"lock": name},
+                    next_step="report",
+                )
             if time.monotonic() >= deadline:
-                owner = _read_owner(path)
                 raise MemoryForestError(
                     "lock_busy",
                     "Another writer holds the lock.",
@@ -267,7 +330,7 @@ def hold_lock(
     except BaseException:
         handle.release()
         raise
-    _HELD[str(path)] = (handle, lock_token)
+    _HELD[str(path)] = (handle, lock_token, threading.get_ident())
     try:
         if name == WRITER_LOCK:
             # A commit journal found when the writer lock is taken is a dead writer's: roll it back first.

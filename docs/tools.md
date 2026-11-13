@@ -765,9 +765,11 @@ Who reads decides what is folded: an answer an agent reads, from an MCP tool or 
 with `--as`, or with `--as-group` and `--agent`, carries no host, process, user, home folder or absolute
 path, as JSON and as text, refusals included, because both doors fold through one function. Without
 those flags a command answers the owner at the terminal, and its paths and a lock's owner stay.
-`lock_busy` and `lock_already_held` leave a tool as one busy refusal, next `retry`. `waited_seconds`
-is how long that call waited. The command line still shows the lock's owner, and the absolute path,
-to the person at the terminal. Two `memory_log` calls in one server process share one budget, the
+`lock_busy` leaves as itself, next `retry`, where waiting can release a lock another writer holds.
+`lock_already_held` leaves as itself, next `fix`: this call already holds the lock and passes its
+token. `lock_holder_stopped` leaves as itself, next `report`: the holder is stopped, so waiting does
+not release the lock. `waited_seconds` is how long that call waited. The command line still shows the
+lock's owner, and the absolute path, to the person at the terminal. Two `memory_log` calls in one server process share one budget, the
 same two seconds as the intake file lock: the second waits its turn, and a first call that does not
 end answers the second with `lock_busy` once that budget is spent, not again afterwards.
 

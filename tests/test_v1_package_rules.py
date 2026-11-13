@@ -202,12 +202,15 @@ class RefusalCodeTests(unittest.TestCase):
                 "    helper('by_its_name')\n"
                 "    made('by_another_name')\n"
                 "    rooted.helper('through_the_package')\n"
+                "def plain():\n"
+                "    import memory_forest.shop\n"
+                "    memory_forest.shop.helper('through_a_plain_import')\n"
             ),
         })
         result = codes_walk.walk(trees, listed={})
         self.assertEqual(result.unresolved, [])
         self.assertEqual(set(result.codes()), {"through_the_module", "through_an_alias", "by_its_name",
-                                               "by_another_name", "through_the_package"})
+                                               "by_another_name", "through_the_package", "through_a_plain_import"})
 
     def test_a_method_and_a_function_of_one_name_are_told_apart(self) -> None:
         # The variable has the module's name: only an import makes a name a module.
@@ -253,6 +256,55 @@ class RefusalCodeTests(unittest.TestCase):
             "looped": {"said once", "…"},  # a message passed round a loop of calls ends at the depth
         })
         self.assertEqual({code: site.moves for site in result.sites for code in site.codes}["by_keyword"], {None})
+
+    def test_a_construction_the_walk_cannot_name_is_refused(self) -> None:
+        """An alias, type(), a class kept in a variable, a move passed through **, a dict with code, and an
+        assignment to a refusal that already exists. Each is an error and no site is kept for it."""
+        probes = {
+            "an alias": (
+                "from .errors import MemoryForestError as MFE\n"
+                "def refuse():\n    raise MFE('zz', 'an alias')\n",
+                "an alias",
+            ),
+            "type()": (
+                "from .errors import MemoryForestError\n"
+                "def refuse():\n"
+                "    made = type('X', (MemoryForestError,), {})\n"
+                "    raise made('zz', 'from type')\n",
+                "type()",
+            ),
+            "a class kept in a variable": (
+                "from .errors import MemoryForestError\n"
+                "def refuse():\n"
+                "    cls = MemoryForestError\n"
+                "    raise cls('zz', 'from a variable')\n",
+                "a class kept in a variable",
+            ),
+            "a move passed through **": (
+                "from .errors import MemoryForestError\n"
+                "def refuse():\n"
+                "    raise MemoryForestError('zz', 'starred', **{'next_step': 'retry'})\n",
+                "passed through **",
+            ),
+            "a dict with code": (
+                "def refuse():\n    return {'code': 'zz', 'message': 'a dict'}\n",
+                "a dict with code",
+            ),
+            "an assignment after construction": (
+                "from .errors import MemoryForestError\n"
+                "def refuse():\n"
+                "    made = MemoryForestError('zz', 'built')\n"
+                "    made.code = 'other'\n",
+                "assigns the code",
+            ),
+        }
+        for label, (source, reason) in probes.items():
+            with self.subTest(case=label):
+                result = codes_walk.walk(_trees(**{"case.py": source}), listed={})
+                self.assertTrue(result.unresolved, result.unresolved)
+                self.assertTrue(any(reason in line for line in result.unresolved), result.unresolved)
+                if label != "an assignment after construction":
+                    self.assertEqual(result.sites, [], result.sites)
 
     def test_no_site_has_a_code_or_a_move_the_walk_cannot_name(self) -> None:
         self.assertEqual(self.walk.unresolved, [], "resolve it, or list it in codes_walk with its values")

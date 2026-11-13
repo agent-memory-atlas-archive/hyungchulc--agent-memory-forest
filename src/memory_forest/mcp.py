@@ -47,9 +47,11 @@ under 2025-11-25 is ``arguments_invalid`` in the same shape. What the forest
 holds, and what the caller sent, is returned exactly. What the server says
 itself (a refusal, a lock owner, a status field) carries no host name, process
 id, user name, home folder or absolute path: those are removed at this door,
-and only on a refusal. ``lock_busy`` and ``lock_already_held`` leave as one
-busy refusal, next ``retry``. Threads of this server wait their turn for
-``memory_log``.
+and only on a refusal. A lock another writer holds is ``lock_busy``, next
+``retry``. A lock this process already holds is ``lock_already_held``, next
+``fix``. A lock whose holder is stopped is ``lock_holder_stopped``, next
+``report``, because waiting does not release it. Threads of this server wait
+their turn for ``memory_log``.
 
 The reader's id is ``--as``. A tool argument cannot set it, and cannot set the
 role or origin of ``memory_log``. ``--as-group`` is the other connection: one

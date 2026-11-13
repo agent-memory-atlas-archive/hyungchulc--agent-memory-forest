@@ -73,6 +73,20 @@ class Walk:
         return found
 
 
+def _chain(node: ast.AST) -> list[str] | None:
+    """``memory_forest.shop.helper`` as ``["memory_forest", "shop", "helper"]``."""
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(current.id)
+    parts.reverse()
+    return parts
+
+
 def _name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
@@ -88,6 +102,8 @@ class _Package:
         self.functions: dict[str, list[tuple[str, ast.FunctionDef, bool]]] = {}
         self.imported: dict[str, dict[str, tuple[str, str]]] = {}
         self.module_aliases: dict[str, dict[str, str]] = {}
+        # ``import memory_forest.shop`` binds ``memory_forest`` and may be used as ``memory_forest.shop.helper``.
+        self.dotted: dict[str, dict[str, set[tuple[str, ...]]]] = {}
         for module, tree in self.trees.items():
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
@@ -103,6 +119,7 @@ class _Package:
                             self.owner[(module, *_where(child))] = node
             names: dict[str, tuple[str, str]] = {}
             aliases: dict[str, str] = {}
+            dotted: dict[str, set[tuple[str, ...]]] = {}
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
                     if node.module and node.level > 0:
@@ -112,8 +129,18 @@ class _Package:
                     elif node.module is None or node.module == "memory_forest":
                         for alias in node.names:
                             aliases[alias.asname or alias.name] = alias.name
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        parts = alias.name.split(".")
+                        if not parts or parts[0] != "memory_forest":
+                            continue
+                        if alias.asname and len(parts) >= 2:
+                            aliases[alias.asname] = parts[-1]
+                        elif not alias.asname:
+                            dotted.setdefault(parts[0], set()).add(tuple(parts[1:]))
             self.imported[module] = names
             self.module_aliases[module] = aliases
+            self.dotted[module] = dotted
 
     def enclosing(self, module: str, node: ast.AST) -> ast.FunctionDef | None:
         return self.owner.get((module, *_where(node)))
@@ -163,7 +190,15 @@ class _Package:
             if method:
                 return True
             base = node.value  # a module is reached through the name an import gave it
-            return isinstance(base, ast.Name) and self.module_aliases[caller].get(base.id) == stem
+            if isinstance(base, ast.Name) and self.module_aliases[caller].get(base.id) == stem:
+                return True
+            chain = _chain(node)
+            # import memory_forest.<module> is used as memory_forest.<module>.<function>
+            if chain and chain[-1] == name and len(chain) >= 3:
+                bound = chain[0]
+                rest = tuple(chain[1:-1])
+                return rest in self.dotted[caller].get(bound, ())
+            return False
         return False
 
     def values(self, module: str, node: ast.expr | None, depth: int = 0) -> set[str]:
@@ -323,6 +358,98 @@ def _where(node: ast.AST) -> tuple[int, int, int, int]:
     )
 
 
+# A dict whose key is ``code`` and which is not a refusal. The walk names these. A dict it does not
+# name is refused, so a refusal built as a dict fails instead of passing unread. ``errors.as_dict`` is the
+# refusal's own dict; ``leaving.body`` prints it and does not build another.
+NAMED_CODE_DICTS = {
+    ("core.py", "as_dict"): "a check issue, not a refusal",
+    ("errors.py", "as_dict"): "the refusal's own dict, printed by leaving.body",
+    ("levels.py", "as_dict"): "a level that is due, not a refusal",
+    ("lint.py", "as_dict"): "a lint hit, not a refusal",
+    ("lint.py", "register"): "a detail of a refusal the walk already reads",
+    ("mcp.py", "_error"): "a JSON-RPC error number, not a refusal code",
+    ("registry.py", "as_dict"): "a registry problem, not a refusal",
+}
+
+
+def _from_errors(node: ast.ImportFrom) -> bool:
+    return node.module in {"errors", "memory_forest.errors"}
+
+
+def _mentions(node: ast.AST, names: set[str]) -> bool:
+    return any(isinstance(child, ast.Name) and child.id in names for child in ast.walk(node))
+
+
+def _has_code_key(node: ast.AST) -> bool:
+    if isinstance(node, ast.Dict):
+        return any(isinstance(key, ast.Constant) and key.value == "code" for key in node.keys)
+    if isinstance(node, ast.Call) and _name(node.func) == "dict":
+        return any(item.arg == "code" for item in node.keywords)
+    return False
+
+
+def _unnamed(package: _Package, classes: set[str]) -> list[str]:
+    """Constructions the walk cannot name as the one spelling of a refusal.
+
+    An alias, ``type()``, a class kept in a variable, an assignment to a refusal's code or move or
+    message, and a dict with ``code`` outside the named records. Each is an error. A call the walk
+    already reads is not repeated here.
+    """
+    found: list[str] = []
+    fields = {"code", "next_step", "message"}
+    for module, tree in package.trees.items():
+        held: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and _from_errors(node):
+                for alias in node.names:
+                    if alias.name not in classes and alias.name != REFUSAL_TYPE:
+                        continue
+                    if alias.asname and alias.asname != alias.name:
+                        held[alias.asname] = "an alias"
+            elif isinstance(node, ast.Assign):
+                names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+                if len(names) == 1 and (
+                    (isinstance(node.value, ast.Name) and node.value.id in classes | set(held))
+                    or (isinstance(node.value, ast.Call) and _name(node.value.func) == "type"
+                        and _mentions(node.value, classes))
+                ):
+                    why = "type()" if isinstance(node.value, ast.Call) else "a class kept in a variable"
+                    held[names[0]] = why
+                for target in node.targets:
+                    if not isinstance(target, ast.Attribute) or target.attr not in fields:
+                        continue
+                    receiver_is_self = isinstance(target.value, ast.Name) and target.value.id == "self"
+                    function = package.enclosing(module, node)
+                    constructing = module == "errors.py" and getattr(function, "name", "") == "__init__"
+                    # ``self.message`` on some other class is that object's field. ``e.message`` and
+                    # ``e.code`` after a refusal was made are the probe.
+                    if constructing and receiver_is_self:
+                        continue
+                    if target.attr == "message" and receiver_is_self:
+                        continue
+                    found.append(
+                        f"{module}:{node.lineno}: assigns the {target.attr} of an existing refusal"
+                    )
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Attribute):
+                if node.target.attr in fields:
+                    found.append(f"{module}:{node.lineno}: assigns the {node.target.attr} of an existing refusal")
+            elif isinstance(node, ast.Call) and _name(node.func) == "type" and _mentions(node, classes):
+                found.append(f"{module}:{node.lineno}: type() builds a refusal")
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in held:
+                found.append(f"{module}:{node.lineno}: {held[node.func.id]}: {ast.unparse(node)}")
+            elif (
+                isinstance(node, ast.Call) and isinstance(node.func, ast.Call)
+                and _name(node.func.func) in {"type", "getattr"} and _mentions(node, classes)
+            ):
+                found.append(f"{module}:{node.lineno}: the walk cannot name {ast.unparse(node.func)}")
+            elif _has_code_key(node):
+                function = package.enclosing(module, node)
+                key = (module, getattr(function, "name", ""))
+                if key not in NAMED_CODE_DICTS:
+                    found.append(f"{module}:{node.lineno} ({key[1]}): a dict with code the walk cannot name")
+    return found
+
+
 def refusal_classes(package: _Package) -> set[str]:
     """Every class that derives from the refusal type, at any depth."""
     found = {REFUSAL_TYPE}
@@ -353,6 +480,11 @@ def walk(trees: dict[str, ast.Module] | None = None,
                 continue
             function = package.enclosing(module, node)
             name = getattr(function, "name", "")
+            if any(item.arg is None for item in node.keywords):
+                unresolved.append(
+                    f"{module}:{node.lineno} ({name}): the next move is passed through **: {ast.unparse(node)}"
+                )
+                continue
             site = Site(module, node.lineno, name)
             entry = listed.get((module, name))
             code = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "code"), None)
@@ -388,6 +520,7 @@ def walk(trees: dict[str, ast.Module] | None = None,
                 site.messages = package.texts(module, message)
             sites.append(site)
     unused = sorted(set(listed) - used)
+    unresolved.extend(_unnamed(package, classes))
     return Walk(classes, sites, unresolved, unused)
 
 
@@ -408,9 +541,14 @@ def claims_by_code() -> dict[str, set[str]]:
             decision = derived.decide(facts, command)
             if decision.code is None:
                 continue
+            parts = []
             for key in decision.claims:
-                sentence = derived.CLAIMS[key].sentence.replace("{count}", "…").replace("{error}", "…")
-                found.setdefault(decision.code, set()).add(sentence)
+                sentence = derived.CLAIMS[key].sentence
+                for token in ("{count}", "{error}", "{seconds}", "{part}"):
+                    sentence = sentence.replace(token, "…")
+                parts.append(sentence)
+            if parts:
+                found.setdefault(decision.code, set()).add(" ".join(parts))
     return found
 
 
