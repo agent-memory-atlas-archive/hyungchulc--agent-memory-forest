@@ -6,8 +6,8 @@ All notable changes to Memory Forest are documented in this file. The project fo
 
 - The filesystem boundary is checked with import allow-lists and interpreter audit events during both
   fault sweeps. Tests have a process deadline, independent disk witnesses, and separate assertion and
-  bound mutation results. Sidecar read probes preserve live SQLite locks; a blocked opener is counted
-  even after an index-path swap. Verification in this round ran on macOS.
+  bound mutation results. An independent watchdog ends a stalled native traceback. Sidecar read probes
+  preserve live SQLite locks; a blocked opener is counted even after an index-path swap. Verification in this round ran on macOS.
 
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones. The
 `forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests.

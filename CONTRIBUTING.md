@@ -54,7 +54,8 @@ Then review the full diff manually. Pattern matching does not catch every privac
 Run these checks as an ordinary account before submitting. Denial rows cannot be proved by a
 superuser. The run prints their skipped count and fails unless `FOREST_TESTS_ALLOW_SUPERUSER=1` is
 explicitly set; that override acknowledges missing permission evidence, not a passing denial test.
-Every test, including a single test started directly, has a process bound with all thread stacks.
+Every test, including a single test started directly, has a process bound. It requests all Python
+thread stacks; an independent helper forces exit if native traceback writing stalls.
 The long generated sweeps declare a larger bound. Wait for a child with a deadline and a handshake,
 event or marker, never a fixed sleep.
 

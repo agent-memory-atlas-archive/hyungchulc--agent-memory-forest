@@ -352,10 +352,12 @@ reads also go through the door. Deferred modules remain listed in `tests/door_ru
 The interpreter cannot observe SQLite's C-level opens of `-journal`, `-wal` and `-shm`; the pre-open
 checks, rechecks after errors/deadlines, FIFO release and counted abandoned opener cover that boundary.
 Index traces require a compare after the last statement for reads and writes, in writable and
-read-only forests. Every open first looks at the index identity and all three neighbouring names. Every unittest
-invocation has a process bound that dumps all thread stacks and exits nonzero, including direct single-test
-runs. The mutation report separates assertions, bounds and survivors. These checks were run on macOS;
-they are not evidence of execution on Linux or Windows.
+read-only forests. Every open first looks at the index identity and all three neighbouring names.
+Every unittest invocation has a process bound that requests all thread stacks and exits nonzero, including direct
+single-test runs. An independent helper enforces the final stop if native traceback writing stalls;
+in that case the diagnostic can end at the blocked native frame. The mutation report separates
+assertions, bounds and survivors. These checks were run on macOS; they are not evidence of execution
+on Linux or Windows.
 
 **Appends.** A raw lane only grows. For each lane file the index keeps `indexed_bytes`, the end of its
 last complete line, and the hash of the bytes before it. When the file has only grown, those bytes are

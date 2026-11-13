@@ -103,6 +103,27 @@ unittest.main()
         self.assertIn(b"test_wait", child.stderr)
         self.assertIn(b"bounds.py", child.stderr)
 
+    def test_the_backstop_ends_a_test_when_the_native_dump_does_not_exit(self):
+        code = """import faulthandler, threading, unittest
+real = faulthandler.dump_traceback_later
+def keep_running(seconds, **kwargs): real(seconds, exit=False)
+faulthandler.dump_traceback_later = keep_running
+import bounds
+class Never(unittest.TestCase):
+ def test_wait(self): threading.Event().wait()
+unittest.main()
+"""
+        env = dict(os.environ, FOREST_TEST_BOUND="0.2", PYTHONPATH=os.pathsep.join([str(Path(__file__).resolve().parent), *sys.path]))
+        started = time.monotonic()
+        try:
+            child = subprocess.run([sys.executable, "-c", code], capture_output=True, env=env, timeout=8)
+        except subprocess.TimeoutExpired:
+            self.fail("the independent backstop did not end the test process")
+        self.assertNotEqual(child.returncode, 0)
+        self.assertIn(b"test_wait", child.stderr)
+        self.assertIn(b"test bound backstop", child.stderr)
+        self.assertLess(time.monotonic() - started, 6)
+
     def test_direct_module_selection_installs_the_same_bound(self):
         root = Path(__file__).resolve().parents[1]
         env = dict(os.environ, PYTHONPATH=str(root / "src"))
