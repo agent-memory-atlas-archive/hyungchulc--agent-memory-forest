@@ -342,10 +342,10 @@ or not trigram is available. `forest index status` says which tokenizer was buil
 A search, a timeline query and a subject listing bring changed lane files and daily pages into the index
 first, by size and time, from one listing of the daily and lane folders per query. When another build
 holds the lock, or the folder cannot be written, the answer says `stale:` and how many of those files
-were left, and it reads the index that is already published. A query does not walk the trees: a page
-of `02 ltm`, `03 mtm` or `04 stm` changed since the build is not counted in a query's `stale`, because
-counting it would cost a walk of every tree per query. `forest index status` lists it, with its next
-move, and `forest index build` brings it in.
+were left, and it reads the index that is already published. A page of `02 ltm`, `03 mtm` or `04 stm`
+changed since the build is not counted in a query's `stale`: `forest index status` lists it, with its
+next move, and `forest index build` brings it in. A query does walk `04 stm`, because it compiles the
+registry from the pages on every call: it reads every leaf (`docs/tools.md` states what a query costs).
 
 `forest search "<words>" [--as <reader>] [--limit N] [--json]` matches registry names and aliases first.
 A subject named in the question brings its home and the leaves that name it in `about:`. Word matches

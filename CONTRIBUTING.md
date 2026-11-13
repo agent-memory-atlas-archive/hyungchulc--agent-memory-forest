@@ -75,6 +75,9 @@ nice -n 15 python3 scripts/mutate_guards.py --target src/memory_forest/search.py
 ```
 
 A survivor gets a test that kills it, or a sentence that says why the changed copy is the same program.
+`scripts/query_cost.py` prints what one search, one timeline read and one `index status` cost at three
+sizes of a generated forest (the door's calls and bytes, and the time); `tests/test_v1_query_cost.py` pins
+the counts.
 
 ## Pull requests
 

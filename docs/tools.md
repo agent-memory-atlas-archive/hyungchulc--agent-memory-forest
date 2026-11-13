@@ -580,8 +580,18 @@ forest index status
 
 A search brings changed lane files and daily pages into the index first. When a build already holds the
 lock, or the folder cannot be written, the JSON answer includes `stale` and the count of those files,
-and the search reads the index that is already published. A changed page of a tree is not counted:
-a search does not walk the trees, `index status` lists the page, and a build brings it in.
+and the search reads the index that is already published. A changed page of a tree is not counted in
+`stale`: `index status` lists the page, and a build brings it in.
+
+What a query costs, after a build with nothing changed: a search or a timeline read lists each folder of
+the daily pages and of the lanes once and adds nothing per daily page or turn, but it compiles the
+registry from the trees on every call, so it reads each leaf of `04 stm` whole, with 46 door calls per
+leaf (its read, a look at its home as a registered subject, its names checked against the masking), and
+its calls and bytes grow with the leaves. `index status` lists every folder of the trees and looks at
+every page once (7 door calls per leaf, and 7 per branch with its board) and reads none whose size and
+time match. SQLite runs the same statements at every size, except that a search asks for the rows its
+words matched 500 at a time (one more statement for each 500 more); `tests/test_v1_query_cost.py` pins
+these counts and `scripts/query_cost.py` prints them, with times.
 
 `forest search` tries registry names and aliases first. A subject named in the question brings its home
 and every leaf that names it in `about:`. Word matches come after that. A vector match is added only
