@@ -13,6 +13,11 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- Who reads decides what is folded. A command run with `--as`, or with `--as-group` and `--agent`,
+  answers as the MCP tools do, through the same function: its refusals, as JSON and as text, carry no
+  host, process, user, home folder or absolute path. Without those flags the owner's terminal output
+  is unchanged. A read or a walk of an absolute path, or of one that climbs out with `..`, is
+  `path_escape`, not a path outside the reader's trees.
 - Every refusal code the package can raise is in one table, `errors.REFUSALS`, and in
   `docs/refusals.md`, each with its next move. A test reads every module's syntax tree and proves the
   codes raised, the table and the document are the same set, both ways; a code that is not a literal

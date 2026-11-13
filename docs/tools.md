@@ -593,7 +593,8 @@ not open that agent's raw lane.
 
 `forest read` prints a page, or the section an address names. `--lines A-B` keeps that range. The text
 is masked the same way as every other read. A path outside the reader's trees or lane is refused, and
-the refusal does not quote the page.
+the refusal does not quote the page. A path that is absolute or climbs out with `..` is `path_escape`:
+a forest path is written relative to the forest root.
 
 ```sh
 forest search "the old oven" --as till-bot
@@ -703,6 +704,10 @@ server says itself carries no host name, process id, user name, home folder or a
 refusal's `details` name a path as the caller gave it, or relative to the forest; `real_path`, `root`
 and an absolute `source` are for the terminal only, and the door drops them. In a refusal's own text
 the forest root becomes a forest path (the root alone becomes `.`) and the home folder becomes `~`.
+Who reads decides what is folded: an answer an agent reads, from an MCP tool or from a command run
+with `--as`, or with `--as-group` and `--agent`, carries no host, process, user, home folder or absolute
+path, as JSON and as text, refusals included, because both doors fold through one function. Without
+those flags a command answers the owner at the terminal, and its paths and a lock's owner stay.
 `lock_busy` and `lock_already_held` leave a tool as one busy refusal, next `retry`. `waited_seconds`
 is how long that call waited. The command line still shows the lock's owner, and the absolute path,
 to the person at the terminal. Two `memory_log` calls in one server process share one budget, the

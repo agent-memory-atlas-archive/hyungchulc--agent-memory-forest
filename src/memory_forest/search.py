@@ -2830,6 +2830,7 @@ def read(
     config = config or load_config(safe)
     path, _, address = spec.strip().partition("#")
     path = layout.normalize(path)
+    _refuse_outside_path(path)
     info = layout.classify(path)
     built = registry_mod.build(safe, config=config)
     scope = for_reader(config, built, reader, named=named, root=safe)
@@ -2956,10 +2957,24 @@ def navigate(
     return payload
 
 
+def _refuse_outside_path(path: str) -> None:
+    """A path the caller wrote that is not a forest path at all: absolute, or climbing out with ``..``.
+
+    It is told apart from a forest path outside the reader's scope, so the answer says what is wrong.
+    """
+    if path.startswith("/") or ".." in path.split("/"):
+        raise MemoryForestError(
+            "path_escape",
+            "A forest path is written relative to the forest root, without `..`. This one is not.",
+            details={"path": path},
+        )
+
+
 def _navigate_target(path: str | None, built: registry_mod.Registry, scope: Scope) -> str:
     if path is None or not path.strip():
         return layout.ROOT_INDEX
     text = layout.normalize(path)
+    _refuse_outside_path(text)
     if "/" not in text and layout.is_slug(text):
         if text not in scope.trees:
             raise MemoryForestError(

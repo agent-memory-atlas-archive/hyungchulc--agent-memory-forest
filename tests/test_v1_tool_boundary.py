@@ -294,10 +294,16 @@ class ToolBoundaryTests(ForestTestCase):
         secrets = [str(spaced), str(spaced.parent), "quill root", home_line, host, user]
         environment = {**os.environ, "HOME": str(home), "LOGNAME": user, "USER": user}
 
-        def clean(text: str, *, keep: tuple[str, ...] = ()) -> None:
+        refused: dict[str, bool] = {}
+
+        def clean(text: str) -> None:
+            """A refusal is the server's own text: nothing of the machine may stand in it. A success
+            answer returns the forest's lines exactly, so the two page lines that name a path are
+            taken out first, and only from a success answer."""
             haystack = text
-            for line in keep:
-                haystack = haystack.replace(line, "")
+            if not refused[text]:
+                for line in (tool_line, home_line):
+                    haystack = haystack.replace(line, "")
             for secret in secrets:
                 self.assertNotIn(secret, haystack, text)
 
@@ -309,7 +315,9 @@ class ToolBoundaryTests(ForestTestCase):
                 "stdio", "2025-11-25",
             )
             self.assertIn("result", reply, reply)
-            return reply["result"]["content"][0]["text"]
+            text = reply["result"]["content"][0]["text"]
+            refused[text] = bool(reply["result"]["isError"])
+            return text
 
         success = (
             ("memory_search", {"words": "swept"}),
@@ -327,7 +335,7 @@ class ToolBoundaryTests(ForestTestCase):
             for name, arguments in success:
                 text = call(name, arguments)
                 answers[name].append(text)
-                clean(text, keep=(tool_line, home_line))
+                clean(text)
             self.assertIn(tool_line, answers["memory_search"][0])
             self.assertIn(home_line, answers["memory_search"][0])
             self.assertIn(tool_line, answers["memory_read"][0])
@@ -341,8 +349,13 @@ class ToolBoundaryTests(ForestTestCase):
             clean(escaped)
             self.assertEqual(json.loads(escaped)["details"]["path"], ".")
             outside = call("memory_read", {"path": "../outside"})
-            self.assertIn("out_of_scope", outside)
+            self.assertIn("path_escape", outside)
             clean(outside)
+            # A refusal that really carries a path under the home folder: it leaves as ~.
+            under_home = call("memory_read", {"path": f"{home}/notes/oven.md"})
+            self.assertTrue(refused[under_home])
+            clean(under_home)
+            self.assertEqual(json.loads(under_home)["details"]["path"], "~/notes/oven.md")
             for name, arguments in (
                 ("memory_search", {"words": "swept"}),
                 ("memory_timeline", {"phrase": "yesterday"}),
@@ -351,7 +364,7 @@ class ToolBoundaryTests(ForestTestCase):
             ):
                 with held_in_thread(lambda: hold_lock(spaced, "intake", wait_seconds=30, label="boundary")):
                     held_text = call(name, arguments)
-                clean(held_text, keep=(tool_line, home_line))
+                clean(held_text)
                 if name == "memory_log":
                     self.assertIn("lock_busy", held_text)
             toml = spaced / "forest.toml"
@@ -361,14 +374,19 @@ class ToolBoundaryTests(ForestTestCase):
                 for name, arguments in success:
                     if name == "memory_read" and "lines" in arguments:
                         continue
-                    clean(call(name, dict(arguments)), keep=(tool_line, home_line))
+                    clean(call(name, dict(arguments)))
             finally:
                 toml.write_text(saved, encoding="utf-8")
             empty = self.base / "empty forest"
             empty.mkdir()
-            code, _out, err = _run(["search", "swept", "--root", str(empty), "--as", "till-bot"])
+            # The owner at the terminal sees the folder. An agent's door does not.
+            code, _out, err = _run(["index", "status", "--root", str(empty)])
             self.assertEqual(code, 2)
             self.assertIn(str(empty), err)
+            self.assertIn("no_forest", err)
+            code, _out, err = _run(["search", "swept", "--root", str(empty), "--as", "till-bot"])
+            self.assertEqual(code, 2)
+            self.assertNotIn(str(empty), err)
             self.assertIn("no_forest", err)
 
             pointer = spaced / ".forest" / "index.current"
@@ -380,7 +398,7 @@ class ToolBoundaryTests(ForestTestCase):
                     ("memory_read", {"path": "04 stm/bakery/ovens/floor.md"}),
                     ("memory_navigate", {}),
                 ):
-                    clean(call(name, arguments), keep=(tool_line, home_line))
+                    clean(call(name, arguments))
                 self.assertIn("index_unreadable", call("memory_search", {"words": "swept"}))
             finally:
                 search.reset(spaced)
@@ -390,8 +408,8 @@ class ToolBoundaryTests(ForestTestCase):
             try:
                 damaged = call("memory_search", {"words": "swept"})
                 self.assertIn("index_unreadable", damaged)
-                clean(damaged, keep=(tool_line, home_line))
-                clean(call("memory_timeline", {"subject": "deck-oven"}), keep=(tool_line, home_line))
+                clean(damaged)
+                clean(call("memory_timeline", {"subject": "deck-oven"}))
             finally:
                 search.reset(spaced)
                 search.build(spaced)
@@ -416,7 +434,7 @@ class ToolBoundaryTests(ForestTestCase):
                             ("memory_navigate", {}),
                             ("memory_log", {"text": "the till noted a read-only folder"}),
                         ):
-                            clean(call(name, arguments), keep=(tool_line, home_line))
+                            clean(call(name, arguments))
                 finally:
                     os.chmod(folder, mode)
 

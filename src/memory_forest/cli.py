@@ -273,6 +273,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     return exit_code
 
 
+def _fold_root(arguments: argparse.Namespace) -> str:
+    """The forest the refusal is about: the one found, else the folder named, else the working folder."""
+    try:
+        return str(forest_root(arguments))
+    except (MemoryForestError, OSError):
+        chosen = getattr(arguments, "root", None)
+        return os.path.abspath(chosen) if chosen else os.getcwd()
+
+
 def _filesystem_error(exc: OSError) -> MemoryForestError:
     return MemoryForestError(
         "filesystem_error",
@@ -735,8 +744,18 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
 
 
 def _show_refusal(arguments: argparse.Namespace, exc: MemoryForestError) -> None:
-    """A refusal on stdout as JSON with ``--json``, otherwise as lines on stderr."""
+    """A refusal on stdout as JSON with ``--json``, otherwise as lines on stderr.
+
+    Who reads decides what is folded. A command run as an agent (``--as``, or ``--as-group`` with
+    ``--agent``) answers as the MCP tools do, through ``mcp.agent_refusal``: no host, process, user,
+    home folder or absolute forest path. Without those flags the owner reads it at the terminal, paths
+    and the lock's owner included.
+    """
     body = exc.as_dict()
+    if getattr(arguments, "reader", None) or getattr(arguments, "group", None):
+        from .mcp import agent_refusal
+
+        body = agent_refusal(exc, _fold_root(arguments))
     if getattr(arguments, "json", False):
         _print_json({"error": body, "ok": False})
         return

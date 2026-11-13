@@ -1204,13 +1204,19 @@ def _tool_text(
     return json.dumps(masked, ensure_ascii=False, indent=indent, sort_keys=True)
 
 
-def _tool_error(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dict[str, Any]:
-    """Every refusal of a tool is one JSON object, with or without a next move.
+def agent_refusal(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dict[str, Any]:
+    """A refusal as an agent reads it: masked, folded, and carrying no machine identity.
 
-    Its strings are masked like every answer; when the settings cannot be read for that, the details go.
-    Machine identity is removed with every other tool answer.
+    The one function for every answer an agent reads: the MCP tools, and the command-line doors an
+    agent uses (``--as``, ``--as-group`` with ``--agent``). Its strings are masked like every answer;
+    when the settings cannot be read for that, the details go.
     """
-    text = _tool_text(_tool_body(refusal), root, drop_details=True, refusal=True)
+    return json.loads(_tool_text(_tool_body(refusal), root, drop_details=True, refusal=True))
+
+
+def _tool_error(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dict[str, Any]:
+    """Every refusal of a tool is one JSON object with its next move, as ``agent_refusal`` makes it."""
+    text = json.dumps(agent_refusal(refusal, root), ensure_ascii=False, sort_keys=True)
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
