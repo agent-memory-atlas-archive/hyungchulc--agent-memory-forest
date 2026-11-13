@@ -229,3 +229,21 @@ WITNESSES.update({
 
 WITNESSES["owner_mends_folder"] = lambda e: kind(e.folder) in ("link", "file", "special") or tried(os.lstat, e.folder)[1] is not None
 WITNESSES["owner_moves_pointer"] = lambda e: kind(e.folder / "index.current") in ("link", "folder", "special") or e.pointer_error is not None
+
+
+def assert_cured(case, root):
+    """After an action, prove the actual index can be read before any package query can repair it."""
+    folder = Path(root) / ".forest"
+    pointer = folder / "index.current"
+    path = folder / (pointer.read_text().strip() if pointer.exists() else "index.sqlite")
+    case.assertFalse(path.is_symlink())
+    case.assertTrue(path.is_file(), "the cure did not leave an index")
+    db = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=0.01)
+    try:
+        case.assertEqual(db.execute("PRAGMA quick_check").fetchone(), ("ok",))
+        meta = dict(db.execute("SELECT key, value FROM metadata"))
+        case.assertTrue(meta.get("masking"))
+        case.assertGreater(db.execute("SELECT COUNT(*) FROM files").fetchone()[0], 0)
+        case.assertGreater(db.execute("SELECT COUNT(*) FROM units_words WHERE units_words MATCH 'trays'").fetchone()[0], 0)
+    finally:
+        db.close()

@@ -35,7 +35,7 @@ from memory_forest.errors import REFUSALS, MemoryForestError
 
 from test_v1_find import FILES
 from wait_child import read_fifo, write_fifo
-from claim_witnesses import Evidence, WITNESSES
+from claim_witnesses import Evidence, WITNESSES, assert_cured
 
 READER = "till-bot"
 PAGE = "04 stm/bakery/ovens/floor.md"
@@ -565,16 +565,20 @@ class FactsOnDiskTests(unittest.TestCase):
         os.mkfifo(handshake)
         child = subprocess.Popen([sys.executable, "-c", script, *args, str(handshake)], stdin=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
-        read_fifo(child, str(handshake), what="the child to hold its lock")
 
         def release() -> None:
             if child.stdin is not None:
                 child.stdin.close()
-            child.wait(timeout=60)
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=5)
             if child.stderr is not None:
                 child.stderr.close()
 
         self.addCleanup(release)
+        read_fifo(child, str(handshake), what="the child to hold its lock")
         return child
 
     def _cases(self):
@@ -950,6 +954,7 @@ class ActionClaimTests(unittest.TestCase):
         return decision.claims
 
     def _sound(self) -> None:
+        assert_cured(self, self.root)
         decision, _reading = self._decision("read")
         self.assertEqual(decision.code, None, decision)
         self.assertIn("trays", json.dumps(search.query(self.root, "trays", reader=READER)))

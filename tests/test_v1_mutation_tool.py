@@ -28,6 +28,17 @@ class MutationToolTests(unittest.TestCase):
             exec(source[:mutation.start] + mutation.text + source[mutation.end:], scope)
             self.assertEqual(len(scope["NAMES"]), 2)
 
+    def test_a_multiline_change_is_one_markdown_table_row(self):
+        record = {"target": "loop", "tests": ["probe"], "mutants": 1,
+                  "results": {"m": {"kind": "loop", "line": 1, "excerpt": "if done:\n break",
+                                    "change": "if done:\n pass", "result": "timeout", "seconds": 1}}}
+        text = tool.report([record])
+        self.assertNotIn("\n break", text)
+        self.assertNotIn("\n pass", text)
+        rows = [line for line in text.splitlines() if "if done:" in line]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].count("|"), 9)
+
     def test_timeout_is_never_an_assertion_kill(self):
         records = []
         for result in ("killed", "timeout", "survived"):

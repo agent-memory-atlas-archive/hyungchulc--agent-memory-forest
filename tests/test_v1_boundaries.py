@@ -151,6 +151,56 @@ class BlockTests(ForestTestCase):
         search.build(self.root)
         self.path = self.root / ".forest/index.sqlite"
 
+    def test_missing_masking_stops_a_command_before_it_can_print(self):
+        from memory_forest import cli
+        from test_v1_ways_out import _run, _refusal
+        called = []
+        def command(arguments):
+            called.append(True)
+            print("synthetic unmasked words")
+            return 0
+        parser = cli.build_forest_parser([cli.ForestCommand(
+            ("recount",), command, "Count the fictional trays.", (cli.arg("--as", dest="reader"),))])
+        refusal = MemoryForestError("access_denied", "The masking cannot be read.", next_step="report")
+        for as_json in (False, True):
+            argv = ["recount", "--root", str(self.root), "--as", door.READER]
+            if as_json:
+                argv.append("--json")
+            with mock.patch.object(cli, "build_forest_parser", return_value=parser), \
+                    mock.patch.object(cli, "_masking_for", return_value=refusal):
+                code, out, err = _run(argv)
+            self.assertEqual((code, _refusal(code, out, err)), (2, ("access_denied", "report")))
+            self.assertNotIn("synthetic unmasked words", out + err)
+            self.assertNotIn("Traceback", out + err)
+        self.assertEqual(called, [])
+
+    def test_a_failed_lock_handshake_still_owns_and_reaps_its_child(self):
+        import test_v1_derived as facts_tests
+        case = facts_tests.FactsOnDiskTests()
+        case.base, case.count = self.root, 1
+        started = []
+        real = subprocess.Popen
+        def spawn(*args, **kwargs):
+            child = real(*args, **kwargs)
+            started.append(child)
+            return child
+        try:
+            with mock.patch.object(facts_tests, "read_fifo", side_effect=RuntimeError("synthetic handshake failure")), \
+                    mock.patch.object(subprocess, "Popen", spawn):
+                with self.assertRaisesRegex(RuntimeError, "synthetic handshake failure"):
+                    case._held("import sys; sys.stdin.read()")
+            self.assertTrue(case.doCleanups())
+            self.assertEqual(len(started), 1)
+            self.assertIsNotNone(started[0].poll(), "a failed handshake left a child unowned")
+        finally:
+            for child in started:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=5)
+                for stream in (child.stdin, child.stderr):
+                    if stream is not None:
+                        stream.close()
+
     @unittest.skipIf(os.geteuid() == 0, "the superuser is not denied directory search or listing")
     def test_entering_and_listing_are_distinct_kernel_acts(self):
         try:
@@ -367,7 +417,78 @@ finally:
                 beside.unlink()
 
 
+class ProgressTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.path = self.root / "synthetic-index.sqlite"
+        folder = self.root / "04 stm/bakery/ovens"
+        folder.mkdir(parents=True)
+        (folder / "floor.md").write_text("fictional trays")
+
+    def test_a_read_never_retries_after_eof(self):
+        page = self.root / "synthetic-empty"
+        page.write_bytes(b"")
+        real = system.os.read
+        ended = False
+        def read(*args):
+            nonlocal ended
+            self.assertFalse(ended, "a read retried after EOF")
+            data = real(*args)
+            ended = not data
+            return data
+        with mock.patch.object(system.os, "read", read):
+            self.assertEqual(system.read_bytes(page), b"")
+        self.assertTrue(ended)
+
+    def test_a_walk_never_visits_the_same_folder_twice(self):
+        from memory_forest import layout
+        real = system.listing
+        seen = set()
+        def listing(path):
+            self.assertNotIn(str(path), seen, "the walk made no progress")
+            seen.add(str(path))
+            return real(path)
+        with mock.patch.object(system, "listing", listing):
+            self.assertTrue(layout.iter_pages(self.root))
+        self.assertTrue(seen)
+
+    def test_a_lock_attempt_does_not_repeat_after_its_deadline(self):
+        if system.fcntl is None:
+            self.skipTest("flock is unavailable on this system")
+        calls = 0
+        def locked(*args):
+            nonlocal calls
+            calls += 1
+            self.assertLessEqual(calls, 1, "the deadline allowed another lock attempt")
+            raise BlockingIOError()
+        with mock.patch.object(system.fcntl, "flock", locked), self.assertRaises(system.Busy):
+            system._flock_within(-1, self.path, 0.0)
+
+
+
 class TraceTests(ForestTestCase):
+    def test_a_later_connection_cannot_cover_an_earlier_missing_compare(self):
+        path = "synthetic-bakery/index.sqlite"
+        def trace(first_compares):
+            calls, events = [], []
+            def call(name, where=path):
+                calls.append((name, where))
+                events.append(("call", name))
+            for compare in (first_compares, True):
+                for suffix in ("", "-journal", "-wal", "-shm"):
+                    call("look", path + suffix)
+                call("open_index")
+                events.append(("statement", path))
+                if compare:
+                    call("same_index")
+                events.append(("closed_index", path))
+            return calls, events
+        door_runtime.verify_trace(*trace(True))
+        with self.assertRaisesRegex(AssertionError, "connection closed without final compare"):
+            door_runtime.verify_trace(*trace(False))
+
     def test_every_reader_compares_after_its_last_statement_in_both_modes(self):
         from test_v1_sweep import call
         for readonly in (False, True):
