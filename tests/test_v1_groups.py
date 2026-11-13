@@ -129,9 +129,9 @@ class GroupResolutionTests(ForestTestCase):
         again = parse_config(render_config(config))
         self.assertEqual(again.agents.groups, config.agents.groups)
         self.assertEqual(again.agents.known, config.agents.known)
-        with self.assertRaises(MemoryForestError) as caught:
-            parse_config('[agents.groups.kiln-bot]\nmembers = ["kiln-bot"]\nopen = false\n')
-        self.assertEqual(caught.exception.details["key"], "agents.groups.kiln-bot")
+        itself = parse_config('[agents.groups.kiln-bot]\nmembers = ["kiln-bot"]\nopen = false\n')
+        self.assertEqual(itself.agents.group("kiln-bot").members, ())
+        self.assertEqual([where for where, _why in itself.agents.left_out], ["agents.groups.kiln-bot.members"])
 
     def test_a_name_resolves_only_inside_the_group(self) -> None:
         root = self._studio()
@@ -574,18 +574,11 @@ class GroupCommandTests(ForestTestCase):
         self.assertEqual(again[0], 0, again[2])
         self.assertEqual((self.root / "forest.toml").read_bytes(), blob)
 
-        fixed = datetime(2051, 3, 2, 15, 0, tzinfo=timezone.utc)
-
-        class Frozen(datetime):
-            @classmethod
-            def now(cls, tz: timezone | None = None) -> datetime:
-                return fixed
-
-        with mock.patch("memory_forest.intake.datetime", Frozen):
-            first = self._cli("log", "--as", "oven-bot", "--session", "shift", stdin="the same cooling note\n")
-            second = self._cli("log", "--as", "oven-bot", "--session", "shift", stdin="the same cooling note\n")
+        first = self._cli("log", "--as", "oven-bot", "--session", "shift", stdin="the same cooling note\n")
+        second = self._cli("log", "--as", "oven-bot", "--session", "shift", stdin="the same cooling note\n")
         self.assertTrue(json.loads(first[1])["wrote"])
-        self.assertFalse(json.loads(second[1])["wrote"])
+        self.assertTrue(json.loads(second[1])["wrote"])
+        self.assertNotEqual(json.loads(first[1])["id"], json.loads(second[1])["id"])
 
     def test_forest_agents_shows_the_group_the_lane_and_the_last_call(self) -> None:
         reply, _version = mcp.handle_message(

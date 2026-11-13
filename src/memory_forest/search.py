@@ -66,7 +66,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import credential_ledger, derived, embeddings, layout, system, registry as registry_mod
+from . import credential_ledger, derived, embeddings, layout, sources as sources_mod, system, registry as registry_mod
 from . import credentials as forest_credentials
 from .collections import owner_of
 from .config import Config, load_config
@@ -76,7 +76,7 @@ from .locking import atomic_write, hold_lock
 from .model import TimelineLine, parse_page
 from .registry import COLLECTION_OWN_SECTIONS, about_ids, normalize_name
 from .safety import require_real_root
-from .scope import Scope, for_reader
+from .scope import ALL_LANES, Scope, for_reader
 
 
 # The name a forest has when nothing has published a pointer yet. A later reset never reuses it.
@@ -2363,60 +2363,58 @@ def _end_of_local_day(moment: datetime) -> datetime:
 # ─────────────────────────────── search ───────────────────────────────
 
 
-def _source_names(record: Mapping[str, Any]) -> set[str]:
-    source = record.get("source")
-    if not isinstance(source, dict):
-        return set()
-    return {
-        value
-        for key in ("group", "door", "adapter", "transcript")
-        if isinstance((value := source.get(key)), str) and value
-    }
+def _readable_lanes(root: str | os.PathLike[str], scope: Scope) -> list[str]:
+    """The agents whose raw lanes this reader may read."""
+    if ALL_LANES in scope.lanes:
+        from .agents import lanes
 
-
-def filter_lane_text(text: str, source: str) -> str:
-    """The lane lines whose group or door is ``source``."""
-    kept = []
-    for line in _lane_lines(text):
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict) and source in _source_names(record):
-            kept.append(line)
-    return "\n".join(kept)
+        return lanes(root)
+    return [agent for agent in scope.lanes if layout.is_slug(agent)]
 
 
 @_public
-def restrict_source(root: str | os.PathLike[str], payload: dict[str, Any], source: str | None) -> dict[str, Any]:
-    """Keep the turns of one group or tool. A page that is not a lane is left out."""
-    if not source:
-        return payload
+def source_for(root: str | os.PathLike[str], scope: Scope, source: str | None) -> str | None:
+    """The source a reading is narrowed to, or None; ``source_unknown`` when no lane this reader reads has it."""
+    if source is None:
+        return None
+    known: list[str] = []
+    for listed in sources_mod.listed(root, _readable_lanes(root, scope), keep=False).values():
+        known.extend(listed)
+    return sources_mod.require(source, known)
+
+
+@_public
+def narrow(root: str | os.PathLike[str], pages: Iterable[dict[str, Any]], source: str) -> list[dict[str, Any]]:
+    """The lane pages of ``pages``, each with only the sections whose turn came through ``source``.
+
+    A page that is not a raw lane is left out. A section is kept when a line of its span is such a turn; the
+    file's own line numbers stay as they are. Called before a reading takes its limit.
+    """
     kept = []
-    for page in payload.get("results") or []:
+    texts: dict[str, list[str]] = {}
+    for page in pages:
         path = str(page.get("path") or "")
         if not _is_lane(path):
             continue
-        try:
-            file_text, _ignored = _read_text(layout.resolve(root, path, must_exist=True))
-        except (MemoryForestError, system.Absent):
-            continue
-        lines = _lane_lines(file_text)
+        if path not in texts:
+            try:
+                file_text, _ignored = _read_text(layout.resolve(root, path, must_exist=True))
+            except (MemoryForestError, system.Absent):
+                texts[path] = []
+                continue
+            texts[path] = _lane_lines(file_text)
+        lines = texts[path]
         sections = []
         for section in page.get("sections") or []:
-            span = section.get("lines") or [1, 1]
-            start = int(span[0]) if span else 1
-            if start < 1 or start > len(lines):
-                continue
-            try:
-                record = json.loads(lines[start - 1])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(record, dict) and source in _source_names(record):
+            span = section.get("lines") or [section.get("line_start") or 1, section.get("line_end") or 1]
+            first = int(span[0]) if span else 1
+            last = int(span[-1]) if span else first
+            if any(source in sources_mod.of_line(lines[number - 1])
+                   for number in range(max(first, 1), min(last, len(lines)) + 1)):
                 sections.append(section)
         if sections:
             kept.append({**page, "sections": sections})
-    return {**payload, "results": kept}
+    return kept
 
 
 @_public
@@ -2438,9 +2436,10 @@ def query(
         raise MemoryForestError("search_empty", "Search needs the words to look for.")
     if limit < 1:
         raise MemoryForestError("search_limit", "The limit is at least 1.", details={"limit": limit})
-    stale = refresh_lanes_and_daily(safe)
     built = registry_mod.build(safe, config=config)
     scope = for_reader(config, built, reader, named=named, root=safe)
+    wanted = source_for(safe, scope, source)
+    stale = refresh_lanes_and_daily(safe)
     started = time.monotonic()
     deadline = started + READER_TIMEOUT_SECONDS
 
@@ -2453,7 +2452,8 @@ def query(
         _add_alias_hits(connection, pages, words, built, scope)
         _add_word_hits(connection, pages, words, scope)
         vector_note = _add_vector_hits(connection, pages, words, config, scope)
-        ordered = sorted(pages.values(), key=lambda item: (item["tier"], -item["score"], item["path"]))[:limit]
+        found = list(pages.values()) if wanted is None else narrow(safe, pages.values(), wanted)
+        ordered = sorted(found, key=lambda item: (item["tier"], -item["score"], item["path"]))[:limit]
         payload = _envelope(scope, ordered, vectors=vector_note, question=words)
         if stale:
             payload["stale"] = stale
@@ -2463,8 +2463,7 @@ def query(
 
     while True:
         try:
-            payload = _checked_read(safe, read)
-            return restrict_source(safe, payload, source) if source else payload
+            return _checked_read(safe, read)
         except MemoryForestError as exc:
             if exc.code != "index_protocol":
                 raise
@@ -2501,9 +2500,8 @@ def read(
             "That path is outside this reader's trees and lane.",
             details={"path": path},
         )
+    wanted = source_for(safe, scope, source)
     file_text, undecodable = _read_text(layout.resolve(safe, path, must_exist=True))
-    if source and info.role is layout.PageRole.RAW_FILE:
-        file_text = filter_lane_text(file_text, source)
     start, end, body, heading = _addressed(path, file_text, address, config)
     if lines is not None:
         want_start, want_end = lines
@@ -2520,6 +2518,22 @@ def read(
         file_lines = _file_lines(path, file_text)
         body = "\n".join(file_lines[overlap_start - 1 : overlap_end])
         start, end = overlap_start, overlap_end
+    kept_lines: list[int] | None = None
+    if wanted is not None and info.role is layout.PageRole.RAW_FILE:
+        # Narrowed to one source, the lines keep the file's own numbers: the text is the lines of the span
+        # whose turn came through that source, and ``kept_lines`` names them.
+        file_lines = _file_lines(path, file_text)
+        kept_lines = [
+            number for number in range(start, end + 1)
+            if 1 <= number <= len(file_lines) and wanted in sources_mod.of_line(file_lines[number - 1])
+        ]
+        if not kept_lines:
+            raise MemoryForestError(
+                "read_lines_empty",
+                "None of those lines is a turn that came through that source.",
+                details={"path": path, "source": wanted},
+            )
+        body = "\n".join(file_lines[number - 1] for number in kept_lines)
     tree = info.tree or ""
     payload = _envelope(
         scope,
@@ -2546,6 +2560,9 @@ def read(
             }
         ],
     )
+    if kept_lines is not None:
+        payload["results"][0]["sections"][0]["kept_lines"] = kept_lines
+        payload["results"][0]["sections"][0]["source"] = wanted
     if undecodable:
         payload["status"] = f"undecodable: {path}"
         payload["undecodable"] = [path]

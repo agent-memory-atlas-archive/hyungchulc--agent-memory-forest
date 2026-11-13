@@ -19,7 +19,7 @@ from unittest import mock
 
 from memory_forest import agents, groups, intake, levels, mcp, search
 from memory_forest.cli import forest_main
-from memory_forest.cli_find import COMMANDS, argument_dest, flag_effect
+from memory_forest.cli_find import agent_door_flags, flag_effect
 from memory_forest.config import AGENT_TEXT_MAX, load_config, parse_config
 from memory_forest.errors import MemoryForestError
 
@@ -54,10 +54,11 @@ class NameRuleTests(ForestTestCase):
         self.assertEqual(caught.exception.code, "agent_name_invalid")
         self.assertEqual(caught.exception.next_step, "fix")
         self.assertEqual((root / "forest.toml").read_bytes(), before)
-        with self.assertRaises(MemoryForestError) as empty:
-            groups.resolve_caller(root, "night-kiln", "!!!")
-        self.assertEqual(empty.exception.code, "agent_name_invalid")
-        self.assertEqual(empty.exception.next_step, "fix")
+        with self.assertRaises(MemoryForestError) as control:
+            groups.resolve_caller(root, "night-kiln", "Clerk\x07")
+        self.assertEqual(control.exception.code, "agent_name_invalid")
+        self.assertEqual(control.exception.next_step, "fix")
+        self.assertTrue(groups.resolve_caller(root, "night-kiln", "!!!").id.startswith("agent-"))
         for number in range(40):
             resolved = groups.resolve_caller(root, "night-kiln", f"Clerk {number}")
             self.assertEqual(resolved.id, f"clerk-{number}")
@@ -190,23 +191,18 @@ class NameRuleTests(ForestTestCase):
         self.assertEqual(len([item for item in config.agents.known if item.id.startswith("crate-bot")]), 1)
         self.assertTrue(any(isinstance(item, groups.Resolved) or (isinstance(item, groups.Admit) and not item.create) for item in inside))
         fixed = datetime(2051, 3, 2, 18, 0, tzinfo=timezone.utc)
-
-        class Frozen(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return fixed if tz is None else fixed.astimezone(tz)
-
-        with mock.patch("memory_forest.intake.datetime", Frozen):
-            first = mcp.record_turn(root, "crate-bot", "from the night door", origin="interactive", session="shift", door="mcp", group="night-shift")
-            second = mcp.record_turn(root, "crate-bot", "from the day door", origin="interactive", session="shift", door="mcp", group="day-shift")
+        first = mcp.record_turn(root, "crate-bot", "from the night door", origin="interactive", session="shift",
+                                door="mcp", group="night-shift", at=fixed)
+        second = mcp.record_turn(root, "crate-bot", "from the day door", origin="interactive", session="shift",
+                                 door="mcp", group="day-shift", at=fixed)
         self.assertTrue(first["wrote"])
         self.assertTrue(second["wrote"])
         self.assertTrue((root / "02 ltm" / "crate-bot_LTM.md").is_file())
         lane = (root / first["path"]).read_text(encoding="utf-8")
         self.assertIn("night-shift", lane)
         self.assertIn("day-shift", lane)
-        night = search.read(root, first["path"], reader="crate-bot", source="night-shift")
-        day = search.read(root, first["path"], reader="crate-bot", source="day-shift")
+        night = search.read(root, first["path"], reader="crate-bot", source="group:night-shift")
+        day = search.read(root, first["path"], reader="crate-bot", source="group:day-shift")
         self.assertIn("night door", json.dumps(night))
         self.assertNotIn("day door", json.dumps(night))
         self.assertIn("day door", json.dumps(day))
@@ -324,17 +320,20 @@ class NameRuleTests(ForestTestCase):
             self.assertNotIn(SECRET, reply["result"]["content"][0]["text"])
 
     def test_a_scope_flag_is_refused_on_an_agents_door(self) -> None:
-        doors = {"search", "read", "timeline", "navigate", "log"}
         seen = []
-        for command in COMMANDS:
-            if command.words[0] not in doors:
-                continue
-            for argument in command.arguments:
-                dest = argument_dest(argument)
-                effect = flag_effect(dest)
-                self.assertIn(effect, {"plain", "refused"})
-                seen.append((command.words, dest, effect))
+        for words, dest, _flags in agent_door_flags():
+            effect = flag_effect(dest)
+            self.assertIn(effect, {"plain", "refused"})
+            seen.append((words, dest, effect))
+        commands = {words for words, _dest, _effect in seen}
+        self.assertEqual(commands, {("search",), ("read",), ("timeline", "query"), ("timeline", "subject"),
+                                    ("navigate",), ("log",), ("mcp",)})
+        for words in commands:
+            for dest in ("root", "json", "help"):
+                self.assertIn((words, dest, "plain"), seen)
         self.assertIn((("read",), "named", "refused"), seen)
+        self.assertEqual([item for item in seen if item[2] == "refused"],
+                         [item for item in seen if item[1] == "named"])
         root = self._bakery()
         code, out, err = _cli(root, "read", COOLING, "--as-group", "bakery-bots", "--agent", "till-bot", "--named", "oven-bot")
         self.assertEqual(code, 2, out)
@@ -344,47 +343,6 @@ class NameRuleTests(ForestTestCase):
         self.assertEqual(code, 2)
         self.assertEqual(json.loads(out)["error"]["code"], "scope_widened")
         self.assertNotIn(SECRET, out)
-
-    def test_both_doors_store_one_turn_and_name_the_door(self) -> None:
-        root = self._bakery()
-        fixed = datetime(2051, 3, 2, 16, 0, tzinfo=timezone.utc)
-
-        class Frozen(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return fixed if tz is None else fixed.astimezone(tz)
-
-        with mock.patch("memory_forest.intake.datetime", Frozen):
-            first = mcp.record_turn(root, "till-bot", "the same tray count", origin="interactive", session="shift", door="cli")
-            second = mcp.record_turn(root, "till-bot", "the same tray count", origin="interactive", session="shift", door="mcp")
-        self.assertTrue(first["wrote"])
-        self.assertFalse(second["wrote"])
-        lines = [json.loads(line) for line in (root / first["path"]).read_text(encoding="utf-8").splitlines() if "same tray" in line]
-        self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0]["source"]["door"], "cli")
-        other = self._bakery("bakery-other")
-        with mock.patch("memory_forest.intake.datetime", Frozen):
-            first = mcp.record_turn(other, "till-bot", "the same tray count", origin="interactive", session="shift", door="mcp")
-            second = mcp.record_turn(other, "till-bot", "the same tray count", origin="interactive", session="shift", door="cli")
-        self.assertTrue(first["wrote"])
-        self.assertFalse(second["wrote"])
-        lines = [json.loads(line) for line in (other / first["path"]).read_text(encoding="utf-8").splitlines() if "same tray" in line]
-        self.assertEqual(lines[0]["source"]["door"], "mcp")
-
-        left = self._bakery("bakery-shape")
-        right_agent_root = left
-        with mock.patch("memory_forest.intake.datetime", Frozen):
-            by_cli = mcp.record_turn(right_agent_root, "till-bot", "one cooling note", origin="interactive", session="shift", door="cli")
-            by_mcp = mcp.record_turn(right_agent_root, "oven-bot", "one cooling note", origin="interactive", session="shift", door="mcp")
-        cli_line = json.loads((left / by_cli["path"]).read_text(encoding="utf-8").splitlines()[-1])
-        mcp_line = json.loads((left / by_mcp["path"]).read_text(encoding="utf-8").splitlines()[-1])
-        for key, value in cli_line.items():
-            if key == "source":
-                continue
-            self.assertEqual(mcp_line[key], value, key)
-        self.assertEqual(cli_line["source"]["door"], "cli")
-        self.assertEqual(mcp_line["source"]["door"], "mcp")
-        self.assertNotEqual(cli_line["source"]["adapter"], mcp_line["source"]["adapter"])
 
     def test_forest_mcp_with_neither_flag_names_both(self) -> None:
         root = self._studio()
@@ -436,9 +394,13 @@ class NameRuleTests(ForestTestCase):
             path.chmod(0o644)
         self.assertEqual(caught.exception.code, "settings_unwritable")
         self.assertEqual(caught.exception.next_step, "report")
-        self.assertIn("[agents.groups.night-kiln]", caught.exception.message)
-        self.assertNotIn("[[agents.groups.night-kiln]]", caught.exception.message)
-        self.assertIn("[agents.known.quiet-clerk]", caught.exception.message)
+        self.assertIn('Add "quiet-clerk" to the `members` list of the table [agents.groups.night-kiln]',
+                      caught.exception.message)
+        self.assertIn('Add a new table [agents.known.quiet-clerk] with name = "Quiet Clerk".', caught.exception.message)
+        self.assertEqual(caught.exception.details["edits"], [
+            {"add_to_list": "members", "table": "agents.groups.night-kiln", "value": "quiet-clerk"},
+            {"new_table": "agents.known.quiet-clerk", "values": {"name": "Quiet Clerk"}},
+        ])
         self.assertEqual(path.read_bytes(), before)
         self.assertFalse((root / "06 istm" / "quiet-clerk").exists())
 
@@ -474,7 +436,7 @@ class NameRuleTests(ForestTestCase):
                 parsed = parse_config(updated.decode("utf-8"))
                 self.assertIn("new-clerk", parsed.agents.group("night-shift").members)
                 self.assertEqual(parsed.agents.declared("new-clerk").name, "New Clerk")
-                self.assertTrue(_lines_kept(original, updated), (crlf, header, form, open_first))
+                self.assertTrue(_bytes_kept(original, updated), (crlf, header, form, open_first))
                 self.assertIn(b"# [agents.known.new-clerk]", updated)
                 self.assertIn(b"[agents.known.new-clerk]", updated.replace(b"# [agents.known.new-clerk]", b""))
 
@@ -488,8 +450,9 @@ class NameRuleTests(ForestTestCase):
         self.assertEqual(caught.exception.code, "settings_unpatched")
         self.assertEqual(caught.exception.next_step, "report")
         self.assertNotIn("[[", caught.exception.message)
-        self.assertIn("[agents.groups.night-shift]", caught.exception.message)
-        self.assertIn("[agents.known.new-clerk]", caught.exception.message)
+        self.assertIn('Add "new-clerk" to the `members` list of the table [agents.groups.night-shift] that '
+                      "forest.toml already has.", caught.exception.message)
+        self.assertIn("Add a new table [agents.known.new-clerk]", caught.exception.message)
         self.assertEqual((root / "forest.toml").read_bytes(), before)
 
     def test_forest_agents_remarks_on_a_near_name_and_shows_sources(self) -> None:
@@ -652,24 +615,24 @@ def _settings(crlf: bool, header: str, form: str, open_first: bool, decoy: bool)
     return text
 
 
-def _lines_kept(original: bytes, updated: bytes) -> bool:
-    """Every original line is still there, in order, except at most the one line that grew."""
-    old = original.decode("utf-8").splitlines()
-    new = updated.decode("utf-8").splitlines()
-
-    def covers(lines: list[str]) -> bool:
-        index = 0
-        for line in lines:
-            while index < len(new) and new[index] != line:
-                index += 1
-            if index >= len(new):
-                return False
+def _bytes_kept(original: bytes, updated: bytes) -> bool:
+    """Every byte of the original is still there, in order, and what was added are runs at most two places."""
+    runs = 0
+    index = 0
+    position = 0
+    while index < len(original):
+        if position < len(updated) and updated[position] == original[index]:
             index += 1
-        return True
-
-    if covers(old):
-        return True
-    return any(covers(old[:drop] + old[drop + 1 :]) for drop in range(len(old)))
+            position += 1
+            continue
+        runs += 1
+        while position < len(updated) and updated[position] != original[index]:
+            position += 1
+        if position >= len(updated):
+            return False
+    if position < len(updated):
+        runs += 1
+    return runs <= 2
 
 
 if __name__ == "__main__":

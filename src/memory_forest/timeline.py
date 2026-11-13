@@ -129,13 +129,16 @@ def query(
     """What falls in ``phrase`` across the raw lanes, the daily pages and the forest."""
     safe = require_real_root(root)
     config = config or load_config(safe)
+    if source is not None:  # a source no lane of this reader has is refused before anything is brought in
+        search.source_for(safe, for_reader(config, registry_mod.build(safe, config=config), reader, named=named,
+                                           root=safe), source)
     stale = search.refresh_lanes_and_daily(safe)
     moment = _aware(now or datetime.now(config.zone), config.zone)
     when = resolve(phrase, config, moment, root=safe)
-    payload = _collect(safe, config, reader, named, when, limit=limit, phrase=phrase.strip())
+    payload = _collect(safe, config, reader, named, when, limit=limit, phrase=phrase.strip(), source=source)
     if stale:
         payload["stale"] = stale
-    return search.restrict_source(safe, payload, source) if source else payload
+    return payload
 
 
 @search._public
@@ -152,9 +155,11 @@ def subject(
     """The indexed sections whose subjects include ``subject_id``, in time order."""
     safe = require_real_root(root)
     config = config or load_config(safe)
-    stale = search.refresh_lanes_and_daily(safe)
     built = registry_mod.build(safe, config=config)
     scope = for_reader(config, built, reader, named=named, root=safe)
+    wanted = search.source_for(safe, scope, source)
+    stale = search.refresh_lanes_and_daily(safe)
+
     def read(connection: sqlite3.Connection | None) -> dict[str, Any]:
         if connection is None:
             raise search.no_index_yet(safe)
@@ -175,7 +180,8 @@ def subject(
             search._add_row(
                 pages, unit, f"subject: {subject_id}", tier=0, score=0, scope=scope,
             )
-        ranked = sorted(pages.values(), key=lambda item: (page_stamp.get(item["path"], "9999"), item["path"]))
+        found = list(pages.values()) if wanted is None else search.narrow(safe, pages.values(), wanted)
+        ranked = sorted(found, key=lambda item: (page_stamp.get(item["path"], "9999"), item["path"]))
         payload = search._envelope(scope, ranked[:limit])
         payload["subject"] = subject_id
         if stale:
@@ -184,8 +190,7 @@ def subject(
             payload["read_only"] = True
         return payload
 
-    payload = search._checked_read(safe, read)
-    return search.restrict_source(safe, payload, source) if source else payload
+    return search._checked_read(safe, read)
 
 
 @search._public
@@ -238,9 +243,11 @@ def _collect(
     *,
     limit: int,
     phrase: str,
+    source: str | None = None,
 ) -> dict[str, Any]:
     built = registry_mod.build(root, config=config)
     scope = for_reader(config, built, reader, named=named, root=root)
+    wanted = search.source_for(root, scope, source)
     def read(connection: sqlite3.Connection | None) -> dict[str, Any]:
         if connection is None:
             raise search.no_index_yet(root)
@@ -267,7 +274,8 @@ def _collect(
             stamps.setdefault(unit["path"], row["start_utc"])
             if row["start_utc"] < stamps[unit["path"]]:
                 stamps[unit["path"]] = row["start_utc"]
-        ordered = sorted(pages.values(), key=lambda item: stamps.get(item["path"], ""))[:limit]
+        found = list(pages.values()) if wanted is None else search.narrow(root, pages.values(), wanted)
+        ordered = sorted(found, key=lambda item: stamps.get(item["path"], ""))[:limit]
         payload = search._envelope(scope, ordered)
         payload["phrase"] = phrase
         payload["when"] = _when_dict(when)

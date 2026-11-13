@@ -1268,10 +1268,12 @@ def run(
     today: str | None = None,
     why: str | None = None,
     config: Config | None = None,
+    wait_seconds: float = 0.0,
 ) -> dict[str, Any]:
     """Plan with ``build``, check, and (unless ``dry_run``) write under the writer lock.
 
-    The plan is made while the lock is held, so it reads the forest it writes.
+    The plan is made while the lock is held, so it reads the forest it writes. The lock is waited for up to
+    ``wait_seconds``; held longer by another writer, the call is ``lock_busy``.
     """
     safe_root = require_real_root(root)
     if dry_run:
@@ -1283,7 +1285,7 @@ def run(
         if result is not None:
             report["result"] = result
         return report
-    with writer_lock(safe_root, token=lock, label="forest move") as held:
+    with writer_lock(safe_root, token=lock, label="forest move", wait_seconds=wait_seconds) as held:
         plan = Plan.open(safe_root, config=config, today=today, why=why)
         result = build(plan)
         report = plan.commit(lock=held)

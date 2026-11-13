@@ -93,6 +93,10 @@ ASSUMED_VERSION = "2025-03-26"
 SEEN_FILE = f"{layout.STATE_DIR}/mcp/seen.json"
 TOKEN_FILE = f"{layout.STATE_DIR}/mcp/token"
 MESSAGE_LIMIT = 1_000_000
+# The greatest turn, in bytes of its words as UTF-8: the same number for ``memory_log`` and ``forest log``.
+# A protocol line has its own larger bound, MESSAGE_LIMIT: a turn of this size still fits in one line when
+# every byte of it is written as a six-byte escape.
+TURN_MAX_BYTES = 131_072
 READ_TIMEOUT_SECONDS = 30.0
 # A read rewrites the seen record only when the last value is older than this, or absent.
 SEEN_INTERVAL_SECONDS = 60.0
@@ -201,6 +205,11 @@ _TOOLS: tuple[dict[str, Any], ...] = (
             "properties": {
                 "session": {"type": "string"},
                 "text": {"type": "string"},
+                "turn_id": {
+                    "description": "Your own id for this turn, when you may send it twice: the same id in the "
+                    "same session is stored once.",
+                    "type": "string",
+                },
             },
             "required": ["text"],
             "type": "object",
@@ -566,20 +575,25 @@ def _call(
         if version in INPUT_ERROR_RESULT_VERSIONS:
             return _tool_error(MemoryForestError("arguments_invalid", exc.message), root)
         raise
+    admitted = ""
     try:
         if group:
-            reader = groups.resolve_caller(root, group, str(arguments["agent"])).id
+            resolved = groups.resolve_caller(root, group, str(arguments["agent"]))
+            reader = resolved.id
+            admitted = resolved.id if resolved.wrote else ""
             arguments = {key: value for key, value in arguments.items() if key != "agent"}
         payload = _invoke(root, reader, name, arguments, transport, group=group)
     except _BadArguments:
         raise
     except MemoryForestError as exc:
-        return _tool_error(exc, root)
+        return _tool_error(admitted_on(exc, admitted), root)
     except OSError as exc:
         # What the door answered and no code decided on: a refusal by its kind, never a fault of this code.
-        return _tool_error(search.edge_refusal(exc, root), root)
+        return _tool_error(admitted_on(search.edge_refusal(exc, root), admitted), root)
     except Exception:
-        return _tool_error(MemoryForestError("tool_failed", "The tool could not answer."), root)
+        return _tool_error(admitted_on(MemoryForestError("tool_failed", "The tool could not answer."), admitted), root)
+    if admitted:
+        payload = {**payload, "admitted": admitted}
     try:
         # The answer is masked with the forest's settings and ledger, read now: a fault there is a refusal,
         # except for a turn already written, which is never told as unwritten.
@@ -598,6 +612,13 @@ def _call(
     return {"content": [{"type": "text", "text": text}], "isError": False}
 
 
+def admitted_on(refusal: MemoryForestError, admitted: str) -> MemoryForestError:
+    """A refusal after this call admitted the caller to its group: it says so, since that write took effect."""
+    if admitted:
+        refusal.details["admitted"] = admitted
+    return refusal
+
+
 def withheld(body: Mapping[str, Any], exc: Exception) -> dict[str, Any]:
     """A written turn's answer when the masking cannot be read: the words of a fixed vocabulary only.
 
@@ -605,7 +626,7 @@ def withheld(body: Mapping[str, Any], exc: Exception) -> dict[str, Any]:
     the id and the path are withheld, with the code of what kept the masking from being read.
     """
     code = exc.code if isinstance(exc, MemoryForestError) else door_refusal(exc).code
-    kept = {key: body[key] for key in ("indexed", "reason", "wrote") if key in body}
+    kept = {key: body[key] for key in ("index", "indexed", "reason", "stored", "tree", "wrote") if key in body}
     kept["withheld"] = code
     return kept
 
@@ -662,6 +683,8 @@ def _check_arguments(name: str, arguments: Mapping[str, Any], tool: Mapping[str,
             raise _BadArguments("A turn needs text.")
         if "session" in arguments and not isinstance(arguments["session"], str):
             raise _BadArguments("The session is a string.")
+        if "turn_id" in arguments and not isinstance(arguments["turn_id"], str):
+            raise _BadArguments("The turn id is a string.")
 
 
 def _invoke(
@@ -694,6 +717,7 @@ def _invoke(
         path = arguments.get("path")
         return search.navigate(root, reader=reader, path=str(path) if path else None)
     if name == "memory_log":
+        turn_id = arguments.get("turn_id")
         return record_turn(
             root,
             reader,
@@ -702,6 +726,7 @@ def _invoke(
             session=str(arguments.get("session") or "mcp"),
             door="mcp",
             group=group or "",
+            turn_id=turn_id if isinstance(turn_id, str) else None,
         )
     raise _BadArguments("That tool is not served.")
 
@@ -715,33 +740,68 @@ def record_turn(
     session: str,
     door: str = "mcp",
     group: str = "",
+    turn_id: str | None = None,
+    at: datetime | None = None,
+    tree_wait: float | None = None,
 ) -> dict[str, Any]:
-    """Append one turn through the lane's one writer, then the same index update ``memory_log`` does.
+    """Append one turn through the lane's one writer; then the agent's tree and the index follow.
 
-    The role is ``agent``. The caller does not choose the role or the origin. A turn
-    whose id the lane already holds is not written again. The first write of an
-    agent makes that agent's tree, and no other subject's.
+    The role is ``agent``. The caller does not choose the role or the origin. What the call answers depends on
+    the write: once the lane's line is stored (``stored``: ``written``, ``already stored`` or ``joined``, see
+    ``intake.append_owned``), the answer says so, and the tree (``made``, ``already there``, ``pending`` or
+    ``none``) and the index (``updated`` or ``pending``) are named as they came out. Neither turns the answer
+    into a refusal. A tree is pending when the writer lock stays held past ``levels.TREE_WAIT_SECONDS``; the
+    next write of the agent, or the level pass, makes it. An index is pending when it was busy or failed; the
+    next read brings the lane in.
     """
+    from . import levels
+
+    data = text.encode("utf-8", "surrogatepass")
+    if len(data) > TURN_MAX_BYTES:
+        raise MemoryForestError(
+            "log_too_large",
+            f"The turn is longer than {TURN_MAX_BYTES} bytes. It was not stored.",
+            details={"limit": TURN_MAX_BYTES},
+            next_step="fix",
+        )
     refused = search.unwritable(root)
     if refused is not None:
         raise _log_read_only(agent) if refused.code == "index_read_only" else refused
     # A denial inside the append is told by the door's edge as what was denied: the turn may already be in the
-    # lane, so it is never "not written" (the same turn sent again has the same id and is not written twice).
+    # lane, so it is never "not written".
     record = intake.append_owned(
-        root, agent, text, role="agent", origin=origin, session=session or "mcp", door=door, group=group
+        root, agent, text, role="agent", origin=origin, session=session or "mcp", door=door, group=group,
+        turn_id=turn_id, at=at,
     )
-    body = {"id": record["id"], "indexed": False, "path": record["path"], "wrote": bool(record["wrote"])}
-    # The turn is in the lane: from here a fault is told as the reason the index was not updated, never as a
-    # refusal, so the caller does not write the turn again.
+    body: dict[str, Any] = {
+        "id": record["id"],
+        "index": "pending",
+        "indexed": False,
+        "path": record["path"],
+        "sources": list(record.get("sources") or []),
+        "stored": str(record.get("stored") or "written"),
+        "tree": levels.TREE_PENDING,
+        "wrote": bool(record["wrote"]),
+    }
+    # The turn is in the lane: from here a fault is told as the state of what follows, never as a refusal, so
+    # the caller does not write the turn again.
     try:
-        page = layout.resolve(root, layout.tree_page(agent))
-        if system.kind(page) != "file":
-            from . import levels
-
-            levels.ensure_agent(root, agent)
+        body["tree"] = levels.agent_tree(
+            root, agent, wait_seconds=levels.TREE_WAIT_SECONDS if tree_wait is None else tree_wait
+        )
+    except MemoryForestError as exc:
+        body["tree_reason"] = exc.code
+    except OSError as exc:
+        body["tree_reason"] = door_refusal(exc).code
+    except Exception:
+        _log("forest: the turn was written and the agent's tree was not made")
+        body["tree_reason"] = "tree_failed"
+    try:
         outcome = search.update_files(root, [record["path"]], wait_seconds=0)
         body["indexed"] = bool(outcome.get("indexed"))
-        if not body["indexed"]:
+        if body["indexed"]:
+            body["index"] = "updated"
+        else:
             body["reason"] = str(outcome.get("reason") or "index_busy")
     except MemoryForestError as exc:
         body["reason"] = exc.code

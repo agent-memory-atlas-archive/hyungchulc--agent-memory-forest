@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import system
 from .errors import MemoryForestError
+from .names import NAME_MAX
 
 
 CONFIG_FILENAME: Final[str] = "forest.toml"
@@ -36,10 +37,12 @@ TOOL_OUTPUTS: Final[tuple[str, ...]] = ("omit", "keep")
 REQUIRED_TYPES: Final[tuple[str, ...]] = ("agent", "collection")
 
 _SLUG_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9][a-z0-9-]*")
-# The greatest length of an agent argument, and of an id that becomes a file name.
+# The UTF-8 byte-order mark. The settings reader accepts a file that begins with one, and a patch keeps it.
+BOM: Final[bytes] = b"\xef\xbb\xbf"
+# The greatest length of an agent's name, and of an id that becomes a file name (``names.NAME_MAX``).
 # A directory and `<id>_MTM.md` both have to fit where a file name may be 255
 # bytes. 200 leaves that room, including an `-agent` suffix.
-AGENT_TEXT_MAX: Final[int] = 200
+AGENT_TEXT_MAX: Final[int] = NAME_MAX
 _LANGUAGE_RE: Final[re.Pattern[str]] = re.compile(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 _HIDE_RE: Final[re.Pattern[str]] = re.compile(r"after-hyphen|last-(?P<count>[1-9][0-9]?)")
 _SHAPE_RE: Final[re.Pattern[str]] = re.compile(r"[NA][NA \-./]*[NA]|[NA]")
@@ -264,6 +267,9 @@ class AgentSettings:
     groups: tuple[AgentGroup, ...] = ()
     # Ids the settings name that cannot be a file name. A pass reports each and goes on.
     unplaceable: tuple[tuple[str, str], ...] = ()
+    # Values of the agents' tables that are wrong for one entry: (where, what was left out and why). The entry
+    # is left out, and everything else loads; `forest check` reports each.
+    left_out: tuple[tuple[str, str], ...] = ()
 
     def declared(self, agent_id: str) -> KnownAgent | None:
         return next((item for item in self.known if item.id == agent_id), None)
@@ -516,49 +522,68 @@ def _id_ok(value: str) -> bool:
 
 def _known_agents(
     key: str, raw: Any, source: str | None
-) -> tuple[tuple[KnownAgent, ...], list[tuple[str, str]]]:
-    """``[agents.known.<id>]`` tables. An id that cannot be a file name is reported, and the rest load."""
-    if not isinstance(raw, Mapping):
-        raise _error(key, "must be a table of agents, one `[agents.known.<id>]` each", source)
-    found = []
+) -> tuple[tuple[KnownAgent, ...], list[tuple[str, str]], list[tuple[str, str]]]:
+    """``[agents.known.<id>]`` tables. A value wrong for one entry is reported and left out; the rest load."""
     unplaceable: list[tuple[str, str]] = []
+    left_out: list[tuple[str, str]] = []
+    if not isinstance(raw, Mapping):
+        return (), unplaceable, [(key, "is not a table of agents, one `[agents.known.<id>]` each; it is left out")]
+    found = []
     for agent_id, table in raw.items():
         dotted = f"{key}.{agent_id}"
         if not _id_ok(str(agent_id)):
             unplaceable.append((dotted, str(agent_id)))
             continue
         if not isinstance(table, Mapping):
-            raise _error(dotted, "must be a table with `name` and `role`", source)
+            left_out.append((dotted, "is not a table with `name` and `role`; the agent is left out"))
+            continue
         values: dict[str, str] = {}
         for field_name, value in table.items():
+            where = f"{dotted}.{field_name}"
             if field_name not in ("name", "role"):
-                raise _error(f"{dotted}.{field_name}", "is not a known setting", source)
-            values[field_name] = " ".join(_string(f"{dotted}.{field_name}", value, source).split())
+                left_out.append((where, "is not a known setting; it is left out"))
+                continue
+            if field_name == "name":
+                from .names import bad_reason
+
+                why = bad_reason(value)
+                if why is not None:
+                    left_out.append((where, f"is not a name ({why}); it is left out"))
+                    continue
+                values["name"] = str(value).strip()
+                continue
+            if not isinstance(value, str) or any(ord(character) < 32 or ord(character) == 127 for character in value):
+                left_out.append((where, "is not text without control characters; it is left out"))
+                continue
+            values[field_name] = " ".join(value.split())
         found.append(KnownAgent(str(agent_id), **values))
-    return tuple(sorted(found, key=lambda item: item.id)), unplaceable
+    return tuple(sorted(found, key=lambda item: item.id)), unplaceable, left_out
 
 
 def _agent_groups(
     key: str, raw: Any, source: str | None, known: tuple[KnownAgent, ...]
-) -> tuple[tuple[AgentGroup, ...], list[tuple[str, str]]]:
-    """``[agents.groups.<id>]`` tables. A member id that cannot be a file name is reported, and the rest load.
+) -> tuple[tuple[AgentGroup, ...], list[tuple[str, str]], list[tuple[str, str]]]:
+    """``[agents.groups.<id>]`` tables. A value wrong for one entry is reported and left out; the rest load.
 
-    A member written as an agent's name is that agent's id (:func:`memory_forest.agents.find_agent`).
+    A member written as an agent's name is that agent's id (:func:`memory_forest.names.find`). A member
+    written twice, by id or by name, is counted once and reported.
     """
+    unplaceable: list[tuple[str, str]] = []
+    left_out: list[tuple[str, str]] = []
     if not isinstance(raw, Mapping):
-        raise _error(key, "must be a table of groups, one `[agents.groups.<id>]` each", source)
-    from . import agents as agents_mod
+        return (), unplaceable, [(key, "is not a table of groups, one `[agents.groups.<id>]` each; it is left out")]
+    from . import names
 
     rows = [(item.id, item.name) for item in known]
     found = []
-    unplaceable: list[tuple[str, str]] = []
     for group_id, table in raw.items():
         dotted = f"{key}.{group_id}"
         if not _id_ok(str(group_id)):
             unplaceable.append((dotted, str(group_id)))
             continue
         if not isinstance(table, Mapping):
-            raise _error(dotted, "must be a table with `members` and `open`", source)
+            left_out.append((dotted, "is not a table with `members` and `open`; the group is left out"))
+            continue
         members: list[str] = []
         open_group = False
         max_members: int | None = None
@@ -567,39 +592,46 @@ def _agent_groups(
             item_key = f"{dotted}.{field_name}"
             if field_name == "members":
                 if not isinstance(value, list):
-                    raise _error(item_key, "must be a list of strings", source)
-                seen: set[str] = set()
+                    left_out.append((item_key, "is not a list of names; the group has no members from it"))
+                    continue
                 for item in value:
-                    text = _string(item_key, item, source)
-                    if _id_ok(text):
-                        chosen = text
+                    if not isinstance(item, str) or names.bad_reason(item) is not None:
+                        left_out.append((item_key, f"holds {item!r}, which is not a name; it is left out"))
+                        continue
+                    hits = names.find(item, rows)
+                    if len(hits) == 1 and _id_ok(hits[0]):
+                        chosen = hits[0]
+                    elif not hits and _id_ok(item):
+                        chosen = item
                     else:
-                        hits = agents_mod.find_agent(text, rows)
-                        if len(hits) == 1 and _id_ok(hits[0]):
-                            chosen = hits[0]
-                        else:
-                            unplaceable.append((item_key, text))
-                            continue
-                    if chosen in seen:
-                        raise _error(item_key, "lists a value twice", source)
-                    seen.add(chosen)
+                        unplaceable.append((item_key, item))
+                        continue
+                    if chosen in members:
+                        left_out.append((item_key, f"lists `{chosen}` twice ({item!r}); it is counted once"))
+                        continue
+                    if chosen == group_id:
+                        left_out.append((item_key, "lists the group's own id, which is not a member; it is left out"))
+                        continue
                     members.append(chosen)
             elif field_name == "open":
                 if not isinstance(value, bool):
-                    raise _error(item_key, "must be true or false", source)
+                    left_out.append((item_key, "is not true or false; the group is closed"))
+                    continue
                 open_group = value
             elif field_name == "max_members":
-                max_members = _integer(item_key, value, source)
+                if type(value) is not int or value <= 0:
+                    left_out.append((item_key, "is not a positive integer; the group has no greatest number"))
+                    continue
+                max_members = value
             elif field_name == "source":
-                member_source = _string(item_key, value, source)
-                if member_source and not _id_ok(member_source):
-                    raise _error(item_key, f"{member_source!r} is not a slug", source)
+                if not isinstance(value, str) or (value and not _id_ok(value)):
+                    left_out.append((item_key, f"{value!r} is not a slug; the group has no source of members"))
+                    continue
+                member_source = value
             else:
-                raise _error(item_key, "is not a known setting", source)
-        if group_id in members:
-            raise _error(dotted, "the group's own id is not a member", source)
+                left_out.append((item_key, "is not a known setting; it is left out"))
         found.append(AgentGroup(str(group_id), tuple(members), open_group, max_members, member_source))
-    return tuple(sorted(found, key=lambda item: item.id)), unplaceable
+    return tuple(sorted(found, key=lambda item: item.id)), unplaceable, left_out
 
 
 _INTAKE_FIELDS: Final[tuple[str, ...]] = ("enabled", "agent", "include", "exclude", "import_earlier", "path")
@@ -655,7 +687,7 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
                 parse_identity_format(item, key=dotted, source=source)
                 for item in _strings(dotted, value, source)
             )
-        elif name == "agents" and key in ("known", "groups"):
+        elif name == "agents" and key in ("known", "groups", "orchestrators"):
             continue
         elif name == "intake" and key == "tools":
             values[key] = _intake_tools(dotted, value, source)
@@ -670,19 +702,29 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
         else:
             values[key] = _string(dotted, value, source)
     if name == "agents":
-        known_agents, bad_known = _known_agents(f"{name}.known", raw.get("known", {}), source)
-        groups, bad_groups = _agent_groups(f"{name}.groups", raw.get("groups", {}), source, known_agents)
-        kept_orchestrators = []
+        known_agents, bad_known, left_known = _known_agents(f"{name}.known", raw.get("known", {}), source)
+        groups, bad_groups, left_groups = _agent_groups(f"{name}.groups", raw.get("groups", {}), source, known_agents)
+        kept_orchestrators: list[str] = []
         bad_orchestrators: list[tuple[str, str]] = []
-        for item in values.get("orchestrators", defaults.orchestrators):
-            if _id_ok(item):
-                kept_orchestrators.append(item)
-            else:
+        left_orchestrators: list[tuple[str, str]] = []
+        listed = raw.get("orchestrators", list(defaults.orchestrators))
+        if not isinstance(listed, list):
+            left_orchestrators.append((f"{name}.orchestrators", "is not a list of ids; there is no main agent"))
+            listed = []
+        for item in listed:
+            if not isinstance(item, str):
+                left_orchestrators.append((f"{name}.orchestrators", f"holds {item!r}, which is not an id; it is left out"))
+            elif not _id_ok(item):
                 bad_orchestrators.append((f"{name}.orchestrators", item))
+            elif item in kept_orchestrators:
+                left_orchestrators.append((f"{name}.orchestrators", f"lists `{item}` twice; it is counted once"))
+            else:
+                kept_orchestrators.append(item)
         values["orchestrators"] = tuple(kept_orchestrators)
         values["known"] = known_agents
         values["groups"] = groups
         values["unplaceable"] = tuple([*bad_known, *bad_groups, *bad_orchestrators])
+        values["left_out"] = tuple([*left_known, *left_groups, *left_orchestrators])
     return replace(defaults, **values)
 
 
@@ -831,7 +873,8 @@ def settings_from_bytes(data: bytes, *, source: str) -> Config:
             next_step="report",
         )
     try:
-        text = data.decode("utf-8")
+        # An editor on some systems writes a byte-order mark first; the settings are the text after it.
+        text = data[len(BOM):].decode("utf-8") if data.startswith(BOM) else data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise MemoryForestError(
             "settings_invalid",
@@ -875,7 +918,7 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
         lines.append("")
         lines.append(f"[{name}]")
         for item in fields(section):
-            if name == "agents" and item.name in {"known", "groups", "unplaceable"}:
+            if name == "agents" and item.name in {"known", "groups", "unplaceable", "left_out"}:
                 continue
             if name == "intake" and item.name == "tools":
                 continue

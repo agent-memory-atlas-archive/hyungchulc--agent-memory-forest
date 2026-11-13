@@ -62,4 +62,4 @@ version = {attr = "memory_forest.__version__"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-memory_forest = ["phrases/*.json"]
+memory_forest = ["letters/*.json", "phrases/*.json"]

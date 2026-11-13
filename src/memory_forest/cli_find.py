@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from .cli import ForestCommand, _print_json, _print_lines, _shown, arg, forest_root
@@ -54,11 +56,18 @@ def cmd_index_reset(arguments: Any) -> int:
 
 
 # A flag that chooses whose pages a reader sees. Refused on an agent's door.
-# Anything else on an agent's command cannot change what the reader may see.
+# Anything else on an agent's command cannot change what the reader may see. ``root`` names the forest the
+# command runs on and ``json`` the form of its answer: a command door is the tools' scope for an agent its owner
+# lets run commands, not a wall (an agent that can run commands can read files).
 SCOPE_DESTS = frozenset({"named"})
 PLAIN_DESTS = frozenset({
     "caller",
     "group",
+    "help",
+    "http",
+    "json",
+    "root",
+    "turn_id",
     "limit",
     "lines",
     "origin",
@@ -83,6 +92,30 @@ def argument_dest(argument: Any) -> str:
     if flag.startswith("--"):
         return flag[2:].replace("-", "_")
     return flag.lstrip("-")
+
+
+def agent_door_flags(parser: Any = None) -> list[tuple[tuple[str, ...], str, tuple[str, ...]]]:
+    """Every flag of every agent's command: each command that takes ``--as-group``, with the flags every
+    command has (``--root``, ``--json``, ``--help``), as ``(command words, destination, option strings)``."""
+    import argparse
+
+    from .cli import build_forest_parser
+
+    found: list[tuple[tuple[str, ...], str, tuple[str, ...]]] = []
+
+    def walk(current: argparse.ArgumentParser, words: tuple[str, ...]) -> None:
+        children = [action for action in current._actions if isinstance(action, argparse._SubParsersAction)]
+        if not children:
+            if any(action.dest == "group" for action in current._actions):
+                for action in current._actions:
+                    found.append((words, action.dest, tuple(action.option_strings)))
+            return
+        for child in children:
+            for name, sub in child.choices.items():
+                walk(sub, (*words, name))
+
+    walk(parser if parser is not None else build_forest_parser(), ())
+    return found
 
 
 def flag_effect(dest: str) -> str:
@@ -153,82 +186,131 @@ def _caller(arguments: Any, *, required: bool = False, door: str = "") -> str | 
             )
         return reader
     resolved = groups.resolve_caller(forest_root(arguments), group, caller)
+    if resolved.wrote:
+        arguments._admitted = resolved.id
     return resolved.id
+
+
+@contextmanager
+def _admitted(arguments: Any) -> Iterator[None]:
+    """A refusal after this command admitted its caller to the group says so: that write took effect."""
+    try:
+        yield
+    except MemoryForestError as exc:
+        raise mcp.admitted_on(exc, getattr(arguments, "_admitted", "")) from None
+    except OSError as exc:
+        if not getattr(arguments, "_admitted", ""):
+            raise
+        raise mcp.admitted_on(search.edge_refusal(exc, forest_root(arguments)), arguments._admitted) from None
 
 
 def cmd_search(arguments: Any) -> int:
     _refuse_widening(arguments)
-    result = search.query(
-        forest_root(arguments),
-        arguments.words,
-        reader=_caller(arguments),
-        named=arguments.named or (),
-        limit=arguments.limit,
-        source=arguments.source,
-    )
+    reader = _caller(arguments)
+    with _admitted(arguments):
+        result = search.query(
+            forest_root(arguments),
+            arguments.words,
+            reader=reader,
+            named=arguments.named or (),
+            limit=arguments.limit,
+            source=arguments.source,
+        )
+    if getattr(arguments, "_admitted", ""):
+        result = {**result, "admitted": arguments._admitted}
     _show_pages(arguments, result)
     return 0
 
 
 def cmd_read(arguments: Any) -> int:
     _refuse_widening(arguments)
-    result = search.read(
-        forest_root(arguments),
-        arguments.path,
-        reader=_caller(arguments),
-        named=arguments.named or (),
-        lines=search.parse_lines(arguments.lines),
-        source=arguments.source,
-    )
+    reader = _caller(arguments)
+    with _admitted(arguments):
+        result = search.read(
+            forest_root(arguments),
+            arguments.path,
+            reader=reader,
+            named=arguments.named or (),
+            lines=search.parse_lines(arguments.lines),
+            source=arguments.source,
+        )
+    if getattr(arguments, "_admitted", ""):
+        result = {**result, "admitted": arguments._admitted}
     _show_pages(arguments, result)
     return 0
 
 
 def cmd_timeline_query(arguments: Any) -> int:
     _refuse_widening(arguments)
-    result = timeline.query(
-        forest_root(arguments),
-        arguments.phrase,
-        reader=_caller(arguments),
-        named=arguments.named or (),
-        limit=arguments.limit,
-        source=arguments.source,
-    )
+    reader = _caller(arguments)
+    with _admitted(arguments):
+        result = timeline.query(
+            forest_root(arguments),
+            arguments.phrase,
+            reader=reader,
+            named=arguments.named or (),
+            limit=arguments.limit,
+            source=arguments.source,
+        )
+    if getattr(arguments, "_admitted", ""):
+        result = {**result, "admitted": arguments._admitted}
     _show_pages(arguments, result)
     return 0
 
 
 def cmd_timeline_subject(arguments: Any) -> int:
     _refuse_widening(arguments)
-    result = timeline.subject(
-        forest_root(arguments),
-        arguments.subject_id,
-        reader=_caller(arguments),
-        named=arguments.named or (),
-        limit=arguments.limit,
-        source=arguments.source,
-    )
+    reader = _caller(arguments)
+    with _admitted(arguments):
+        result = timeline.subject(
+            forest_root(arguments),
+            arguments.subject_id,
+            reader=reader,
+            named=arguments.named or (),
+            limit=arguments.limit,
+            source=arguments.source,
+        )
+    if getattr(arguments, "_admitted", ""):
+        result = {**result, "admitted": arguments._admitted}
     _show_pages(arguments, result)
     return 0
 
 
 def cmd_navigate(arguments: Any) -> int:
     _refuse_widening(arguments)
-    result = search.navigate(
-        forest_root(arguments),
-        reader=_caller(arguments),
-        path=arguments.path,
-    )
+    reader = _caller(arguments)
+    with _admitted(arguments):
+        result = search.navigate(
+            forest_root(arguments),
+            reader=reader,
+            path=arguments.path,
+        )
+    if getattr(arguments, "_admitted", ""):
+        result = {**result, "admitted": arguments._admitted}
     _show_pages(arguments, result)
     return 0
 
 
 def _log_text() -> str:
-    """The turn on stdin, bounded the same way ``memory_log`` bounds a message."""
+    """The turn on stdin, bounded by the same number of bytes as ``memory_log``'s words.
+
+    A pipe has a deadline; a terminal has none, since a person types there.
+    """
     raw = getattr(sys.stdin, "buffer", None)
     if raw is None:
-        return sys.stdin.read()
-    return intake.read_bounded(raw, limit=mcp.MESSAGE_LIMIT, seconds=intake.LOG_READ_SECONDS)
+        text = sys.stdin.read(mcp.TURN_MAX_BYTES + 1)
+        if len(text.encode("utf-8", "surrogatepass")) > mcp.TURN_MAX_BYTES:
+            raise MemoryForestError(
+                "log_too_large",
+                f"The turn is longer than {mcp.TURN_MAX_BYTES} bytes. `forest log` did not store it.",
+                details={"limit": mcp.TURN_MAX_BYTES},
+                next_step="fix",
+            )
+        return text
+    terminal = bool(getattr(sys.stdin, "isatty", lambda: False)())
+    return intake.read_bounded(
+        raw, limit=mcp.TURN_MAX_BYTES, seconds=None if terminal else intake.LOG_READ_SECONDS
+    )
 
 
 def cmd_log(arguments: Any) -> int:
@@ -255,15 +337,19 @@ def cmd_log(arguments: Any) -> int:
             "`forest log --as-group` and `--agent`.",
             next_step="fix",
         )
-    body = mcp.record_turn(
-        forest_root(arguments),
-        reader,
-        _log_text(),
-        origin="interactive",
-        session=arguments.session or "cli",
-        door="cli",
-        group=getattr(arguments, "group", None) or "",
-    )
+    with _admitted(arguments):
+        body = mcp.record_turn(
+            forest_root(arguments),
+            reader,
+            _log_text(),
+            origin="interactive",
+            session=arguments.session or "cli",
+            door="cli",
+            group=getattr(arguments, "group", None) or "",
+            turn_id=arguments.turn_id,
+        )
+    if getattr(arguments, "_admitted", ""):
+        body["admitted"] = arguments._admitted
     # The turn is written: an answer that cannot be masked keeps its fixed words, never a refusal.
     try:
         shown = _shown(body)
@@ -274,7 +360,8 @@ def cmd_log(arguments: Any) -> int:
         return 0
     lines = [f"path: {shown['path']}"] if "path" in shown else []
     lines += [f"wrote: {str(shown['wrote']).lower()}", f"indexed: {str(shown['indexed']).lower()}"]
-    lines += [f"{key}: {shown[key]}" for key in ("reason", "withheld") if shown.get(key)]
+    lines += [f"{key}: {shown[key]}" for key in ("stored", "tree", "index", "reason", "withheld", "admitted")
+              if shown.get(key)]
     sys.stdout.write("\n".join(lines) + "\n")
     return 0
 
@@ -360,7 +447,7 @@ _READER = arg("--as", dest="reader", default=None, help="the reader id, from the
 _GROUP = arg("--as-group", dest="group", default=None, help="one connection shared by a group of the owner's agents")
 _CALLER = arg("--agent", dest="caller", default=None, help="the caller's own name, resolved only inside --as-group")
 _NAMED = arg("--named", action="append", default=None, help="an agent this task names; refused on an agent's door")
-_SOURCE = arg("--source", default=None, help="one group or tool of this agent's turns")
+_SOURCE = arg("--source", default=None, help="one source of the turns: group:<id>, door:<name> or adapter:<name>")
 _LIMIT = arg("--limit", type=int, default=10, help="how many pages to return")
 # The help of every command an agent runs names the table of refusals and their next moves.
 _REFUSALS = (
@@ -473,6 +560,8 @@ COMMANDS: list[ForestCommand] = [
             arg("--role", default=None, help="refused: the command sets the role"),
             arg("--origin", default=None, help="refused: the command sets the origin"),
             arg("--session", default=None, help="the session name; the role and the origin stay the command's"),
+            arg("--turn-id", dest="turn_id", default=None,
+                help="your own id for this turn, when you may send it twice: the same id in the session is stored once"),
             _READER,
             _GROUP,
             _CALLER,

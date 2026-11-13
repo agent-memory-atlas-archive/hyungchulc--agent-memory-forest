@@ -343,41 +343,58 @@ def _unplaceable(root: str | os.PathLike[str], wanted: list[str] | None) -> list
     return found
 
 
-def ensure_agent(root: str | os.PathLike[str], agent_id: str) -> bool:
-    """Make this one agent's tree. This is not a pass over the forest.
+# How long the first lane write of an agent waits for the writer lock to make that agent's tree. A lock held
+# longer leaves the tree pending: the next write of that agent, or the level pass, makes it.
+TREE_WAIT_SECONDS = 2.0
+TREE_MADE = "made"
+TREE_THERE = "already there"
+TREE_PENDING = "pending"
+TREE_NONE = "none"
 
-    The lane write of ``memory_log`` and ``forest log`` calls this for the
-    agent that just wrote, and for no other subject. A tree that is already
-    there is left as it is.
+
+def agent_tree(root: str | os.PathLike[str], agent_id: str, *, wait_seconds: float = TREE_WAIT_SECONDS) -> str:
+    """Make this one agent's tree, in one step that accepts another process having made it.
+
+    ``made``: this call made it. ``already there``: a tree page or a registry line of this id was there,
+    whoever made it. ``none``: the settings give this agent no tree (``agents.auto_create`` false and the
+    agent not declared, or an id that cannot be a tree). The writer lock is waited for up to ``wait_seconds``;
+    a lock held longer is ``lock_busy`` for the caller to tell as ``pending``. This is not a pass over the
+    forest: the lane write of ``memory_log`` and ``forest log`` calls it for the agent that just wrote.
     """
     safe = require_real_root(root)
     if not agents.file_id_ok(agent_id):
-        return False
+        return TREE_NONE
     if system.kind(layout.resolve(safe, layout.tree_page(agent_id))) == "file":
-        return False
+        return TREE_THERE
     config = load_config(safe)
     if config.agents.declared(agent_id) is None and not config.agents.auto_create:
-        return False
+        return TREE_NONE
 
-    def build(plan: Plan) -> bool:
+    def build(plan: Plan) -> str:
         if plan.find_subject(agent_id) is not None:
-            return False
+            return TREE_THERE
         known = plan.config.agents.declared(agent_id)
         areas = [
             tree for tree in plan.trees()
             if layout.tree_page(tree) not in {ref.home for ref in plan.subjects() if ref.type == registry.AGENT_TYPE}
         ]
         if agents.why_invalid(agent_id, plan.config, areas) is not None:
-            return False
-        return move.ensure_agent(
+            return TREE_NONE
+        made = move.ensure_agent(
             plan,
             agent_id,
             name=known.name if known and known.name else None,
             role=known.role if known and known.role else None,
         )
+        return TREE_MADE if made else TREE_THERE
 
-    report = run(safe, build, why=f"the first lane write of `{agent_id}`")
-    return bool(report.get("result"))
+    report = run(safe, build, why=f"the first lane write of `{agent_id}`", wait_seconds=wait_seconds)
+    return str(report.get("result") or TREE_THERE)
+
+
+def ensure_agent(root: str | os.PathLike[str], agent_id: str) -> bool:
+    """Make this one agent's tree (:func:`agent_tree`); true when this call made it."""
+    return agent_tree(root, agent_id, wait_seconds=0) == TREE_MADE
 
 
 def apply(

@@ -372,6 +372,7 @@ class Fix:
     right: Call
     files: Mapping[str, str | bytes | None] = field(default_factory=dict)
     beside: Mapping[str, str | bytes | Callable[[Path, Path], str]] = field(default_factory=dict)
+    make: Callable[[Path, Path], None] | None = None  # the forest as it is, where files cannot write it
 
 
 @dataclass(frozen=True)
@@ -1054,6 +1055,12 @@ def _hook_payload(data: bytes) -> Callable[[Path, Path], Any]:
     return lambda root, base: cli_intake.read_hook_payload(io.BytesIO(data))
 
 
+def _first_keyed_turn(root: Path) -> None:
+    """till-bot's turn with its own turn id ``tray-count-1``, written as `forest log --turn-id` writes it."""
+    mcp.record_turn(root, "till-bot", TURN.decode(), origin="interactive", session="cli", door="cli",
+                    turn_id="tray-count-1")
+
+
 def _owned(**options: str) -> Callable[[Path, Path], Any]:
     """``intake.append_owned``: one turn of till-bot's lane, with the role and origin the caller gives."""
     return lambda root, base: intake.append_owned(root, "till-bot", TURN.decode(), **options)
@@ -1102,6 +1109,14 @@ _add(FIX_ROWS, {
     "agent_name_invalid": Fix("find", forest("read", FLOOR_PAGE, "--as-group", "bakery-bots", "--agent", "rye" * 70),
                               forest("read", FLOOR_PAGE, "--as-group", "bakery-bots", "--agent", "till-bot"),
                               files={"forest.toml": BAKERY_BOTS}),
+    # A source is a kind and a name, and one of the reader's own: till-bot's lane came through the jsonl adapter.
+    "source_unknown": Fix("find", forest("search", "trays", "--as", "till-bot", "--source", "night-shift"),
+                          forest("search", "trays", "--as", "till-bot", "--source", "adapter:jsonl")),
+    # The caller's own turn id, already a turn of the session with other words.
+    "turn_id_reused": Fix("find", forest("log", "--as", "till-bot", "--turn-id", "tray-count-1",
+                                         stdin=b"Till Bot counted the oat trays.\n"),
+                          forest("log", "--as", "till-bot", "--turn-id", "tray-count-2", stdin=TURN),
+                          make=lambda root, base: _first_keyed_turn(root)),
     # `forest log` (cli_find.py, intake.py)
     "log_text_from_stdin": Fix("find", forest("log", "--as", "till-bot", "Till Bot counted the rye trays."),
                                forest("log", "--as", "till-bot", stdin=TURN)),
@@ -1459,6 +1474,8 @@ class FixMoveTests(unittest.TestCase):
         try:
             scratch.make(row.forest, row.files, row.beside)
             root, base = scratch.root, scratch.base
+            if row.make is not None:
+                row.make(root, base)
             before = _snapshot(root)
             wrong = row.wrong.run(root, base)
             self.assertIsNotNone(wrong.refused, f"the wrong call was answered: {wrong.said}")

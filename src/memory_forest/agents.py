@@ -27,12 +27,14 @@ from pathlib import Path
 from typing import Any, Final
 
 from . import layout, registry, system
+from . import names as name_rules
 from .config import AGENT_TEXT_MAX, Config, KnownAgent
 from .errors import MemoryForestError
 from .registry import Problem
 
 CONFIG_PATH: Final[str] = "forest.toml"
 INVALID: Final[str] = "agent_id_invalid"
+SETTING_INVALID: Final[str] = "agent_setting_invalid"
 WITHOUT_TREE: Final[str] = "agent_lane_without_tree"
 SETTINGS_DIFFER: Final[str] = "agent_settings_differ"
 
@@ -94,36 +96,6 @@ def file_id_ok(agent_id: str) -> bool:
     return layout.is_slug(agent_id) and len(agent_id) <= AGENT_TEXT_MAX
 
 
-def letters(text: str) -> str:
-    """The letters of ``text``, ignoring case, spaces, hyphens and underscores."""
-    return "".join(character for character in text.casefold() if character not in " -_")
-
-
-def find_agent(given: str, rows: Iterable[tuple[str, str]]) -> list[str]:
-    """The ids ``given`` names, in the order of ``rows``.
-
-    A match is an id, a name exactly, or the same letters apart from case, spaces,
-    hyphens and underscores. Nothing looser. The settings parser, a group
-    connection, a command's ``--agent`` and a reader of an app's member list all
-    use this. An empty list is no agent. More than one id is ambiguous.
-    """
-    if not isinstance(given, str):
-        return []
-    slug = layout.slugify(given)
-    folded = letters(given)
-    exact: list[str] = []
-    folded_hits: list[str] = []
-    for agent_id, name in rows:
-        if given == agent_id or (name and given == name) or (slug and slug == agent_id):
-            if agent_id not in exact:
-                exact.append(agent_id)
-            continue
-        if folded and (folded == letters(agent_id) or (name and folded == letters(name))):
-            if agent_id not in folded_hits:
-                folded_hits.append(agent_id)
-    return exact or folded_hits
-
-
 # Kinds of taken id that do not come from a table. Subject types come from
 # ``subjects.types``; each non-agent type is ``subject:<type>``.
 UNTABLED_ID_KINDS: Final[tuple[str, ...]] = (
@@ -162,9 +134,10 @@ def taken(root: str | os.PathLike[str], config: Config) -> dict[str, list[str]]:
             bucket.append(kind)
 
     add(config.owner.id, "owner-id")
-    add(layout.slugify(config.owner.name), "owner-name")
+    # The owner's name and aliases hold the id a new agent of that name would be offered (``names.make_id``).
+    add(name_rules.make_id(config.owner.name), "owner-name")
     for alias in config.owner.aliases:
-        add(layout.slugify(alias), "owner-alias")
+        add(name_rules.make_id(alias), "owner-alias")
     if config.subjects.system_id:
         add(config.subjects.system_id, "system")
     add(registry.ABOUT_NONE, "reserved")
@@ -215,21 +188,9 @@ def kinds_of(
     return found
 
 
-def free_id(slug: str, taken_map: Mapping[str, list[str]]) -> str:
-    """An id for a new agent whose slug is already something that is not an agent.
-
-    The slug, then ``<slug>-agent``, then ``<slug>-agent-<n>``. Empty when none
-    of those fit in a file name.
-    """
-    number = 1
-    while number < 1000:
-        candidate = f"{slug}-agent" if number == 1 else f"{slug}-agent-{number}"
-        if len(candidate) > AGENT_TEXT_MAX:
-            return ""
-        if not kinds_of(candidate, taken_map):
-            return candidate
-        number += 1
-    return ""
+def new_id(name: str, taken_map: Mapping[str, list[str]]) -> str:
+    """The id of a new agent named ``name``, made once (``names.new_id``): never an id something holds."""
+    return name_rules.new_id(name, lambda candidate: kinds_of(candidate, taken_map))
 
 
 def _registry(root: str | os.PathLike[str], config: Config) -> registry.Registry | None:
@@ -273,6 +234,8 @@ def problems(root: str | os.PathLike[str], config: Config, subjects: Subjects) -
     agent's id, or a declared agent registered as a subject of another type.
     ``agent_lane_without_tree``: with ``agents.auto_create`` false, a lane
     whose agent is neither declared nor registered.
+    ``agent_setting_invalid``: a value of the agents' tables wrong for one
+    entry; that entry was left out and the rest of the settings loaded.
     """
     found: list[Problem] = []
     declared = {item.id for item in config.agents.known}
@@ -281,6 +244,8 @@ def problems(root: str | os.PathLike[str], config: Config, subjects: Subjects) -
             INVALID, where, None,
             f"`{agent_id}` cannot be placed; it is not an id a file can be named, and the rest of the pass goes on",
         ))
+    for where, why in config.agents.left_out:
+        found.append(Problem(SETTING_INVALID, CONFIG_PATH, None, f"`{where}` {why}; everything else loads"))
     for known in config.agents.known:
         reason = why_invalid(known.id, config, subjects.area_trees)
         kind = subjects.types.get(known.id)
@@ -334,8 +299,9 @@ def to_fill(known: KnownAgent | None, agent_id: str, name: str, role: str) -> di
     if known is None:
         return {}
     fills = {}
+    # A name not given is the id itself (the literal id, not another name of the same key).
     if (known.name and registry.normalize_name(name) == registry.normalize_name(agent_id)
-            and registry.normalize_name(known.name) != registry.normalize_name(agent_id)):
+            and not name_rules.same(known.name, name)):
         fills["name"] = " ".join(known.name.split())
     if known.role and _role_unset(role):
         fills["role"] = " ".join(known.role.split())
@@ -352,7 +318,7 @@ def settings_differ(config: Config, names: Mapping[str, str], roles: Mapping[str
             continue
         name = names[known.id]
         if (known.name and registry.normalize_name(name) != registry.normalize_name(known.id)
-                and registry.normalize_name(known.name) != registry.normalize_name(name)):
+                and not name_rules.same(known.name, name)):
             found.append((known.id, f"the settings name `{known.id}` \"{known.name}\", its registry line "
                                     f"\"{name}\" (`forest move rename {known.id} --name …`, or change the settings)"))
         role = roles.get(known.id, "")

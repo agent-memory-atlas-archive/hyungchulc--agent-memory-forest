@@ -27,16 +27,17 @@ import json
 import os
 import re
 import select
+import secrets
 import threading
 import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import credentials, layout, numbers
+from . import credentials, layout, numbers, sources, system
 from .config import AGENT_TEXT_MAX
 from . import adapters as adapter_loader
 from .adapters.common import (
@@ -59,6 +60,11 @@ LOCK_NAME = "intake"
 LOCK_WAIT_SECONDS = 0.2
 # ``memory_log``, reread and rename-agent share this budget between the in-process turn and the file lock.
 LOG_WAIT_SECONDS = 2.0
+# Two writes of the same words, by the same role in one lane and session, through two different sources, are
+# one turn when their own times lie within this many seconds: the line carries both sources.
+TURN_JOIN_SECONDS = 120.0
+# A caller's own id for a turn is text of at most this many characters.
+TURN_ID_MAX = 200
 # Threads of this process take the intake lock one at a time. ``hold_lock`` refuses a second take in the
 # same process, and the HTTP server runs one thread per request.
 _INTAKE_TURN = threading.Lock()
@@ -204,8 +210,8 @@ def _discover(adapter: Any, settings: IntakeToolSettings) -> list[Transcript]:
 LOG_READ_SECONDS = 30.0
 
 
-def read_bounded(stream: Any, *, limit: int, seconds: float) -> str:
-    """Read at most ``limit`` bytes, and stop when ``seconds`` pass with no end.
+def read_bounded(stream: Any, *, limit: int, seconds: float | None) -> str:
+    """Read at most ``limit`` bytes, and stop when ``seconds`` pass with no end (None: no deadline).
 
     The bytes are not repaired. A text that is not UTF-8 is ``invalid_utf8``.
     More than ``limit`` bytes is ``log_too_large``. A stream that does not end
@@ -213,26 +219,24 @@ def read_bounded(stream: Any, *, limit: int, seconds: float) -> str:
     """
     chunks: list[bytes] = []
     total = 0
-    deadline = time.monotonic() + seconds
+    deadline = None if seconds is None else time.monotonic() + seconds
+
+    def timed_out() -> MemoryForestError:
+        return MemoryForestError(
+            "log_read_timeout",
+            f"`forest log` stopped after {seconds:g} seconds because stdin did not end. "
+            "The turn was stored nowhere.",
+            details={"seconds": seconds},
+            next_step="retry",
+        )
+
     while total <= limit:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise MemoryForestError(
-                "log_read_timeout",
-                f"`forest log` stopped after {seconds:g} seconds because stdin did not end. "
-                "The turn was stored nowhere.",
-                details={"seconds": seconds},
-                next_step="retry",
-            )
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise timed_out()
         chunk = _read_some(stream, min(65536, limit + 1 - total), remaining)
         if chunk is None:
-            raise MemoryForestError(
-                "log_read_timeout",
-                f"`forest log` stopped after {seconds:g} seconds because stdin did not end. "
-                "The turn was stored nowhere.",
-                details={"seconds": seconds},
-                next_step="retry",
-            )
+            raise timed_out()
         if chunk == b"":
             break
         chunks.append(chunk)
@@ -254,8 +258,8 @@ def read_bounded(stream: Any, *, limit: int, seconds: float) -> str:
         ) from exc
 
 
-def _read_some(stream: Any, size: int, seconds: float) -> bytes | None:
-    """Up to ``size`` bytes, or ``b""`` at the end, or None when ``seconds`` pass with nothing."""
+def _read_some(stream: Any, size: int, seconds: float | None) -> bytes | None:
+    """Up to ``size`` bytes, or ``b""`` at the end, or None when ``seconds`` pass with nothing (None: wait)."""
     fileno = getattr(stream, "fileno", None)
     if callable(fileno):
         try:
@@ -281,13 +285,17 @@ def append_owned(
     at: datetime | None = None,
     door: str = "mcp",
     group: str = "",
+    turn_id: str | None = None,
 ) -> dict[str, Any]:
     """Append one turn to ``agent``'s raw lane. The caller has already chosen role and origin.
 
-    The id is a hash of the session, the role and the stored text. It does not
-    depend on the door or on the clock, so the same turn through ``forest log``
-    and ``memory_log`` is one line. ``source`` names the door and, when the
-    call came through a group, that group.
+    Every call is a turn of its own, with an id of its own: the same words twice are two lines. ``turn_id`` is
+    the caller's own id for the turn: the same id in the same lane and session (looked for on the day of the
+    call and the day before) is the same turn, stored once, and the call answers ``already stored`` with the
+    stored id; the same id with other words is ``turn_id_reused``. Without one, a turn that came through a
+    **different source** (``sources.of_call``), with the same role and words in the same lane and session,
+    within :data:`TURN_JOIN_SECONDS` of the line's own time, is that line's turn: the line gains this source
+    after its own, and the call answers ``joined``. ``stored`` says which of the three happened.
     """
     if not layout.is_slug(agent) or len(agent) > AGENT_TEXT_MAX:
         raise MemoryForestError("intake_agent_invalid", f"{agent} is not a slug.", details={"agent": agent})
@@ -299,6 +307,16 @@ def append_owned(
         )
     if not str(text).strip():
         raise MemoryForestError("intake_text_empty", "A turn needs text.")
+    if turn_id is not None and (
+        not isinstance(turn_id, str) or not turn_id.strip() or len(turn_id) > TURN_ID_MAX
+        or any(ord(character) < 32 or ord(character) == 127 for character in turn_id)
+    ):
+        raise MemoryForestError(
+            "arguments_invalid",
+            f"A turn id is the caller's own id for the turn: text of at most {TURN_ID_MAX} characters, "
+            "without control characters.",
+            next_step="fix",
+        )
     config = load_config(root)
     moment = at or datetime.now(timezone.utc)
     if moment.tzinfo is None:
@@ -323,21 +341,112 @@ def append_owned(
         source["door"] = door_name
         if group:
             source["group"] = group
-    record["id"] = hashlib.sha256(
-        "\0".join((str(record["session"]), str(record["role"]), str(record["text"]))).encode("utf-8")
-    ).hexdigest()[:20]
+    label = sources.of_call(door_name, group)
+    record["sources"] = [label]
+    if turn_id is not None:
+        record["turn"] = turn_id
+    record["id"] = secrets.token_hex(10)
     day = _day(record["at"], config)
     with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="memory_log"):
-        if _id_taken(root, agent, day, record["id"], full=True):
-            record["path"] = f"{layout.ISTM}/{agent}/{day}.jsonl"
-            record["wrote"] = False
-            return record
+        before = sources.lanes_before(root, agent)
+        found = _same_turn(root, agent, record, config)
+        if found is not None:
+            found_day, number, stored = found
+            if turn_id is not None and _words(stored.get("text")) != _words(record["text"]):
+                raise MemoryForestError(
+                    "turn_id_reused",
+                    "That turn id is already a turn of this session with other words. Give this turn its own "
+                    "turn id, or send the same words again.",
+                    details={"id": str(stored.get("id") or ""), "turn": turn_id},
+                    next_step="fix",
+                )
+            had = sources.of_record(stored)
+            joined = label not in had
+            if joined:
+                _add_source(root, agent, found_day, number, stored, [*had, label])
+            sources.note(root, agent, [label], before)
+            kept = dict(stored)
+            kept["sources"] = [*had, label] if joined else had
+            kept["path"] = f"{layout.ISTM}/{agent}/{found_day}.jsonl"
+            kept["wrote"] = False
+            kept["stored"] = "already stored" if turn_id is not None else "joined"
+            return kept
         relative = f"{layout.ISTM}/{agent}/{day}.jsonl"
         _append(root, relative, _encode(record))
         _note_ids(root, agent, day, [record["id"]])
+        sources.note(root, agent, [label], before)
     record["path"] = relative
     record["wrote"] = True
+    record["stored"] = "written"
     return record
+
+
+def _words(text: object) -> str:
+    """A turn's words for comparing two writes of it: the text without the white space around it (a line read
+    from standard input ends in a line break that a tool's text does not have)."""
+    return str(text or "").strip()
+
+
+def _lane_records(root: str | os.PathLike[str], agent: str, day: str) -> list[tuple[int, dict[str, Any]]]:
+    """Each complete line of one day's lane file that is a JSON object, with its index among the lines."""
+    try:
+        data = system.read_bytes(_lane_path(root, agent, day))
+    except (system.Absent, system.Link, system.NotAFile):
+        return []
+    found = []
+    for number, raw in enumerate(data.split(b"\n")[:-1]):
+        value = parse_object(raw)
+        if isinstance(value, dict):
+            found.append((number, value))
+    return found
+
+
+def _same_turn(
+    root: str | os.PathLike[str], agent: str, record: Mapping[str, Any], config: Config
+) -> tuple[str, int, dict[str, Any]] | None:
+    """The stored line that is the turn ``record`` is, or None (:func:`append_owned`)."""
+    moment = datetime.fromisoformat(str(record["at"]))
+    keyed = isinstance(record.get("turn"), str)
+    earliest = moment - (timedelta(days=1) if keyed else timedelta(seconds=TURN_JOIN_SECONDS))
+    days = list(dict.fromkeys([_day(earliest.isoformat(), config), _day(moment.isoformat(), config)]))
+    label = record["sources"][0]
+    best: tuple[str, int, dict[str, Any]] | None = None
+    for day in days:
+        for number, stored in _lane_records(root, agent, day):
+            if stored.get("session") != record["session"]:
+                continue
+            if keyed:
+                if stored.get("turn") == record["turn"]:
+                    return day, number, stored
+                continue
+            if stored.get("role") != record["role"] or _words(stored.get("text")) != _words(record["text"]):
+                continue
+            if label in sources.of_record(stored):
+                continue
+            try:
+                then = datetime.fromisoformat(str(stored.get("at")))
+            except ValueError:
+                continue
+            if then.tzinfo is None:
+                then = then.replace(tzinfo=timezone.utc)
+            if abs((moment - then).total_seconds()) <= TURN_JOIN_SECONDS:
+                best = (day, number, stored)
+    return best
+
+
+def _add_source(
+    root: str | os.PathLike[str], agent: str, day: str, number: int, stored: Mapping[str, Any], listed: list[str]
+) -> None:
+    """Write one lane line again with ``listed`` as its sources; every other byte of the file stays."""
+    path = _lane_path(root, agent, day)
+    data = system.read_bytes(path)
+    lines = data.split(b"\n")
+    changed = dict(stored)
+    changed["sources"] = listed
+    lines[number] = _encode(changed).rstrip("\n").encode("utf-8")
+    rebuilt = b"\n".join(lines)
+    atomic_write(path, rebuilt)
+    _write_ids(root, agent, day, _ids_in(rebuilt), len(rebuilt))
 
 
 def status(root: str | os.PathLike[str]) -> Result:
@@ -793,11 +902,13 @@ def _one(
     try:
         for relative, group in by_file.items():
             payload = "".join(_encode(item) for item in group)
+            before = sources.lanes_before(root, agent)
             _checkpoint("append")
             _append(root, relative, payload)
             written += len(group)
             day = Path(relative).stem
             _note_ids(root, agent, day, [item["id"] for item in group])
+            sources.note(root, agent, [label for item in group for label in sources.of_record(item)], before)
             id_cache.setdefault((agent, day), set()).update(item["id"] for item in group)
         _remember_batch(root, adapter.name, transcript, cursor, batch, internal=False)
     except Exception as exc:
