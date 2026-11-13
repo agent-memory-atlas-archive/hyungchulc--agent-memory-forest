@@ -64,49 +64,30 @@ def _caller(arguments: Any, *, required: bool = False) -> str | None:
         raise MemoryForestError(
             "reader_conflict",
             "Pass --as or --as-group, not both.",
-            next_step="run",
-            command="forest search --as <agent>",
+            next_step="fix",
         )
     if caller and not group:
         raise MemoryForestError(
             "agent_needs_group",
             "--as is the reader. A caller's name belongs with --as-group, and it cannot change --as.",
-            next_step="run",
-            command="forest search --as <agent>",
+            next_step="fix",
         )
     if group and not caller:
         raise MemoryForestError(
             "agent_unset",
             "Name the caller with --agent.",
-            next_step="run",
-            command="forest search --as-group <group> --agent <name>",
+            next_step="fix",
         )
     if not group:
         if required and not reader:
             raise MemoryForestError(
                 "log_agent_unset",
                 "Name the agent with --as, or the group and the caller with --as-group and --agent.",
-                next_step="run",
-                command="forest log --as <agent>",
+                next_step="fix",
             )
         return reader
     resolved = groups.resolve_caller(forest_root(arguments), group, caller)
     return resolved.id
-
-
-def _with_next(exc: MemoryForestError, command: str) -> MemoryForestError:
-    if exc.next_step:
-        return exc
-    return MemoryForestError(
-        exc.code,
-        exc.message,
-        details=exc.details,
-        next_step="run",
-        command=command,
-        after_seconds=exc.after_seconds,
-        waited_seconds=exc.waited_seconds,
-        stop_after_seconds=exc.stop_after_seconds,
-    )
 
 
 def cmd_search(arguments: Any) -> int:
@@ -169,42 +150,33 @@ def cmd_navigate(arguments: Any) -> int:
 
 def cmd_log(arguments: Any) -> int:
     """The command-line twin of ``memory_log``. The text is stdin, never an argument."""
-    command = "forest log --as <agent>"
     if arguments.text or arguments.text_flag is not None:
         raise MemoryForestError(
             "log_text_from_stdin",
-            "The turn is read from stdin, never from an argument. An argument would show in the process list.",
-            next_step="run",
-            command=command,
+            "The turn is read from stdin, never from an argument. An argument would show in the process list. "
+            "Write the turn on stdin of `forest log --as <agent>`.",
+            next_step="fix",
         )
     if arguments.role is not None or arguments.origin is not None:
         raise MemoryForestError(
             "log_caller_fields",
-            "The command sets the role and the origin. A caller cannot.",
-            next_step="run",
-            command=command,
+            "The command sets the role and the origin. A caller cannot. Leave out --role and --origin.",
+            next_step="fix",
         )
-    try:
-        reader = _caller(arguments, required=True)
-    except MemoryForestError as exc:
-        raise _with_next(exc, command) from exc
+    reader = _caller(arguments, required=True)
     if not reader:
         raise MemoryForestError(
             "log_agent_unset",
             "Name the agent with --as, or the group and the caller with --as-group and --agent.",
-            next_step="run",
-            command=command,
+            next_step="fix",
         )
-    try:
-        body = mcp.record_turn(
-            forest_root(arguments),
-            reader,
-            sys.stdin.read(),
-            origin="interactive",
-            session=arguments.session or "cli",
-        )
-    except MemoryForestError as exc:
-        raise _with_next(exc, command) from exc
+    body = mcp.record_turn(
+        forest_root(arguments),
+        reader,
+        sys.stdin.read(),
+        origin="interactive",
+        session=arguments.session or "cli",
+    )
     if arguments.json:
         _print_json(body)
         return 0

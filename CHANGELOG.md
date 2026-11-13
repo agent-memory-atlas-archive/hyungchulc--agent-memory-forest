@@ -13,6 +13,14 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- Every refusal code the package can raise is in one table, `errors.REFUSALS`, and in
+  `docs/refusals.md`, each with its next move. A test reads every module's syntax tree and proves the
+  codes raised, the table and the document are the same set, both ways; a code that is not a literal
+  is followed to its callers or named with its values. Every refusal now has `next`: `run`, `retry`,
+  `report` or the new `fix` (the call itself is wrong). `tool_failed` is `report` and `out_of_scope`
+  is `fix`. A caller's wrong argument to `forest log`, `forest search` or a group connection is `fix`,
+  and no `command` holds prose. The command line's own filesystem and internal failures are refusals
+  of the same shape, printed as JSON with `--json`.
 - One function reads the state of the derived folder (`sound`, `masking_changed`, `missing`,
   `damaged`, `pointer_damaged`, `wal`, and whether the folder can be written), and every command
   answers from it: `index status`, `build`, `reset`, `search`, the timeline and the MCP tools agree,

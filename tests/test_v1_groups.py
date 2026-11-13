@@ -163,8 +163,8 @@ class GroupResolutionTests(ForestTestCase):
                 self.assertEqual(caught.exception.code, "agent_near_miss")
                 self.assertEqual(caught.exception.details["agent"], "kiln-bot")
                 self.assertEqual(caught.exception.details["name"], "Kiln Bot")
-                self.assertEqual(caught.exception.next_step, "run")
-                self.assertTrue(caught.exception.command)
+                self.assertEqual(caught.exception.next_step, "fix")
+                self.assertIn("Pass agent kiln-bot", caught.exception.message)
         self.assertEqual((root / "forest.toml").read_bytes(), before)
 
         with self.assertRaises(MemoryForestError) as stranger:
@@ -175,7 +175,7 @@ class GroupResolutionTests(ForestTestCase):
             sorted((row["id"], row["name"]) for row in listed),
             [("kiln-bot", "Kiln Bot"), ("ledger-bot", "Ledger Bot")],
         )
-        self.assertEqual(stranger.exception.next_step, "run")
+        self.assertEqual(stranger.exception.next_step, "fix")
 
         with self.assertRaises(MemoryForestError) as outside:
             groups.resolve_caller(root, "night-kiln", "Post Bot")
@@ -408,7 +408,7 @@ class GroupConnectionTests(ForestTestCase):
         self.assertTrue(stranger["result"]["isError"])
         body = _tool_body(stranger)
         self.assertEqual(body["code"], "agent_not_in_group")
-        self.assertEqual(body["next"], "run")
+        self.assertEqual(body["next"], "fix")
         self.assertIn("till-bot", json.dumps(body["details"]))
         self.assertIn("Till Bot", json.dumps(body["details"]))
 
@@ -550,14 +550,14 @@ class GroupCommandTests(ForestTestCase):
         self.assertEqual(leaked[0], 2)
         error = json.loads(leaked[1])["error"]
         self.assertEqual(error["code"], "log_text_from_stdin")
-        self.assertEqual(error["next"], "run")
-        self.assertTrue(error["command"])
+        self.assertEqual(error["next"], "fix")
+        self.assertIn("stdin", error["message"])
         self.assertNotIn("should not land from argv", (self.root / "06 istm" / "till-bot" / "2051-03-02.jsonl").read_text(encoding="utf-8"))
         flagged = self._cli("log", "--as", "till-bot", "--text", "also not an argument")
         self.assertEqual(json.loads(flagged[1])["error"]["code"], "log_text_from_stdin")
         role = self._cli("log", "--as", "till-bot", "--role", "owner", stdin="nope\n")
         self.assertEqual(json.loads(role[1])["error"]["code"], "log_caller_fields")
-        self.assertEqual(json.loads(role[1])["error"]["next"], "run")
+        self.assertEqual(json.loads(role[1])["error"]["next"], "fix")
 
         logged = self._cli(
             "log",

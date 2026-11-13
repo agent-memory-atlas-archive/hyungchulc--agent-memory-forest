@@ -249,16 +249,14 @@ def run(
         raise MemoryForestError(
             "mcp_reader_conflict",
             "Pass --as or --as-group, not both. A tool argument cannot change which one it is.",
-            next_step="run",
-            command="forest mcp --as <agent>",
+            next_step="fix",
         )
     if group is not None:
         if not layout.is_slug(group):
             raise MemoryForestError(
                 "mcp_group_invalid",
                 "Name the group with --as-group. The group id is a slug.",
-                next_step="run",
-                command="forest mcp --as-group <group>",
+                next_step="fix",
             )
         groups.require_group(load_config(safe), group)
     elif not reader or not layout.is_slug(reader):

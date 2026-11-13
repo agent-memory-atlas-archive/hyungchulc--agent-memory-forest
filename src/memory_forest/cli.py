@@ -260,40 +260,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         exit_code = 2
     except OSError as exc:
-        result = {
-            "error": {
-                "code": "filesystem_error",
-                "details": {"reason": exc.__class__.__name__},
-                "message": "A local filesystem operation failed safely.",
-            },
-            "ok": False,
-            "schema_version": SCHEMA_VERSION,
-        }
+        result = {"error": _filesystem_error(exc).as_dict(), "ok": False, "schema_version": SCHEMA_VERSION}
         exit_code = 2
     except Exception:
-        result = {
-            "error": {
-                "code": "internal_error",
-                "details": {},
-                "message": "The command failed without exposing internal details.",
-            },
-            "ok": False,
-            "schema_version": SCHEMA_VERSION,
-        }
+        result = {"error": _internal_error().as_dict(), "ok": False, "schema_version": SCHEMA_VERSION}
         exit_code = 2
     except KeyboardInterrupt:
-        result = {
-            "error": {
-                "code": "interrupted",
-                "details": {},
-                "message": "The operation was interrupted.",
-            },
-            "ok": False,
-            "schema_version": SCHEMA_VERSION,
-        }
+        interrupted = MemoryForestError("interrupted", "The operation was interrupted.")
+        result = {"error": interrupted.as_dict(), "ok": False, "schema_version": SCHEMA_VERSION}
         exit_code = 130
     _emit(result, compact=compact_json)
     return exit_code
+
+
+def _filesystem_error(exc: OSError) -> MemoryForestError:
+    return MemoryForestError(
+        "filesystem_error",
+        "A local filesystem operation failed safely.",
+        details={"reason": exc.__class__.__name__},
+    )
+
+
+def _internal_error(exc: BaseException | None = None) -> MemoryForestError:
+    details = {"reason": exc.__class__.__name__} if exc is not None else {}
+    return MemoryForestError("internal_error", "The command failed without exposing internal details.", details=details)
 
 
 def _emit(result: dict[str, Any], *, compact: bool) -> None:
@@ -718,32 +708,20 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
     except MemoryForestError as exc:
         if hook:
             return _silent_hook_failure(raw, exc.code)
-        if arguments.json:
-            _print_json({"error": exc.as_dict(), "ok": False})
-        else:
-            sys.stderr.write(_shown(f"forest: {exc.code}: {exc.message}\n"))
-            for key, value in sorted(exc.details.items()):
-                sys.stderr.write(_shown(f"  {key}: {value}\n"))
-            if exc.next_step:
-                sys.stderr.write(_shown(f"  next: {exc.next_step}\n"))
-            if exc.command:
-                sys.stderr.write(_shown(f"  command: {exc.command}\n"))
-            if exc.after_seconds is not None:
-                sys.stderr.write(f"  after_seconds: {exc.after_seconds:g}\n")
-            if exc.waited_seconds is not None:
-                sys.stderr.write(f"  waited_seconds: {exc.waited_seconds:g}\n")
-            if exc.stop_after_seconds is not None:
-                sys.stderr.write(f"  stop_after_seconds: {exc.stop_after_seconds:g}\n")
+        _show_refusal(arguments, exc)
         return 2
-    except UnicodeError:
+    except UnicodeError as exc:
         if hook:
             return _silent_hook_failure(raw, "UnicodeError")
-        sys.stderr.write("forest: read_failed: a file could not be read as text\n")
+        _show_refusal(
+            arguments,
+            MemoryForestError("read_failed", "A file could not be read as text.", details={"reason": exc.__class__.__name__}),
+        )
         return 2
     except OSError as exc:
         if hook:
             return _silent_hook_failure(raw, exc.__class__.__name__)
-        sys.stderr.write(f"forest: filesystem_error: {exc.__class__.__name__}\n")
+        _show_refusal(arguments, _filesystem_error(exc))
         return 2
     except KeyboardInterrupt:
         if hook:
@@ -752,8 +730,25 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         if hook:
             return _silent_hook_failure(raw, exc.__class__.__name__)
-        sys.stderr.write(f"forest: failed: {exc.__class__.__name__}\n")
+        _show_refusal(arguments, _internal_error(exc))
         return 2
+
+
+def _show_refusal(arguments: argparse.Namespace, exc: MemoryForestError) -> None:
+    """A refusal on stdout as JSON with ``--json``, otherwise as lines on stderr."""
+    body = exc.as_dict()
+    if getattr(arguments, "json", False):
+        _print_json({"error": body, "ok": False})
+        return
+    sys.stderr.write(_shown(f"forest: {body['code']}: {body['message']}\n"))
+    for key, value in sorted(body["details"].items()):
+        sys.stderr.write(_shown(f"  {key}: {value}\n"))
+    for key in ("next", "command"):
+        if body.get(key):
+            sys.stderr.write(_shown(f"  {key}: {body[key]}\n"))
+    for key in ("after_seconds", "waited_seconds", "stop_after_seconds"):
+        if body.get(key) is not None:
+            sys.stderr.write(f"  {key}: {body[key]:g}\n")
 
 
 if __name__ == "__main__":

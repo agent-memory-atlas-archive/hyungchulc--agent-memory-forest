@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
-import unittest
 from pathlib import Path
 from unittest import mock
 
@@ -89,22 +87,6 @@ class PointerContentTests(ForestTestCase):
                 status = search.status(self.root)
                 self.assertTrue(status["ok"])
                 self.assertEqual(status["path"], f".forest/{name}")
-
-
-class RefusalTableTests(unittest.TestCase):
-    """The table is every index refusal the module can send, and nothing it never sends."""
-
-    def test_the_table_matches_the_codes_the_module_raises(self) -> None:
-        source = Path(search.__file__).read_text(encoding="utf-8")
-        raised = set(re.findall(r'MemoryForestError\(\s*"([a-z0-9_]+)"', source))
-        raised.update(re.findall(r'_state_refusal\(\s*\w+,\s*"([a-z0-9_]+)"', source))
-        raised.update(code for code, _message in search._PERSON_MESSAGES.values())
-        self.assertIn("index_protocol", raised)
-        raised.discard("index_protocol")
-        indexish = {code for code in raised if code.startswith("index_") or code == "symlink_forbidden"}
-        table = {code for code, _nxt, _command in search.INDEX_REFUSALS}
-        self.assertEqual(indexish, table)
-        self.assertNotIn("index_protocol", table)
 
 
 class ReadOnlyForestTests(ForestTestCase):

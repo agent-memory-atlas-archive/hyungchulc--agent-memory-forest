@@ -79,10 +79,9 @@ def require_group(config: Config, group_id: str) -> AgentGroup:
     if found is None:
         raise MemoryForestError(
             "group_unknown",
-            f"There is no group `{group_id}`.",
+            f"There is no group `{group_id}`. The owner declares [agents.groups.{group_id}] in forest.toml.",
             details={"group": group_id},
             next_step="report",
-            command=f"declare [agents.groups.{group_id}] in forest.toml",
         )
     return found
 
@@ -182,25 +181,22 @@ def _clean(given: str) -> str:
     if not isinstance(given, str):
         raise MemoryForestError(
             "agent_unset",
-            "Name the caller.",
-            next_step="run",
-            command="pass agent, the caller's own name",
+            "Name the caller: pass agent, the caller's own name.",
+            next_step="fix",
         )
     cleaned = " ".join(given.split())
     if not cleaned:
         raise MemoryForestError(
             "agent_unset",
-            "Name the caller.",
-            next_step="run",
-            command="pass agent, the caller's own name",
+            "Name the caller: pass agent, the caller's own name.",
+            next_step="fix",
         )
     if any(ord(character) < 32 or ord(character) == 127 for character in cleaned):
         raise MemoryForestError(
             "agent_name_invalid",
-            "That name cannot be an agent.",
+            "That name cannot be an agent. Pass a member's id.",
             details={"name": cleaned},
-            next_step="run",
-            command="pass a member's id",
+            next_step="fix",
         )
     return cleaned
 
@@ -286,26 +282,24 @@ def _interpret(
         agent_id, name = near[0]
         return MemoryForestError(
             "agent_near_miss",
-            f"`{given}` is one edit from `{agent_id}` ({name}). A typing slip does not make another agent.",
+            f"`{given}` is one edit from `{agent_id}` ({name}). A typing slip does not make another agent. "
+            f"Pass agent {agent_id}.",
             details={"agent": agent_id, "name": name},
-            next_step="run",
-            command=f"pass agent {agent_id}",
+            next_step="fix",
         )
     if len(near) > 1:
         return MemoryForestError(
             "agent_near_miss",
             f"`{given}` is one edit from more than one member. Pass the member's id.",
             details={"members": [{"id": agent_id, "name": name} for agent_id, name in near]},
-            next_step="run",
-            command="pass the member's id",
+            next_step="fix",
         )
     if _is_group_itself(group, given, slug, folded):
         return MemoryForestError(
             "agent_is_group",
             f"`{group.id}` is the group, not an agent. Pass a member.",
             details={"group": group.id},
-            next_step="run",
-            command="pass a member's id",
+            next_step="fix",
         )
     compiled = _compiled(root, config)
     outside = _outside(root, config, group, compiled)
@@ -335,26 +329,24 @@ def _interpret(
             "agent_not_in_group",
             f"`{given}` is not a member of `{group.id}`. Call again with one of them.",
             details={"members": _member_rows(config, group)},
-            next_step="run",
-            command="call again with one of the members",
+            next_step="fix",
         )
     if not slug or not layout.is_slug(slug):
         return MemoryForestError(
             "agent_name_invalid",
-            "That name is not a slug, so it cannot become an agent.",
+            "That name is not a slug, so it cannot become an agent. Pass a member's id, or a name that slugs "
+            "to a new agent.",
             details={"name": given},
-            next_step="run",
-            command="pass a member's id, or a name that slugs to a new agent",
+            next_step="fix",
         )
     areas = _area_trees(compiled)
     reason = agents_mod.why_invalid(slug, config, areas)
     if reason is not None:
         return MemoryForestError(
             "agent_name_invalid",
-            f"`{slug}` {reason}.",
+            f"`{slug}` {reason}. Pass a member's id, or a name that can be an agent.",
             details={"agent": slug},
-            next_step="run",
-            command="pass a member's id, or a name that can be an agent",
+            next_step="fix",
         )
     return _ADMIT
 
@@ -376,8 +368,7 @@ def _outside_refusal(
         "orchestrator_outside_group" if orchestrator else "agent_outside_group",
         message,
         details={"agent": agent_id, "name": name},
-        next_step="run",
-        command="pass a member's id",
+        next_step="fix",
     )
 
 
@@ -387,8 +378,7 @@ def _ambiguous(group: AgentGroup, config: Config, ids: list[str]) -> MemoryFores
         "agent_ambiguous",
         f"`{group.id}` has more than one member that name could be. Pass the member's id.",
         details={"members": [{"id": agent_id, "name": labels.get(agent_id) or agent_id} for agent_id in ids]},
-        next_step="run",
-        command="pass the member's id",
+        next_step="fix",
     )
 
 
@@ -476,10 +466,10 @@ def _admit(root: str | os.PathLike[str], group_id: str, given: str) -> Resolved:
         if member_id not in admitted.members or known is None or known.name != given:
             raise MemoryForestError(
                 "settings_unpatched",
-                "The group could not be updated in forest.toml.",
+                f"The group could not be updated in forest.toml. The owner adds `{member_id}` under "
+                f"[agents.groups.{group_id}] and [agents.known.{member_id}].",
                 details={"group": group_id, "agent": member_id},
                 next_step="report",
-                command=f"add `{member_id}` under [agents.groups.{group_id}] and [agents.known.{member_id}]",
             )
         if updated == original:
             return Resolved(member_id, wrote=False)
@@ -526,9 +516,9 @@ def _replace_members(block: str, members: tuple[str, ...]) -> str:
     if bracket < 0:
         raise MemoryForestError(
             "settings_unpatched",
-            "The group's members line could not be updated.",
+            "The group's members line could not be updated. The owner writes members as a list of slugs under "
+            "the group.",
             next_step="report",
-            command="write members as a list of slugs under the group",
         )
     depth = 0
     end = None
@@ -543,9 +533,9 @@ def _replace_members(block: str, members: tuple[str, ...]) -> str:
     if end is None:
         raise MemoryForestError(
             "settings_unpatched",
-            "The group's members line could not be updated.",
+            "The group's members line could not be updated. The owner writes members as a list of slugs under "
+            "the group.",
             next_step="report",
-            command="write members as a list of slugs under the group",
         )
     return block[:found] + rendered + block[end:]
 
@@ -560,10 +550,9 @@ def _table_span(text: str, header: str) -> tuple[int, int]:
         if found < 0:
             raise MemoryForestError(
                 "settings_unpatched",
-                f"forest.toml has no `[{header}]` table to update.",
+                f"forest.toml has no `[{header}]` table to update. The owner keeps [{header}] as its own table.",
                 details={"table": header},
                 next_step="report",
-                command=f"keep [{header}] as its own table",
             )
         line_start = text.rfind("\n", 0, found) + 1
         if text[line_start:found].strip() == "":

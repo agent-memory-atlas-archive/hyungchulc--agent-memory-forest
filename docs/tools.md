@@ -687,13 +687,17 @@ Every refusal of a tool is a result with `isError: true` whose text is one JSON 
  "message": "...", "next": "retry", "after_seconds": 2.0}
 ```
 
-`code`, `message` and `details` are always there. `next` is there when the refusal has a next move:
-`run` with `command`, `retry` with `after_seconds`, `waited_seconds` and `stop_after_seconds` (call again
-after `after_seconds` while the sum of each answer's `waited_seconds` and `after_seconds` is below
-`stop_after_seconds`, and report the message once that sum would reach it), or `report`
-(tell the owner the message; no command helps). A refusal with no next move, such as `search_empty`,
-has no `next`. An argument that fails a tool's schema under 2025-11-25 is `arguments_invalid` in the
-same shape. The strings are masked like every answer. What the forest holds, and what the caller sent
+`code`, `message`, `details` and `next` are always there. `next` is `run` with `command`, `retry` with
+`after_seconds`, `waited_seconds` and `stop_after_seconds` (call again after `after_seconds` while the
+sum of each answer's `waited_seconds` and `after_seconds` is below `stop_after_seconds`, and report the
+message once that sum would reach it), `report` (tell the owner the message; no command helps), or
+`fix` (the call itself is wrong: change what the message names, such as empty words to `search_empty`,
+and call again). Every code a tool or a command can send, with its next move, is in
+[refusals.md](refusals.md); a test proves that table and the codes the package raises are the same.
+`tool_failed`, a tool that could not answer for a reason the package does not name, is `report`, and
+`out_of_scope`, a path outside the reader's trees and lane, is `fix`: read a path a search or a
+navigation showed. An argument that fails a tool's schema under 2025-11-25 is `arguments_invalid`
+(`fix`) in the same shape. The strings are masked like every answer. What the forest holds, and what the caller sent
 (a page's lines, a snippet, the question), is returned exactly, even when a line is a path. What the
 server says itself carries no host name, process id, user name, home folder or absolute path. A
 refusal's `details` name a path as the caller gave it, or relative to the forest; `real_path`, `root`

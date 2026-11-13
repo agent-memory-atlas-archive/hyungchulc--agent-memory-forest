@@ -616,13 +616,15 @@ that agent's own job.
 - The owner says one sentence to their agent. The agent runs `forest setup`, which is written to be driven
   by an agent: every output is one JSON object whose `next` is `ask_owner` (the question, the choices, and
   why only the owner can answer), `run` (a command), `retry` (the same call again after `after_seconds`),
-  `report` (what to tell the owner) or `done`. On `retry`, add this answer's `waited_seconds` and the
+  `report` (what to tell the owner), `fix` (the call itself is wrong: change what the message names and
+  call again) or `done`. On `retry`, add this answer's `waited_seconds` and the
   `after_seconds` it asks the caller to wait onto the time already spent, call again after `after_seconds`
   while that sum is below `stop_after_seconds`, and report the message once the sum would reach it.
 A protocol error is tried again only inside a query's reads and a write, and is an I/O refusal at
 once in `status`, the timeline and while the file opens. A refusal that has already waited the whole
 stop time is reported at once and not tried again. A refusal of any command or tool has the same form:
-  `code`, `message`, `details` and, when there is one, `next` with its `command` or `after_seconds`. The agent
+  `code`, `message`, `details` and `next`, with its `command` or `after_seconds`. Every code the package
+  raises, with its next move, is in `docs/refusals.md`, and a test proves that list is the code's. The agent
   asks, runs the command again with `--answer key=value`, and is finished when `forest doctor` passes. An
   agent that never read a guide, or lost its place, still ends in the right state by following the output.
 - **Asked** (only what the owner alone can decide): where the forest lives, or which forest to join; this

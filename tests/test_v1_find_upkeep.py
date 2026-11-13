@@ -694,7 +694,7 @@ class SqliteErrorClassTests(ForestTestCase):
                 self.assertTrue(reply["result"]["isError"], reply)
                 body = json.loads(reply["result"]["content"][0]["text"])
                 self.assertEqual(set(body) - {"next", "command", "after_seconds"}, {"code", "details", "message"})
-                self.assertNotIn("next", body)
+                self.assertEqual(body["next"], "fix")
                 if expected:
                     self.assertEqual(body["code"], expected)
         self._settings(self.MASKED)

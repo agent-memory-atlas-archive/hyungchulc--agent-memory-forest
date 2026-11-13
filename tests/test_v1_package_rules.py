@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 import memory_forest
-from memory_forest import search
+from memory_forest import errors, search
 
 
 PACKAGE = Path(memory_forest.__file__).resolve().parent
@@ -65,6 +65,210 @@ class PackageRuleTests(unittest.TestCase):
                     if literal or named:
                         found.append(f"{name}:{default.lineno}")
         self.assertEqual(found, [])
+
+
+# ─────────────────────────── the codes that can leave ───────────────────────────
+
+# A raise whose code is not a literal and is not a parameter or a local the walk can follow. Each entry
+# says the set of values the code can take there.
+NON_LITERAL = {
+    ("search.py", "index_error"): lambda: {code for code, _message in search._PERSON_MESSAGES.values()},
+    ("search.py", "_open_regular"): lambda: {code for code, _message in search._PERSON_MESSAGES.values()},
+}
+
+
+class _Unresolved(Exception):
+    pass
+
+
+class _Package:
+    """Every module's syntax tree, each node's function, and the imports that bring a name in."""
+
+    def __init__(self) -> None:
+        self.trees = dict(modules())
+        self.owner: dict[tuple[str, int], ast.AST] = {}
+        self.functions: dict[str, list[tuple[str, ast.FunctionDef]]] = {}
+        self.imported: dict[str, set[tuple[str, str]]] = {}
+        for name, tree in self.trees.items():
+            imports: set[tuple[str, str]] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    self.functions.setdefault(node.name, []).append((name, node))
+                    for child in ast.walk(node):
+                        self.owner[(name, id_of(child))] = node
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    for alias in node.names:
+                        imports.add((node.module.split(".")[-1], alias.asname or alias.name))
+            self.imported[name] = imports
+
+    def enclosing(self, module: str, node: ast.AST) -> ast.FunctionDef | None:
+        return self.owner.get((module, id_of(node)))  # type: ignore[return-value]
+
+    def values(self, module: str, node: ast.expr, depth: int = 0) -> set[str]:
+        if depth > 5:
+            raise _Unresolved("too deep")
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, ast.IfExp):
+            return self.values(module, node.body, depth + 1) | self.values(module, node.orelse, depth + 1)
+        if isinstance(node, ast.Name):
+            function = self.enclosing(module, node)
+            if function is None:
+                raise _Unresolved(node.id)
+            parameters = [*function.args.posonlyargs, *function.args.args]
+            names = [item.arg for item in parameters]
+            keyword_only = [item.arg for item in function.args.kwonlyargs]
+            if node.id in names or node.id in keyword_only:
+                return self._from_callers(module, function, node.id, depth)
+            found: set[str] = set()
+            assigned = False
+            for child in ast.walk(function):
+                if isinstance(child, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == node.id for target in child.targets
+                ):
+                    found |= self.values(module, child.value, depth + 1)
+                    assigned = True
+                elif isinstance(child, ast.Assign) and any(
+                    isinstance(target, ast.Tuple) and any(isinstance(e, ast.Name) and e.id == node.id for e in target.elts)
+                    for target in child.targets
+                ):
+                    raise _Unresolved(node.id)
+            if not assigned:
+                raise _Unresolved(node.id)
+            return found
+        raise _Unresolved(ast.unparse(node))
+
+    def _from_callers(self, module: str, function: ast.FunctionDef, parameter: str, depth: int) -> set[str]:
+        parameters = [item.arg for item in [*function.args.posonlyargs, *function.args.args]]
+        found: set[str] = set()
+        defaults = dict(zip(parameters[len(parameters) - len(function.args.defaults):], function.args.defaults))
+        defaults.update(
+            {item.arg: value for item, value in zip(function.args.kwonlyargs, function.args.kw_defaults) if value}
+        )
+        if parameter in defaults:
+            found |= self.values(module, defaults[parameter], depth + 1)
+        stem = module.rsplit("/", 1)[-1].removesuffix(".py")
+        for caller_module, tree in self.trees.items():
+            for call in ast.walk(tree):
+                if not isinstance(call, ast.Call):
+                    continue
+                func = call.func
+                same = isinstance(func, ast.Name) and func.id == function.name and (
+                    caller_module == module or (stem, function.name) in self.imported[caller_module]
+                )
+                attribute = (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == function.name
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == stem
+                )
+                if not (same or attribute):
+                    continue
+                argument = next((k.value for k in call.keywords if k.arg == parameter), None)
+                if argument is None and parameter in parameters:
+                    index = parameters.index(parameter)
+                    if index < len(call.args):
+                        argument = call.args[index]
+                if argument is None:
+                    continue
+                found |= self.values(caller_module, argument, depth + 1)
+        return found
+
+
+def id_of(node: ast.AST) -> tuple[int, int, int, int]:
+    """A node by where it stands, so no table is keyed by an object's address."""
+    return (
+        getattr(node, "lineno", -1), getattr(node, "col_offset", -1),
+        getattr(node, "end_lineno", -1), getattr(node, "end_col_offset", -1),
+    )
+
+
+def raised_codes() -> tuple[dict[str, set[str]], dict[str, set[str]], list[str]]:
+    """Every code a ``MemoryForestError`` can be made with, where, and every literal next move of a site."""
+    package = _Package()
+    codes: dict[str, set[str]] = {}
+    nexts: dict[str, set[str]] = {}
+    refused: list[str] = []
+    for module, tree in package.trees.items():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if getattr(func, "id", getattr(func, "attr", None)) != "MemoryForestError":
+                continue
+            argument = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "code"), None)
+            where = f"{module}:{node.lineno}"
+            try:
+                values = package.values(module, argument) if argument is not None else set()
+            except _Unresolved:
+                function = package.enclosing(module, node)
+                key = (module, getattr(function, "name", ""))
+                if key not in NON_LITERAL:
+                    refused.append(where)
+                    continue
+                values = NON_LITERAL[key]()
+            for value in values:
+                codes.setdefault(value, set()).add(where)
+            step = next((k.value for k in node.keywords if k.arg == "next_step"), None)
+            if isinstance(step, ast.Constant) and step.value is not None:
+                for value in values:
+                    nexts.setdefault(value, set()).add(str(step.value))
+    return codes, nexts, refused
+
+
+def document_rows() -> dict[str, tuple[str, str]]:
+    """``docs/refusals.md``: code, next move and command of each row."""
+    rows: dict[str, tuple[str, str]] = {}
+    text = (PACKAGE.parents[1] / "docs" / "refusals.md").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        rows[cells[0].strip("`")] = (cells[1].strip("`"), cells[2].strip("`"))
+    return rows
+
+
+class RefusalCodeTests(unittest.TestCase):
+    """The codes that can leave are one closed set: the code, the table in the code and the document agree."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.codes, cls.nexts, cls.refused = raised_codes()
+
+    def test_no_raise_has_a_code_the_walk_cannot_name(self) -> None:
+        self.assertEqual(self.refused, [], "a non-literal code: make it literal, or list it with its values")
+
+    def test_the_codes_raised_and_the_table_are_the_same_set(self) -> None:
+        raised = set(self.codes) - set(search.INTERNAL_CODES)
+        self.assertEqual(sorted(raised - set(errors.REFUSALS)), [], "raised but not in errors.REFUSALS")
+        self.assertEqual(sorted(set(errors.REFUSALS) - raised), [], "in errors.REFUSALS but never raised")
+
+    def test_the_document_is_the_table(self) -> None:
+        rows = document_rows()
+        self.assertEqual(sorted(set(rows) - set(errors.REFUSALS)), [])
+        self.assertEqual(sorted(set(errors.REFUSALS) - set(rows)), [])
+        for code, (nxt, command) in errors.REFUSALS.items():
+            self.assertEqual(rows[code], (nxt, command), code)
+
+    def test_every_code_has_a_next_move_and_a_site_never_says_another(self) -> None:
+        for code, (nxt, command) in errors.REFUSALS.items():
+            self.assertIn(nxt, errors.NEXT_MOVES, code)
+            self.assertEqual(bool(command), nxt == "run", code)
+        for code, said in self.nexts.items():
+            if code in search.INTERNAL_CODES:
+                continue
+            self.assertEqual(said, {errors.REFUSALS[code][0]}, code)
+        for code in errors.REFUSALS:
+            made = errors.MemoryForestError(code, "x")
+            self.assertEqual(made.as_dict()["next"], errors.REFUSALS[code][0], code)
+
+    def test_an_internal_code_is_not_in_the_table(self) -> None:
+        self.assertIn("index_protocol", self.codes)
+        self.assertTrue(set(search.INTERNAL_CODES).isdisjoint(errors.REFUSALS))
+
+    def test_the_index_table_of_the_tools_document_agrees(self) -> None:
+        for code, nxt, command in search.INDEX_REFUSALS:
+            self.assertEqual(errors.REFUSALS[code], (nxt, command), code)
 
 
 class WaitChildTests(unittest.TestCase):
