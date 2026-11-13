@@ -117,8 +117,9 @@ A helper started for one task works as the agent that started it.
 
 - **A tree per agent, made by code, with no command to run.** An agent exists for the forest from its
   entry in the settings (`[agents.known.<id>]`, `name` and `role` optional) or from the first file in its
-  raw lane `06 istm/<id>/` (unless `agents.auto_create` is false). `forest levels check` reports every such
-  agent without a tree as due one from its first day, and `forest levels apply` makes it through
+  raw lane `06 istm/<id>/` (unless `agents.auto_create` is false). A turn written with `memory_log` or
+  `forest log` makes that one agent's tree before the call returns. `forest levels check` reports every
+  other such agent without a tree as due one from its first day, and `forest levels apply` makes it through
   `move.ensure_agent`, the operation `forest move new-agent <id> [--name …] [--role …]` also uses: the
   registry line (type `agent`, level `tree`), the tree page, the index and the line under `## Agents`. A
   name not given is the id and a role not given is the line `(not set)`; a value the tree left unset is filled
@@ -148,20 +149,29 @@ A helper started for one task works as the agent that started it.
   several named agents and one connection: `forest mcp --as-group <id>`, or a command with `--as-group`
   and `--agent`. Exactly one of `--as` and `--as-group` is given. On a group connection every tool takes
   `agent`, the caller's own name. With `--as` the tools are unchanged, and no argument can set the reader.
-  The name resolves only inside the group: a member's id, its declared `name`, or the same letters apart
-  from case, spaces, hyphens and underscores. Anything else one edit away from a member (one inserted,
-  deleted or substituted letter, or two adjacent letters swapped) is refused, and the refusal names that
-  member, so a typing slip does not make a second agent.   It is never an agent outside the group, never one edit away from such an agent,
-  never an orchestrator who is not a member, and never the group's own id. A closed group (`open = false`)
-  refuses a stranger and lists the members' ids and names. An open group admits a new slug once, when it
-  is not a near-miss and not an agent outside the group, writes that member under the group, and keeps
-  the given string as its `name`. A second identical admission changes no byte of the settings. Two
-  calls that would both admit the same new name end as one member and one settings write. The member's
-  scope, the lane a log writes, and the seen record are that member's. Its tree appears from its first
-  lane file as any agent's does (`agents.auto_create`), and from the settings entry the admission wrote,
-  as any declared agent's does. Inside the group the name tells the agents apart for memory. It is not a
-  wall: each member reads the shared trees that member's own scope allows. Outside the group, no caller
-  on that connection can be any agent.
+  The agent is its name, found by one function everywhere: an id, a declared name exactly, or the same
+  letters apart from case, spaces, hyphens and underscores. Nothing looser, and nothing is refused for a
+  name. A name some agent already has is that agent, whichever group or tool it first came from, and on an
+  open group it becomes a member here as well. One name in two apps is one agent, one lane and one tree.
+  Where the turn came from is on the turn (`source.door`, and `source.group` when the call named a group),
+  beside the session. A name no agent has is a new agent. Its id is the slug, unless that slug is taken by
+  something that is not an agent, in which case the id is `<slug>-agent` and then a number. The name stays
+  as given. An agent argument is text of at most 200 characters that gives a slug. The same length holds
+  in the settings parser and wherever an id becomes a file name. Anything else is a bad argument, and the
+  next move is to retry. Inside a group a caller is whoever it says it is, so any member can read what
+  another member's own tree and lane hold by calling under that member's name. A group tells one owner's
+  agents apart for memory and is no wall between them. A closed group (`open = false`) refuses a name
+  that is not a member, lists the members' ids and names, and the caller retries under their own name as
+  listed. An open group (`open = true`) admits every new name at once. There is no greatest number of
+  members unless the owner sets `max_members`. `forest agents` lists them. A group may name a `source` of
+  members. A name that finds no member makes the connection read that source once and resolve again. A
+  name still on no list is refused as a closed group refuses it. On a group connection a caller that names
+  the main agent sees what the main agent sees. An orchestrator needs no entry in `members`. A second
+  identical admission changes no byte of the settings. Two calls that would both admit the same new name
+  end as one member and one settings write. The first lane write through `memory_log` or `forest log`
+  makes that one agent's tree before the call returns, through the level tool for that agent only. A lane
+  that arrives another way is still made by `forest levels apply`. One id the settings cannot place is
+  reported and the pass goes on with the rest.
 - **Who writes.** Agents do not edit forest pages at the same time. Each appends to its own raw lane
   (`06 istm/<agent>/`), the daily record is written from the lanes, and one filing run at a time, holding
   the forest writer lock, files into the forest. Direct edits go through the same lock.
@@ -347,11 +357,13 @@ starred and sign-in values are masked, as on every other read. A path or address
 trees or lane is refused, and the refusal does not include the text.
 
 Every search, read, timeline and MCP call takes its reader from `--as` or from the connection, never
-from the question. On a group connection the caller also passes `agent`, and that name resolves to a
-member of the group (section 6). It still cannot name an agent outside the group. Results come only from `agents.readable_trees`. An agent also reads its own raw lane;
-an orchestrator reads every lane. The daily record and the root index are shared. `--named <agent>` is
-the task naming another agent, and it is not an MCP argument, so a tool call cannot widen its scope.
-The answer names the trees that answered.
+from the question. On a group connection the caller also passes `agent`, and that name is the agent
+(section 6). On a group connection a caller that names the main agent sees what the main agent sees.
+Results come only from `agents.readable_trees`. An agent also reads its own raw lane;
+an orchestrator reads every lane. The daily record and the root index are shared. `--source` keeps one
+group or tool of an agent's turns. `--named <agent>` is the task naming another agent when the owner
+runs the command. On an agent's door (`--as`, or `--as-group` with `--agent`) it is refused, as the
+tools take no such argument. The answer names the trees that answered.
 
 `forest timeline query "<when>"` and `forest timeline subject <id>` read the same index. A day-part
 phrase is evaluated in each entry's own time zone. A duration, and a range written
@@ -479,8 +491,10 @@ name = "…"                      # optional, free text in any script; default: 
 role = "…"                      # optional; default: `## Role` holds `(not set)`
 [agents.groups.<group-id>]      # one app that runs several of the owner's agents, one connection
 members = ["kiln-bot", "ledger-bot"]
-open = false                    # true: a new name the caller gives becomes a member, once
-                                # the group's own id is not a member and not an agent
+open = false                    # true: every new name a caller gives becomes an agent. There is no
+                                # greatest number unless max_members is set. `forest agents` lists them.
+# max_members = 40              # unset unless the owner wants a bound
+# source = "the-app"            # optional. A reader of an app's own member list. A miss reads it once.
 [intake]
 tool_output = "omit"            # omit | keep. omit: a tool turn records that the tool ran
 [intake.tools.<adapter>]        # claude-code, codex, grok, jsonl, or an adapter added later
@@ -657,10 +671,12 @@ Ledger Bot, in Juno's studio) and offers one tool connection for all of them, no
 the owner's machine can read. Three questions, and the answers this package gives:
 
 - **Who is calling.** The connection is the group (`forest mcp --as-group studio-counter`). Each call
-  passes `agent`, the name the app uses for that agent. The name resolves only inside the group, to that
-  member's scope, lane and seen record. The group tells the agents apart for memory. It is not a wall:
-  each member sees the shared trees that member may see. Outside the group, a caller on this connection
-  cannot be any agent. Studio Hub is not a member, so a call cannot be Studio Hub.
+  passes `agent`, the name the app uses for that agent. The agent is its name. Inside a group a caller is
+  whoever it says it is, so any member can read what another member's own tree and lane hold by calling
+  under that member's name. A group tells one owner's agents apart for memory and is no wall between them.
+  An open group lets every new name become an agent. A closed group allows the names it lists. On a group
+  connection a caller that names the main agent sees what the main agent sees. Studio Hub does not need to
+  be a member.
 - **How the forest is reached from a computer that is not the owner's.** `forest mcp --http` on the
   owner's machine, behind an HTTPS front that stays inside the owner's own private network. The client
   sends the token as a header. The server is not put on the public internet. Where the host can run a
@@ -681,4 +697,9 @@ An agent the owner wrote, rather than an app's, has the same doors under the nam
 - An export folder of records in the lane's shape, read by the `jsonl` adapter.
 - An adapter module for that agent's own records, kept outside the core (`memory_forest.adapters`).
 
-The tree appears from the first lane file, as any agent's does.
+A turn written with `forest log` or `memory_log` makes that agent's tree before the call returns. What
+can differ between a line the two doors wrote is `source` (the door, and the group when the call named
+one) and `at` (when the line was written). The id is a hash of the session, the role and the stored text,
+so the same turn sent through both doors is one line. `forest log` reads at most the same number of bytes
+as `memory_log` (`MESSAGE_LIMIT`), refuses bytes that are not UTF-8, and refuses a stdin that has not
+ended after 30 seconds.

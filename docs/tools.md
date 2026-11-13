@@ -586,10 +586,11 @@ process. This package registers none and never opens a network connection.
 
 Results are one per page. Each matching section is printed as written, with why it matched and the lines
 to read. `--as` is the reader. Omit it and the reader is not an agent: shared trees only, and no raw
-lane. `--as-group` with `--agent` is the same read for one member of a group (design, section 6). Pass
+lane. `--as-group` with `--agent` is the same read for the agent that name is (design, section 6). Pass
 one of `--as` and `--as-group`, not both. `--agent` without a group cannot change the reader.
-`--named` is an agent the task names. It is how one agent is allowed into another's tree. It does
-not open that agent's raw lane.
+`--source` keeps one group or tool of that agent's turns. `--named` is an agent the task names when the
+owner runs the command. On an agent's door it is refused, the same as the tools, which take no such
+argument. It does not open that agent's raw lane.
 
 `forest read` prints a page, or the section an address names. `--lines A-B` keeps that range. The text
 is masked the same way as every other read. A path outside the reader's trees or lane is refused, and
@@ -634,11 +635,15 @@ path the previous call showed. The scope is the reader's.
 
 ## `forest log`
 
-`forest log` is the command-line twin of `memory_log`. The turn is read from stdin. An argument is
-refused, because arguments show in process lists, and the refusal says to pass the text on stdin. The
-command sets the role to `agent` and the origin to `interactive`, the same as `memory_log` on stdio. A
-caller-supplied role or origin is refused. `--session` names the session. The default session is `cli`. The turn goes through the one
-writer of the lane, with the same masking, and a turn the lane already holds is not written again.
+`forest log` is the command-line twin of `memory_log` in every bound. The turn is read from stdin, at
+most `MESSAGE_LIMIT` bytes (1,000,000), and a stdin that has not ended after 30 seconds is refused.
+Bytes that are not UTF-8 are refused, not repaired. An argument is refused, because arguments show in
+process lists, and the refusal names `forest log`. The command sets the role to `agent` and the origin
+to `interactive`, the same as `memory_log` on stdio. A caller-supplied role or origin is refused.
+`--session` names the session. The default session is `cli`. The turn goes through the one writer of the
+lane, with the same masking. The id is a hash of the session, the role and the stored text, so the same
+turn through both doors is one line. What can differ is `source` (the door, and the group when the call
+named one) and `at`. The first write makes that agent's tree.
 
 ```sh
 forest log --as till-bot <<'EOF'
@@ -650,8 +655,9 @@ forest log --as-group bakery-bots --agent "Till Bot"
 ## `forest agents`
 
 `forest agents` lists each group, whether it is open, and each member: its id, its name, whether it has
-written a lane, and when it was last seen on a connection. Agents that are not in a group are listed
-after the groups.
+written a lane, the sources it has written through, and when it was last seen on a connection. Agents
+that are not in a group are listed after the groups. Pairs whose names differ by one edit or by one
+added word are a remark, with what the owner can do. A remark is not a refusal.
 
 ## `forest mcp`
 
@@ -660,8 +666,9 @@ after the groups.
 server's own instructions stay under 2,048 characters. The reader is `--as`. A tool argument cannot
 set it, and cannot set the role or origin of `memory_log`. `forest mcp --as-group <group>` is the same
 server for several agents on one connection. Exactly one of `--as` and `--as-group` is given. On a
-group connection every tool requires `agent`, the caller's own name, resolved only to a member of the
-group. Stdio and `--http` use the same token rule.
+group connection every tool requires `agent`, the caller's own name. The agent is its name (design,
+section 6). With neither `--as` nor `--as-group`, the refusal names both. Stdio and `--http` use the
+same token rule. Search, read and timeline also take `source`, one group or tool of that agent's turns.
 
 `memory_navigate` starts at the root index and walks one level down. `memory_log` appends the caller's
 own turn through the intake writer. The server sets the role to `agent` and the origin from the

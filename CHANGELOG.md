@@ -13,6 +13,13 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- The agent is its name. A group does not refuse a name for being near another, or for already being an
+  agent somewhere else: the same name is the same agent, one lane and one tree, and where the turn came
+  from stays on the turn. An open group admits every new name. A closed group lists its members and the
+  caller retries under their own name. An orchestrator sees the whole forest through a group connection
+  without being listed. The first write through `memory_log` or `forest log` makes that agent's tree.
+  `forest log` uses the same size bound as `memory_log`, refuses a stdin that does not end, and refuses
+  bytes that are not UTF-8. One id the settings cannot place is reported and the level pass goes on.
 - A build that meets a page gone between the listing and the read says so (`index_busy`, retry),
   instead of saying the index file is in use. A fifo put in the place of the pointer or the index is
   refused at once rather than waited on.
@@ -124,13 +131,13 @@ the version 1 commands replace it.
 ### Added
 
 - One connection can serve a group of the owner's agents. `forest mcp --as-group <group>` (stdio or
-  `--http`, the same token rule as `--as`) requires `agent` on every tool, resolved only to a member.
-  `--as` is unchanged: a tool argument cannot set the reader. A closed group refuses a stranger and
-  lists the members. An open group admits a new slug once, keeps the given name, and a second admission
-  changes no byte. A near-miss resolves, or is refused with that member named. `forest log` is the
-  command-line twin of `memory_log` (the text is stdin). `forest search`, `forest read`,
-  `forest timeline` and `forest navigate` take the same `--as-group` and `--agent`. `forest agents`
-  lists each group, its lanes, and when a member was last seen.
+  `--http`, the same token rule as `--as`) requires `agent` on every tool. The agent is its name.
+  `--as` is unchanged: a tool argument cannot set the reader. A closed group refuses a name that is not
+  a member and lists the members. An open group admits every new name, keeps the given name, and a
+  second admission changes no byte. `forest log` is the command-line twin of `memory_log` (the text is
+  stdin). `forest search`, `forest read`, `forest timeline` and `forest navigate` take the same
+  `--as-group` and `--agent`. `forest agents` lists each group, its lanes, its sources, and when a
+  member was last seen.
 
 - `forest index build | status` writes `.forest/index.sqlite`, one row per page section, collection
   entry, daily block and raw-lane turn. The stored text is what a read prints. The build holds the

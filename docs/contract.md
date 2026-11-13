@@ -509,10 +509,11 @@ helper started for one task works as the agent that started it.
     reference line.
 - **Who reads what.** Every reader has an id, taken from its connection and never from the question.
   A group (`[agents.groups.<id>]`, design section 6) is one connection for several agents of one app.
-  The call names the caller, and that name resolves only to a member of the group. The scope, the lane
-  and the record of which trees answered are that member's. The name cannot be an agent outside the
-  group, and the group's own id is not an agent. Inside the group the agents are told apart so each
-  has its own lane. They are not walled off from the shared trees.
+  The agent is its name. Inside a group a caller is whoever it says it is, so any member can read what
+  another member's own tree and lane hold by calling under that member's name. A group tells one owner's
+  agents apart for memory and is no wall between them. An open group lets every new name become an agent.
+  A closed group allows the names it lists. On a group connection a caller that names the main agent sees
+  what the main agent sees. The scope, the lane and the record of which trees answered are that agent's.
   - An orchestrator (listed in `agents.orchestrators`) reads the whole forest.
   - Any other agent reads the shared trees and its own tree, and reads another agent's tree only when
     `agents.default_scope` is `all` or its task names that agent. The default scope is `own+shared`.

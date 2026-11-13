@@ -46,7 +46,9 @@ forest levels apply
 # post-bot: none -> tree (agent; its raw lane holds a file)
 ```
 
-With the settings entry above, that writes:
+A turn an agent writes with `forest log` or `memory_log` makes that one agent's tree before the call
+returns. The level pass still makes a tree a settings entry or an intake lane left due. With the settings
+entry above, that pass writes:
 
 - the registry line, in `03 mtm/post-bot/post-bot_MTM.md`:
   ``- `post-bot` — Post Bot · agent · tree · `02 ltm/post-bot_LTM.md` ``
@@ -255,10 +257,15 @@ When Juno stops shipping by courier and Post Bot is retired (`forest move retire
 ## An app that runs several agents
 
 Kiln Bot and Ledger Bot can run inside one app Juno uses, with one tool connection for both of them, no
-hooks, and no transcript on Juno's machine. The connection is a group. It tells the two bots apart for
-memory. It is not a wall between them: each still reads the shared trees that bot may read. A caller on
-this connection cannot be an agent outside the group, so it cannot be Studio Hub unless Studio Hub is a
-member, and it cannot be the group's own id.
+hooks, and no transcript on Juno's machine. The connection is a group. Inside a group a caller is whoever
+it says it is, so any member can read what another member's own tree and lane hold by calling under that
+member's name. A group tells one owner's agents apart for memory's sake and is no wall between them.
+
+The agent is its name. A Crate Bot in two apps is one Crate Bot, with one lane and one tree. Where a turn
+came from (which group, which door) stays on the turn, so the two can still be told apart. `forest agents`
+shows the sources each agent has written through. Search, read and timeline take `--source` for one of
+them. Nothing is refused because of what an agent is called. A name one edit away, or one word longer, is
+only a remark on `forest agents`, for the owner who may want to give two bots one name.
 
 ```toml
 [agents.groups.studio-counter]
@@ -274,13 +281,26 @@ forest mcp --as-group studio-counter
 ```
 
 Every tool on that connection takes `agent`, the name the app uses for the caller. `Kiln Bot`,
-`kiln-bot`, `kiln_bot` and `KilnBot` are Kiln Bot. A name one edit away (`kiln-bott`, or `post-bott`
-when Post Bot is outside the group) is refused, and the refusal names that agent, so a typing slip
-does not make a second agent. A closed group refuses any
-other name and lists the members. An open group (`open = true`) admits a new slug once, keeps the given
-string as that member's `name`, and a second call finds the member and does not write the settings
-again. `forest agents` shows the group, whether each member has written a lane, and when it was last
-seen on a connection.
+`kiln-bot`, `kiln_bot` and `KilnBot` are Kiln Bot. The same letters apart from case, spaces, hyphens and
+underscores are the same agent, and nothing looser is. A name some agent already has is that agent,
+whichever group or tool it first came from: the caller reads and writes as that agent, and on an open
+group the agent becomes a member here as well. A name no agent has is a new agent. Its id is the slug of
+the name, unless that slug is already something that is not an agent (a subject, the owner's id or name
+or alias, a group's id, the system id, `none`, a collection id, the name of a shared tree). Then the id
+is the slug, a hyphen and `agent`, and a number if that is taken too. The name stays as given.
+
+An open group (`open = true`) does this at once for every new name a caller gives. There is no greatest
+number of agents unless the owner sets `max_members`. `forest agents` is where to see them. A closed
+group (`open = false`) refuses a name that is not a member, lists the members' ids and names, and the
+next move is to call again under the caller's own name as it is listed. It never says to call as some
+particular member. A group may name a `source` of members. When a name finds no member, the connection
+asks that source to read its list again, once, and resolves again. A name that is still on no list is
+refused the way a closed group refuses it.
+
+On a group connection a caller that names the main agent sees what the main agent sees. An orchestrator
+needs no entry in `members`, on an open group, on a closed one, or on a group fed by a source. `forest
+agents` shows the group, whether each member has written a lane, the sources it has written through, and
+when it was last seen on a connection. A second identical admission changes no byte of the settings.
 
 Three questions for a host of this kind:
 
@@ -304,4 +324,5 @@ An agent Juno wrote, under a name Juno chose, uses the same doors.
 - An export folder the `jsonl` adapter reads.
 - An adapter module for that agent's own records, outside the core.
 
-The tree appears from the first file in the lane, as any agent's does.
+A turn written with `forest log` or `memory_log` makes that agent's tree before the call returns, through
+the level tool for that agent only. A lane that arrives by intake is still made by `forest levels apply`.
