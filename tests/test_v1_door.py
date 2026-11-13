@@ -928,6 +928,20 @@ class DoorCallTests(ForestTestCase):
                 system.open_index(index, immutable=False, write=write)
             self.assertEqual(denied.exception.access, access)
 
+    def test_a_write_ahead_log_that_cannot_be_looked_at_is_not_the_file_that_was_read(self) -> None:
+        opened, _ = system.open_index(self._index(), immutable=True)
+        self.addCleanup(opened.close)
+        self.assertTrue(opened.same())
+        real = os.lstat
+
+        def looking(path: object, *args: object, **kwargs: object) -> os.stat_result:
+            if str(path).endswith("-wal"):
+                raise PermissionError(errno.EACCES, "denied", str(path))
+            return real(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        with mock.patch.object(system.os, "lstat", looking):
+            self.assertFalse(opened.same())
+
     def test_a_write_connection_commits_each_statement_at_once(self) -> None:
         index = self._index()
         opened, _ = system.open_index(
