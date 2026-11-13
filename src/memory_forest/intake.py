@@ -27,6 +27,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -54,6 +55,8 @@ from .locking import atomic_write, hold_lock
 
 LOCK_NAME = "intake"
 LOCK_WAIT_SECONDS = 0.2
+# ``memory_log``, reread and rename-agent share this budget between the in-process turn and the file lock.
+LOG_WAIT_SECONDS = 2.0
 # Threads of this process take the intake lock one at a time. ``hold_lock`` refuses a second take in the
 # same process, and the HTTP server runs one thread per request.
 _INTAKE_TURN = threading.Lock()
@@ -235,7 +238,7 @@ def append_owned(
     if record is None:
         raise MemoryForestError("intake_turn_rejected", "The turn was not a record the lane keeps.")
     day = _day(record["at"], config)
-    with _intake_turn(), hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="memory_log"):
+    with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="memory_log"):
         if _id_taken(root, agent, day, record["id"], full=True):
             record["path"] = f"{layout.ISTM}/{agent}/{day}.jsonl"
             record["wrote"] = False
@@ -343,7 +346,7 @@ def rename_agent(root: str | os.PathLike[str], old: str, new: str) -> Result:
         ("ids", f"{INTAKE_DIR}/ids/{old}", f"{INTAKE_DIR}/ids/{new}"),
     )
     moved_cursors = 0
-    with _intake_turn(), hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest intake rename-agent"):
+    with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="forest intake rename-agent"):
         planned = []
         for step, source_rel, dest_rel in pairs:
             source = layout.resolve(root, source_rel)
@@ -381,7 +384,7 @@ def reread(root: str | os.PathLike[str], adapter_name: str) -> Result:
     if not layout.is_slug(adapter_name):
         raise MemoryForestError("intake_adapter_unknown", f"{adapter_name} is not an adapter name.")
     moved = 0
-    with _intake_turn(), hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest intake reread"):
+    with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="forest intake reread"):
         for _path, cursor in _each_cursor(root, adapter_name):
             if cursor.get("excluded"):
                 continue
@@ -1209,30 +1212,51 @@ def _result(
     return Result((head, *(f"  {line}" for line in reports)), data)
 
 
-@contextmanager
-def _intake_turn() -> Iterator[None]:
-    """Wait for this process's other intake, then let it go when the file lock does.
+def _lock_busy(waited: float) -> MemoryForestError:
+    """The same busy refusal a second process gets, with the time this call actually waited."""
+    return MemoryForestError(
+        "lock_busy",
+        "Another writer holds the lock.",
+        details={"lock": LOCK_NAME},
+        waited_seconds=max(0.0, waited),
+    )
 
-    Two ``memory_log`` calls on the threaded server would otherwise refuse each other with ``lock_already_held``
-    and tell the caller to pass a token it was never given.
+
+@contextmanager
+def _intake_locked(root: str | os.PathLike[str], *, wait_seconds: float, label: str) -> Iterator[object]:
+    """This process's turn, then the intake file lock, under one budget.
+
+    The turn waits only as long as the file lock would have waited. A caller that does not get the turn
+    receives ``lock_busy`` and does not then wait on the file. ``waited_seconds`` is the time this call
+    spent, on the turn and the file lock together.
     """
-    _INTAKE_TURN.acquire()
+    started = time.monotonic()
+    deadline = started + max(0.0, wait_seconds)
+    remaining = max(0.0, deadline - time.monotonic())
+    if not _INTAKE_TURN.acquire(timeout=remaining):
+        raise _lock_busy(time.monotonic() - started)
     try:
-        yield
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            with hold_lock(root, LOCK_NAME, wait_seconds=remaining, label=label) as token:
+                yield token
+        except MemoryForestError as exc:
+            if exc.code in {"lock_busy", "lock_already_held"} and exc.waited_seconds is None:
+                exc.waited_seconds = time.monotonic() - started
+            raise
     finally:
         _INTAKE_TURN.release()
 
 
 @contextmanager
 def _intake_lock(root: str | os.PathLike[str]) -> Iterator[object | None]:
-    with _intake_turn():
-        try:
-            with hold_lock(root, LOCK_NAME, wait_seconds=LOCK_WAIT_SECONDS, label="forest intake") as token:
-                yield token
-        except MemoryForestError as exc:
-            if exc.code != "lock_busy":
-                raise
-            yield None
+    try:
+        with _intake_locked(root, wait_seconds=LOCK_WAIT_SECONDS, label="forest intake") as token:
+            yield token
+    except MemoryForestError as exc:
+        if exc.code != "lock_busy":
+            raise
+        yield None
 
 
 def _key_digest(source_key: str) -> str:
@@ -1823,6 +1847,6 @@ def lane_masking(root: str | os.PathLike[str], *, fix: bool = False) -> list[dic
     if not fix:
         visit(False)
     else:
-        with _intake_turn(), hold_lock(root, LOCK_NAME, wait_seconds=2.0, label="forest credentials fix"):
+        with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="forest credentials fix"):
             visit(True)
     return [row for row in totals.values() if row["lines"] or row["kept"]]

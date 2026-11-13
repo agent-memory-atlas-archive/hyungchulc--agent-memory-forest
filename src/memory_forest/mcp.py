@@ -1061,7 +1061,7 @@ def _tool_body(refusal: MemoryForestError) -> dict[str, Any]:
             "message": "The lock is held, so this call did not run. Ask again.",
             "next": "retry",
             "stop_after_seconds": search.RETRY_STOP_SECONDS,
-            "waited_seconds": 0.0,
+            "waited_seconds": 0.0 if refusal.waited_seconds is None else refusal.waited_seconds,
         }
     return refusal.as_dict()
 

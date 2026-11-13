@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterator
 from unittest import mock
 
-from memory_forest import mcp, search
+from memory_forest import intake, mcp, search
 from memory_forest.cli import forest_main
 from memory_forest.locking import hold_lock
 
@@ -146,36 +146,74 @@ class ToolBoundaryTests(ForestTestCase):
         self.assertNotIn(str(record["token"]), err)
 
     def test_two_memory_log_calls_on_the_http_server_wait_their_turn(self) -> None:
+        """The first call stands inside the hold until the second is known to be waiting on the turn."""
         token = mcp.ensure_token(self.root).decode("ascii")
         server = mcp.serve_http(self.root, "till-bot", "127.0.0.1", 0, token=token.encode("ascii"))
-        barrier = threading.Barrier(2)
-        found: list[dict[str, object]] = []
+        entered, release = threading.Event(), threading.Event()
+        second_waiting, progress = threading.Event(), threading.Event()
+        found: dict[str, dict[str, object]] = {}
+        real_append = intake._append
+        original_turn = intake._INTAKE_TURN
 
-        def call(text: str) -> None:
-            barrier.wait()
-            response = _http(
-                server.server_address[1],
-                {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                 "params": {"name": "memory_log", "arguments": {"text": text}}},
-                token=token,
-            )
-            found.append(json.loads(response.body))
+        class _Turn:
+            def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                if original_turn.locked():
+                    second_waiting.set()
+                    progress.set()
+                if timeout is None or timeout < 0:
+                    return original_turn.acquire(blocking)
+                return original_turn.acquire(blocking, timeout)
 
-        threads = [
-            threading.Thread(target=call, args=("the till logged the first loaf",)),
-            threading.Thread(target=call, args=("the till logged the second loaf",)),
-        ]
+            def release(self) -> None:
+                original_turn.release()
+
+            def locked(self) -> bool:
+                return original_turn.locked()
+
+        def append(root: Path, relative: str, payload: str) -> None:
+            if not entered.is_set():
+                entered.set()
+                if not release.wait(30):
+                    raise AssertionError("the first memory_log was never released")
+            real_append(root, relative, payload)
+
+        def call(name: str, text: str) -> None:
+            try:
+                response = _http(
+                    server.server_address[1],
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                     "params": {"name": "memory_log", "arguments": {"text": text}}},
+                    token=token,
+                )
+                found[name] = json.loads(response.body)
+            finally:
+                if name == "second":
+                    progress.set()
+
+        intake._INTAKE_TURN = _Turn()  # type: ignore[assignment]
+        first = threading.Thread(target=call, args=("first", "the till logged the first loaf"))
+        second = threading.Thread(target=call, args=("second", "the till logged the second loaf"))
         try:
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
+            with mock.patch.object(intake, "_append", append):
+                first.start()
+                self.assertTrue(entered.wait(30), "the first memory_log did not reach the hold")
+                second.start()
+                self.assertTrue(progress.wait(30), "the second memory_log neither waited nor finished")
+                self.assertTrue(second_waiting.is_set(), f"the second call did not wait its turn: {found.get('second')}")
+                release.set()
+                first.join(30)
+                second.join(30)
         finally:
+            release.set()
+            intake._INTAKE_TURN = original_turn
             server.shutdown()
             server.server_close()
-        self.assertEqual(len(found), 2)
+            first.join(5)
+            second.join(5)
+        self.assertFalse(first.is_alive() or second.is_alive())
         lanes: list[str] = []
-        for reply in found:
+        for name in ("first", "second"):
+            reply = found[name]
             result = reply["result"]
             self.assertNotIn("error", reply)
             self.assertFalse(result["isError"], result)
@@ -187,6 +225,57 @@ class ToolBoundaryTests(ForestTestCase):
         stored = "\n".join(lanes)
         self.assertIn("first loaf", stored)
         self.assertIn("second loaf", stored)
+
+    def test_a_memory_log_that_does_not_end_is_lock_busy_for_the_next(self) -> None:
+        token = mcp.ensure_token(self.root).decode("ascii")
+        server = mcp.serve_http(self.root, "till-bot", "127.0.0.1", 0, token=token.encode("ascii"))
+        entered, release = threading.Event(), threading.Event()
+        finished = threading.Event()
+        found: dict[str, object] = {}
+        real_append = intake._append
+
+        def append(root: Path, relative: str, payload: str) -> None:
+            entered.set()
+            if not release.wait(30):
+                raise AssertionError("the stalled memory_log was never released")
+            real_append(root, relative, payload)
+
+        def call(name: str, text: str) -> None:
+            try:
+                response = _http(
+                    server.server_address[1],
+                    {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                     "params": {"name": "memory_log", "arguments": {"text": text}}},
+                    token=token,
+                )
+                found[name] = json.loads(response.body)
+            finally:
+                if name == "second":
+                    finished.set()
+
+        first = threading.Thread(target=call, args=("first", "the till logged and did not finish"))
+        second = threading.Thread(target=call, args=("second", "the till logged while the first still held"))
+        try:
+            with mock.patch.object(intake, "_append", append):
+                first.start()
+                self.assertTrue(entered.wait(30), "the first memory_log did not reach the hold")
+                # The second call's wait is the production budget. This wait is only the deadline.
+                second.start()
+                self.assertTrue(finished.wait(10), "the second memory_log did not answer within the budget")
+            reply = found["second"]
+            result = reply["result"]
+            self.assertTrue(result["isError"], result)
+            body = json.loads(result["content"][0]["text"])
+            self.assertEqual(body["code"], "lock_busy")
+            self.assertEqual(body["next"], "retry")
+            self.assertGreater(body["waited_seconds"], 1.0)
+            self.assertLess(body["waited_seconds"], intake.LOG_WAIT_SECONDS + 1.0)
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+            first.join(5)
+            second.join(5)
 
     def test_every_tool_answer_keeps_the_forest_and_drops_the_machine(self) -> None:
         """A page line comes back whole. A refusal carries no root, home, host or user."""

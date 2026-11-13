@@ -648,9 +648,11 @@ server says itself carries no host name, process id, user name, home folder or a
 refusal's `details` name a path as the caller gave it, or relative to the forest; `real_path`, `root`
 and an absolute `source` are for the terminal only, and the door drops them. In a refusal's own text
 the forest root becomes a forest path (the root alone becomes `.`) and the home folder becomes `~`.
-`lock_busy` and `lock_already_held` leave a tool as one busy refusal, next `retry`. The command line
-still shows the lock's owner, and the absolute path, to the person at the terminal. Two `memory_log`
-calls in one server process wait their turn.
+`lock_busy` and `lock_already_held` leave a tool as one busy refusal, next `retry`. `waited_seconds`
+is how long that call waited. The command line still shows the lock's owner, and the absolute path,
+to the person at the terminal. Two `memory_log` calls in one server process share one budget, the
+same two seconds as the intake file lock: the second waits its turn, and a first call that does not
+end answers the second with `lock_busy` once that budget is spent, not again afterwards.
 
 The clients checked here, `claude mcp`, `codex mcp` and `grok mcp`, speak protocol versions
 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also

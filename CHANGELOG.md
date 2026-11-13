@@ -13,6 +13,9 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- One intake in a server waits as long as the file lock waits, and no longer. A caller that does
+  not get its turn receives `lock_busy` with `next: retry` and the `waited_seconds` it actually waited.
+  The turn and the file lock share one budget.
 - A tool returns a page's lines exactly, even when a line is a path. A refusal, and only a refusal,
   carries no host name, process id, user name, home folder or absolute path: the forest root in the
   server's own text becomes a forest path, the home folder becomes `~`, and `real_path`, `root` and an
