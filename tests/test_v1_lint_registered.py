@@ -3,6 +3,8 @@ that hits and one that does not, and the agreement of ``forest check`` with the 
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import sys
 from pathlib import Path
 

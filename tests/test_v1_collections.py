@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import sys
 from pathlib import Path
 

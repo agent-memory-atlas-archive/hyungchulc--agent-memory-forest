@@ -43,6 +43,8 @@ import sys
 import tempfile
 import time
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from collections.abc import Callable, Mapping
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
@@ -328,7 +330,7 @@ class Served:
                 line += piece
         finally:
             child.kill()
-            child.wait()
+            child.wait(timeout=30)
             child.stderr.close()
         said = f"forest {shlex.join(words)} -> {line.decode('utf-8', 'replace')!r}"
         if not line.decode("utf-8", "replace").startswith(self.handshake):
@@ -1441,7 +1443,7 @@ class _Scratch:
     def __init__(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.base = Path(self._temporary.name).resolve()
-        self.root = self.base / "forest"
+        self.root = self.base / "forest space ' $"
 
     def make(self, name: str, files: Mapping[str, str | bytes | None],
              beside: Mapping[str, str | bytes | Callable[[Path, Path], str]] = {}) -> None:
@@ -1543,7 +1545,10 @@ def _carry_out(case: unittest.TestCase, command: str, scratch: _Scratch) -> Any:
     """One ``run`` command: parsed by its program's own parser, then run on the forest the refusal is about."""
     case.assertTrue(command, "a run move with no command")
     case.assertIsNone(_PLACEHOLDER.search(command), f"a placeholder in the command: {command}")
-    words = shlex.split(command)
+    try:
+        words = shlex.split(command)
+    except ValueError as error:
+        case.fail(f"the run command is not shell-quoted correctly: {error}")
     case.assertIn(words[0], ("forest", "memory-forest"), f"not a command of the package: {command}")
     parser = cli.build_forest_parser() if words[0] == "forest" else cli.build_parser()
     with _Streams(b""):

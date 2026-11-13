@@ -8,6 +8,8 @@ byte for byte (the move log is the record of that rewrite).
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import shutil
 import sys
 from collections import Counter

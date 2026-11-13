@@ -45,7 +45,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from itertools import combinations
-from pathlib import Path, PurePosixPath
+from pathlib import PurePath as Path, PurePosixPath
 from typing import Any, Final
 
 from . import layout, system

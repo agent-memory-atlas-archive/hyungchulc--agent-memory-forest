@@ -5,6 +5,8 @@ The bakery's night shift and its clerks are invented.
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import contextlib
 import itertools
 import re

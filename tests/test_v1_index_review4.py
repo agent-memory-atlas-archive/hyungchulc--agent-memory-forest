@@ -10,6 +10,8 @@ import json
 import os
 import sqlite3
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from pathlib import Path
 from unittest import mock
 

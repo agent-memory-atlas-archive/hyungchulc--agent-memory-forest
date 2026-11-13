@@ -9,6 +9,8 @@ import sys
 import textwrap
 import time
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

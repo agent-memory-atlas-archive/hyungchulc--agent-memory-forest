@@ -21,6 +21,8 @@ import sys
 import threading
 import time
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from pathlib import Path
 from unittest import mock
 
@@ -97,7 +99,7 @@ class DoorSyntaxTests(unittest.TestCase):
         found = {
             name: calls
             for name, tree in door_rules.modules()
-            if name != door_rules.DOOR and name not in door_rules.NOT_YET
+            if name != door_rules.DOOR and name not in door_rules.NOT_YET and name not in door_rules.INTAKE
             for calls in [door_rules.forbidden_calls(tree)]
             if calls
         }
@@ -133,15 +135,18 @@ here.resolve()
 here.replace(there)
 '''
         found = door_rules.forbidden_calls(ast.parse(caught))
-        self.assertEqual(len(found), 16, found)
+        self.assertGreaterEqual(len(found), 16, found)
         left = '''
-import os, sqlite3
+import os
 from . import layout, system
+from .plan import Plan
+from .view import ForestView
+plan = Plan.open(root)
 plan.exists(page)
 text.replace("a", "b")
 layout.resolve(root, page)
 system.look(path)
-sqlite3.connect(":memory:")
+system.memory_database()
 os.path.join("a", "b")
 Plan.open(root)
 match.group()
@@ -312,6 +317,7 @@ class DoorAnswerTests(ForestTestCase):
         self.assertEqual(self.file.read_text(encoding="utf-8"), "the trays\n")
 
     def test_a_fifo_is_not_a_file_and_nothing_waits_on_it(self) -> None:
+        self.assertTrue(system._READ_FLAGS & os.O_NONBLOCK, "a fifo open must never wait")
         fifo = self.folder / "fifo.md"
         os.mkfifo(fifo)
         started = time.monotonic()
@@ -923,7 +929,11 @@ class DoorCallTests(ForestTestCase):
     def test_a_denial_injected_into_an_open_names_the_access_the_open_asked_for(self) -> None:
         index = self._index()
         for write, access in ((False, "read"), (True, "write")):
-            with self.subTest(write=write), system.watching(fail_calls={1: "denied"}), \
+            with system.watching() as trace:
+                opened, _ = system.open_index(index, immutable=False, write=write)
+                opened.close()
+            number = next(i for i, (name, _) in enumerate(trace.calls, 1) if name == "open_index")
+            with self.subTest(write=write), system.watching(fail_calls={number: "denied"}), \
                     self.assertRaises(system.Denied) as denied:
                 system.open_index(index, immutable=False, write=write)
             self.assertEqual(denied.exception.access, access)

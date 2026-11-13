@@ -13,6 +13,8 @@ import sys
 import threading
 import time
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from io import StringIO

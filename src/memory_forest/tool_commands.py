@@ -40,7 +40,7 @@ def _report(arguments: argparse.Namespace, result: dict[str, Any]) -> int:
 
 def _move(operation: str, **fixed: Any):
     def command(arguments: argparse.Namespace) -> int:
-        values = {key: getattr(arguments, key) for key in fixed}
+        values = {key: vars(arguments)[key] for key in fixed}
         result = forest_move.execute(
             forest_root(arguments), operation, dry_run=arguments.dry_run, lock=arguments.lock_token,
             why=arguments.why, **{fixed[key]: value for key, value in values.items()},

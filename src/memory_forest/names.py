@@ -28,7 +28,7 @@ import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Final
 
 from . import system

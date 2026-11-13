@@ -579,6 +579,8 @@ def _call(
         raise
     admitted = ""
     try:
+        from .config import selected_root
+        root = selected_root(root)
         if group:
             resolved = groups.resolve_caller(root, group, str(arguments["agent"]))
             reader = resolved.id

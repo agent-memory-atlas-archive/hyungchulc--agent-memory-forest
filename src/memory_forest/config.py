@@ -16,7 +16,7 @@ import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -433,7 +433,7 @@ class Config:
 
     @property
     def zone(self) -> ZoneInfo:
-        return ZoneInfo(self.forest.timezone)
+        return system.timezone_info(self.forest.timezone)
 
     @property
     def language(self) -> str:
@@ -654,7 +654,7 @@ def _intake_tools(key: str, raw: Any, source: str | None) -> tuple[IntakeToolSet
             item_key = f"{dotted}.{field_name}"
             if field_name not in _INTAKE_FIELDS:
                 raise _error(item_key, "is not a known setting", source)
-            default = getattr(defaults, field_name)
+            default = _values(defaults)[field_name]
             if isinstance(default, bool):
                 if not isinstance(value, bool):
                     raise _error(item_key, "must be true or false", source)
@@ -681,7 +681,7 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
         dotted = f"{name}.{key}"
         if key not in known:
             raise _error(dotted, "is not a known setting", source)
-        default = getattr(defaults, key)
+        default = _values(defaults)[key]
         if name == "numbers" and key == "identity_formats":
             values[key] = tuple(
                 parse_identity_format(item, key=dotted, source=source)
@@ -731,7 +731,7 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
 def _validate(config: Config) -> Config:
     source = config.source
     try:
-        ZoneInfo(config.forest.timezone)
+        system.timezone_info(config.forest.timezone)
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise _error("forest.timezone", f"{config.forest.timezone!r} is not a known time zone", source) from exc
     if _LANGUAGE_RE.fullmatch(config.forest.language) is None:
@@ -773,8 +773,8 @@ def _validate(config: Config) -> Config:
     if _SLUG_RE.fullmatch(folded) is None or folded in REQUIRED_TYPES:
         raise _error("agents.folded_type", f"{folded!r} is not a slug other than `agent` and `collection`", source)
     for key in ("shared_branch", "default_subtopic"):
-        if _SLUG_RE.fullmatch(getattr(levels, key)) is None:
-            raise _error(f"levels.{key}", f"{getattr(levels, key)!r} is not a slug", source)
+        if _SLUG_RE.fullmatch(_values(levels)[key]) is None:
+            raise _error(f"levels.{key}", f"{_values(levels)[key]!r} is not a slug", source)
     if config.embeddings.provider not in EMBEDDING_PROVIDERS:
         raise _error("embeddings.provider", f"must be one of {', '.join(EMBEDDING_PROVIDERS)}", source)
     if config.intake.tool_output not in TOOL_OUTPUTS:
@@ -794,13 +794,13 @@ def _validate(config: Config) -> Config:
             agents=replace(config.agents, unplaceable=(*config.agents.unplaceable, *intake_bad)),
         )
     for key in ("phone_patterns", "keep_whole"):
-        for value in getattr(config.numbers, key):
+        for value in _values(config.numbers)[key]:
             try:
                 re.compile(value)
             except re.error as exc:
                 raise _error(f"numbers.{key}", f"{value!r} is not a regular expression: {exc}", source) from exc
     for key in ("label_words", "joining_words", "count_words"):
-        for value in getattr(config.credentials, key):
+        for value in _values(config.credentials)[key]:
             if not value.strip():
                 raise _error(f"credentials.{key}", "must not hold an empty word", source)
             if key == "label_words" and value.strip().casefold() == "redacted":
@@ -895,6 +895,11 @@ def find_root(start: str | os.PathLike[str]) -> Path | None:
     return None
 
 
+def _values(value: Any) -> dict[str, Any]:
+    """Shallow fields of a frozen slots settings record, preserving nested record types."""
+    return dict(zip((item.name for item in fields(value)), value.__getstate__()))
+
+
 def _toml_value(value: Any) -> str:
     if isinstance(value, IdentityFormat):
         return _toml_value(value.text)
@@ -914,7 +919,7 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
     """A complete ``forest.toml`` for ``config``, every setting written out."""
     lines = ["# Settings of this forest. Every key is listed with its value; see the design, section 12."]
     for name in _SECTIONS:
-        section = getattr(config, name)
+        section = {"forest": config.forest, "owner": config.owner, "limits": config.limits, "numbers": config.numbers, "credentials": config.credentials, "subjects": config.subjects, "names": config.names, "levels": config.levels, "lint": config.lint, "record": config.record, "agents": config.agents, "intake": config.intake, "embeddings": config.embeddings}[name]
         lines.append("")
         lines.append(f"[{name}]")
         for item in fields(section):
@@ -922,20 +927,20 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
                 continue
             if name == "intake" and item.name == "tools":
                 continue
-            lines.append(f"{item.name} = {_toml_value(getattr(section, item.name))}")
+            lines.append(f"{item.name} = {_toml_value(_values(section)[item.name])}")
         if name == "intake":
             for tool in section.tools:
                 lines.append("")
                 lines.append(f"[intake.tools.{tool.id}]")
                 for key in _INTAKE_FIELDS:
-                    lines.append(f"{key} = {_toml_value(getattr(tool, key))}")
+                    lines.append(f"{key} = {_toml_value(_values(tool)[key])}")
         if name == "agents":
             for agent in section.known:
                 lines.append("")
                 lines.append(f"[agents.known.{agent.id}]")
                 for key in ("name", "role"):
-                    if getattr(agent, key):
-                        lines.append(f"{key} = {_toml_value(getattr(agent, key))}")
+                    if _values(agent)[key]:
+                        lines.append(f"{key} = {_toml_value(_values(agent)[key])}")
             for group in section.groups:
                 lines.append("")
                 lines.append(f"[agents.groups.{group.id}]")
@@ -946,3 +951,28 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
                 if group.source:
                     lines.append(f"source = {_toml_value(group.source)}")
     return "\n".join(lines) + "\n"
+
+
+def no_forest(root: str | None) -> MemoryForestError:
+    """A selected folder has no forest marker. Only the caller can choose a different forest."""
+    where = "this folder or any folder above it" if root is None else root
+    return MemoryForestError(
+        "no_forest",
+        f"No forest.toml in {where}. Name the forest's folder with `--root <folder>`; "
+        "`forest init <folder>` makes a new forest in an empty folder.",
+    )
+
+
+def selected_root(chosen: str | os.PathLike[str]) -> Path:
+    """The same explicitly selected forest for the CLI and MCP, including a missing marker."""
+    import shlex
+    from .safety import require_real_root
+
+    root = require_real_root(chosen)
+    kind = system.kind(root / CONFIG_FILENAME)
+    if kind is None:
+        raise no_forest(shlex.quote(str(root)))
+    if kind != "file":
+        raise MemoryForestError("settings_invalid", f"forest.toml is a {kind}, not a regular file.",
+                                details={"source": CONFIG_FILENAME}, next_step="report")
+    return root

@@ -5,6 +5,8 @@ The bakery and the bots are invented. Nothing here is a real person, shop or tra
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import errno
 import json
 import os

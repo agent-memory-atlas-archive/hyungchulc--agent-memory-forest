@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 import xml.etree.ElementTree as ET
 from pathlib import Path
 

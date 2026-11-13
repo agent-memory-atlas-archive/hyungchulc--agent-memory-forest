@@ -9,6 +9,7 @@ every guard in it:
   condition    the test of an if, elif, while, assert or conditional expression, a comprehension
                filter or a case guard, a lambda's body or a return's value that is an and/or, a not
                or a comparison, and each and/or operand inside one: turned round, not (...)
+  entry        one literal set member or dictionary entry removed
   comparison   one operator turned round: == and !=, < and >=, > and <=, in and not in, is and
                is not (each operator of a chained comparison on its own)
   return       a return that is not the last statement of its function: replaced by pass
@@ -25,7 +26,7 @@ in a niced child process, one at a time:
 
   killed       the tests failed or errored: they notice the change
   timeout      the tests ran past their deadline, ten times as long as the unchanged tests took
-               (at least 30 s, at most --timeout): counted with killed
+               (at least 30 s, at most --timeout): listed as killed by bound, separately from an assertion
   survived     the tests passed: nothing notices this guard
   invalid      the changed module does not compile or import: listed apart, not counted
 
@@ -79,7 +80,7 @@ from typing import Any, Iterator
 ROOT = Path(__file__).resolve().parents[1]
 PLACES = ("src", "tests")  # the folders a target may be in; the copy puts both on PYTHONPATH
 STATE_FORMAT = 1
-KINDS = ("condition", "comparison", "return", "boolean", "raise", "loop", "continue", "break")
+KINDS = ("condition", "comparison", "return", "boolean", "raise", "loop", "continue", "break", "entry")
 RESULTS = ("killed", "timeout", "survived", "invalid")
 DEADLINE_FACTOR = 10  # a mutant's tests may run this many times as long as the unchanged tests took
 DEADLINE_LEAST = 30.0  # seconds: a deadline is never shorter, so a slow start is not a kill
@@ -238,6 +239,12 @@ def mutation_points(definition: Function | Assignment) -> Iterator[tuple[str, as
             yield type(node).__name__.lower(), node, 0
         elif isinstance(node, Loop):
             yield "loop", node, 0
+        elif isinstance(node, ast.Set) and all(isinstance(item, ast.Constant) for item in node.elts):
+            for index in range(len(node.elts)):
+                yield "entry", node, index
+        elif isinstance(node, ast.Dict) and all(isinstance(item, ast.Constant) for item in node.keys):
+            for index in range(len(node.keys)):
+                yield "entry", node, index
         for child in ast.iter_child_nodes(node):
             yield from walk(child, last)
 
@@ -289,6 +296,15 @@ def replacement(kind: str, node: ast.AST, index: int, original: bytes) -> tuple[
         if len(ops) > 1:
             change += f" (operator {index + 1})"
         return f"({turned})".encode(), change
+    if kind == "entry":
+        if isinstance(node, ast.Set):
+            changed = ast.Set(elts=[item for at, item in enumerate(node.elts) if at != index])
+            removed = node.elts[index]
+        else:
+            changed = ast.Dict(keys=[item for at, item in enumerate(node.keys) if at != index],
+                               values=[item for at, item in enumerate(node.values) if at != index])
+            removed = node.keys[index]
+        return ast.unparse(changed).encode(), "remove " + ast.unparse(removed)
     if kind == "boolean":
         assert isinstance(node, ast.Constant)
         return repr(not node.value).encode(), f"{node.value!r} -> {not node.value!r}"
@@ -328,7 +344,7 @@ def _with_ids(mutants: list[Mutant], first: int) -> Iterator[Mutant]:
     seen: dict[str, int] = {}
     for mutant in mutants:
         parts = [mutant.target, mutant.kind, f"+{mutant.line - first}", str(mutant.column), mutant.excerpt]
-        if mutant.kind == "comparison":
+        if mutant.kind in {"comparison", "entry"}:
             parts.append(mutant.change)
         ident = "|".join(parts)
         seen[ident] = seen.get(ident, 0) + 1
@@ -598,10 +614,13 @@ def try_mutant(workspace: Workspace, group: Group, mutant: Mutant, timeout: floa
     path.write_bytes(changed)
     try:
         outcome, seconds = workspace.run(test_command(group.tests), timeout)
+        output = workspace.output()
+        if outcome == "failed" and "Timeout (" in output:
+            outcome = "timeout"
         if outcome == "failed" and workspace.run(import_command(group.module), timeout)[0] != "passed":
             return {"result": "invalid", "seconds": round(seconds, 1), "note": f"does not import: {workspace.tail(1)}"}
         result = {"failed": "killed", "passed": "survived", "timeout": "timeout"}[outcome]
-        return {"result": result, "seconds": round(seconds, 1)}
+        return {"result": result, "seconds": round(seconds, 1), "last_line": output.strip().splitlines()[-1:] }
     finally:
         path.write_bytes(group.source)
 
@@ -724,7 +743,7 @@ def duration(seconds: float) -> str:
 
 def code(text: str) -> str:
     """Source text as a Markdown code span, its pipes escaped for a table cell."""
-    text = text.replace("|", "\\|")
+    text = " ".join(text.split()).replace("|", "\\|")
     return f"`` {text} ``" if "`" in text else f"`{text}`"
 
 
@@ -767,12 +786,15 @@ def report(records: list[dict[str, Any]]) -> str:
         results = _ordered(record["results"])
         for _ident, result in results:
             rows.append([record["target"], result["kind"], str(result["line"]), code(result["excerpt"]),
-                         code(result["change"]), result["result"]])
+                         code(result["change"]),
+                         "yes" if result["result"] == "killed" else "",
+                         "yes" if result["result"] == "timeout" else "",
+                         "yes" if result["result"] == "survived" else result.get("note", "") if result["result"] == "invalid" else ""])
             if result["result"] == "invalid":
                 invalid.append(f"- {record['target']} line {result['line']} {result['kind']}: {result.get('note', '')}")
         totals.append(_totals(record, [result for _ident, result in results]))
     parts = [
-        table(["target", "kind", "line", "excerpt", "change", "result"], rows) if rows else "No mutant recorded yet.",
+        table(["target", "kind", "line", "excerpt", "change", "assertion", "bound", "survived"], rows) if rows else "No mutant recorded yet.",
         "",
         table(["target", "tests", *RESULTS, "not run", "noticed", "test time"], totals),
     ]
@@ -783,7 +805,7 @@ def report(records: list[dict[str, Any]]) -> str:
 
 def _totals(record: dict[str, Any], results: list[dict[str, Any]]) -> list[str]:
     count = {name: sum(result["result"] == name for result in results) for name in RESULTS}
-    noticed, counted = count["killed"] + count["timeout"], count["killed"] + count["timeout"] + count["survived"]
+    noticed, counted = count["killed"], count["killed"] + count["timeout"] + count["survived"]
     not_run = max(record.get("mutants", len(results)) - len(results), 0)
     return [
         record["target"], " ".join(record["tests"]), *(str(count[name]) for name in count), str(not_run),

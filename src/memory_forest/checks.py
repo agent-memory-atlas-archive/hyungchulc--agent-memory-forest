@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePath as Path
 
 from . import agents as forest_agents
 from . import collections as forest_collections

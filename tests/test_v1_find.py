@@ -17,6 +17,8 @@ import sys
 import threading
 import time
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 import urllib.error
 import urllib.request
 from contextlib import contextmanager, redirect_stderr, redirect_stdout

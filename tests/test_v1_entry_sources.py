@@ -3,6 +3,8 @@ one-time ``forest collections cite-entries`` upkeep, on made-up forests."""
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import gzip
 import sys
 from pathlib import Path

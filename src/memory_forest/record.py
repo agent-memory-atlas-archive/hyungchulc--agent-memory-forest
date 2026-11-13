@@ -22,7 +22,7 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Any, Final
 
 from . import archive as forest_archive

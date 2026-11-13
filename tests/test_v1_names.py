@@ -6,6 +6,8 @@ characters, Cyrillic, Greek and Arabic letters that mean a scout, a copier or no
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import hashlib
 import json
 import random
@@ -197,7 +199,7 @@ class IdTests(ForestTestCase):
         folder = self.base / "letters"
         (folder / "notes.json").mkdir(parents=True)
         (folder / "README").write_text("not a table\n", encoding="utf-8")
-        (folder / "latin.json").write_bytes((names.LETTERS_DIR / "latin.json").read_bytes())
+        (folder / "latin.json").write_bytes(Path(names.LETTERS_DIR / "latin.json").read_bytes())
         names.tables.cache_clear()
         self.addCleanup(names.tables.cache_clear)
         with mock.patch.object(names, "LETTERS_DIR", folder):

@@ -6,6 +6,8 @@ process.
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import json
 import os
 import select

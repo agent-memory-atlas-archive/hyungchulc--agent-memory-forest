@@ -4,7 +4,7 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Final
 
 from . import system
@@ -39,7 +39,9 @@ class ForestLimits:
             "max_links",
             "max_results",
         ):
-            if getattr(self, name) <= 0:
+            if {"max_files": self.max_files, "max_directories": self.max_directories, "max_depth": self.max_depth,
+                "max_total_bytes": self.max_total_bytes, "max_file_bytes": self.max_file_bytes,
+                "max_links": self.max_links, "max_results": self.max_results}[name] <= 0:
                 raise ValueError(f"{name} must be positive")
 
 
@@ -74,11 +76,11 @@ def _absolute_lexical(path: str | os.PathLike[str]) -> Path:
     return system.absolute(path)
 
 
-def _assert_real(path: Path, *, code: str = "symlink_forbidden") -> None:
+def _assert_real(path: Path) -> None:
     real = system.real_path(path)
     if real != path:
         raise MemoryForestError(
-            code,
+            "symlink_forbidden",
             "The selected path must be a real path with no symlink components.",
             details={"path": str(path), "real_path": str(real)},
         )

@@ -16,7 +16,7 @@ import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path, PurePosixPath
+from pathlib import PurePath as Path, PurePosixPath
 from typing import Any, Final
 
 from . import system

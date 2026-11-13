@@ -22,7 +22,7 @@ import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -535,7 +535,7 @@ def _zone_from(name: str, forest_zone: ZoneInfo) -> ZoneInfo | timezone:
         sign = 1 if match.group(1) == "+" else -1
         return timezone(sign * timedelta(hours=int(match.group(2)), minutes=int(match.group(3))))
     try:
-        return ZoneInfo(name)
+        return system.timezone_info(name)
     except Exception:
         return forest_zone
 

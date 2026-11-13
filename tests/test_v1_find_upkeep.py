@@ -15,6 +15,8 @@ import sys
 import threading
 import time
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
@@ -901,7 +903,7 @@ class QuerySizeTests(ForestTestCase):
 
 # One digest of MASKING_VERSION and the sources a read runs. Raise the version when those sources change,
 # then replace this pin with the digest the failure prints.
-_MASKING_PIN = "489a1d1c5e4191cc6747c59f4dca3c560ece90f7c4ddb0a3249143d874771d58"
+_MASKING_PIN = "002c8ee1d5a4faa33ffc3df5c8608304b4cd7f5ab6ef7996b172209006a4a160"
 _MASKING_SOURCES = (
     ("numbers.py", "star_numbers: the code a read runs on a number"),
     ("credentials.py", "the sign-in rules, shown, and MASKING_VERSION"),

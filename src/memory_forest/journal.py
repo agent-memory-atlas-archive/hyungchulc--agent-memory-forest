@@ -26,7 +26,7 @@ import json
 import os
 import secrets
 import sys
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Any, Final
 
 from . import layout, system

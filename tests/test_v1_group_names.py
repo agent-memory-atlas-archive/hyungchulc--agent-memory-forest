@@ -5,6 +5,8 @@ The bakery, Ilse, Juno and the bots are invented. Nothing here is a real person.
 
 from __future__ import annotations
 
+import bounds
+
 import json
 import os
 import select

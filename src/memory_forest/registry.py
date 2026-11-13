@@ -18,7 +18,7 @@ import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePath as Path, PurePosixPath
 from typing import Any, Final
 
 from . import layout, system

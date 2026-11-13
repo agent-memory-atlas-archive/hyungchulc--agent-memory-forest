@@ -7,6 +7,8 @@ and neither value may come out whole. The values are made up and belong to no on
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import io
 import sys
 from contextlib import redirect_stderr, redirect_stdout

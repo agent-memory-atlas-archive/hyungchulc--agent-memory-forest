@@ -63,7 +63,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import PurePath as Path, PurePosixPath
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -72,7 +72,7 @@ from . import credentials as forest_credentials
 from .collections import owner_of
 from .config import Config, load_config
 from .credentials import shown as show_text
-from .errors import MemoryForestError, door_refusal
+from .errors import storage_error, MemoryForestError, door_refusal
 from .locking import atomic_write, hold_lock
 from .model import TimelineLine, parse_page
 from .registry import COLLECTION_OWN_SECTIONS, about_ids, normalize_name
@@ -208,7 +208,7 @@ def _leaked_sqlite(root: Any, exc: sqlite3.Error) -> MemoryForestError:
 
 def trigram_available() -> bool:
     """Whether this SQLite can build an FTS5 trigram index."""
-    connection = sqlite3.connect(":memory:")
+    connection = system.memory_database()
     try:
         connection.execute("CREATE VIRTUAL TABLE t USING fts5(x, tokenize = 'trigram')")
     except sqlite3.OperationalError:
@@ -567,9 +567,10 @@ def _failed_read(reading: derived.Reading, exc: sqlite3.Error) -> tuple[MemoryFo
     The identity is compared here, before the class is chosen, so a file that changed is busy rather than
     whatever the error would have been called.
     """
-    if reading.index is not None and not reading.index.same():
-        return _changed(reading), "changed"
+    changed = reading.index is not None and not reading.index.same()
     beside = _beside_now(reading)
+    if changed:
+        return _changed(reading), "changed"
     if beside is not None:
         return beside, "beside"
     facts = dataclasses.replace(reading.facts, metadata=derived.sqlite_kind(exc), changes=derived.NR)
@@ -643,6 +644,11 @@ def _read_index(
             if why == "sqlite" and retry_protocol and derived.sqlite_error_kind(exc) == "protocol":
                 raise index_error(exc, path=reading.path) from exc
             raise failed from exc
+        except BaseException:
+            if index is not None:
+                if not index.same():
+                    raise _changed(reading)
+            raise
         if index is not None and not index.same():
             raise _changed(reading)
         return result
@@ -795,8 +801,8 @@ _PERSON_MESSAGES = {
     ),
     "full": (
         "index_disk_full",
-        "The disk that holds the forest is full, so the search index cannot be written. Free space on that "
-        "disk, then ask again. Do not reset the index: building it again needs more room than it holds now.",
+        "SQLite reported that storage for the search index is full, so the index cannot be written. "
+        "The owner checks free space and the database page limit, then asks again. Do not reset a working index.",
     ),
     "io": (
         "index_io_error",
@@ -855,7 +861,7 @@ def index_error(exc: sqlite3.Error, *, busy_message: str = "", path: str) -> Mem
     details = {"path": path}
     if name:
         details["sqlite"] = name
-    return MemoryForestError(code, message, details=details, next_step="report")
+    return storage_error(code, message, details=details)
 
 
 def protocol_spent(waited_seconds: float, *, path: str) -> MemoryForestError:
@@ -1239,8 +1245,12 @@ def _write_held(
         _checkpoint(connection)
     except sqlite3.Error as exc:
         _roll_back(connection)
-        if not index.same():
+        changed = not index.same()
+        refused = _writer_state_error(published)
+        if changed:
             raise index_busy_error("The index file changed while it was written.", path=published_relative) from exc
+        if refused is not None:
+            raise refused from exc
         raise index_error(exc, busy_message=_WRITER_HELD, path=published_relative) from exc
     except system.Absent as exc:
         # A page or a lane file went away between the listing and the read. Nothing was published.
@@ -1252,7 +1262,17 @@ def _write_held(
         _roll_back(connection)
         raise
     finally:
-        index.close()
+        try:
+            unchanged = index.same()
+        finally:
+            index.close()
+        if not unchanged:
+            raise index_busy_error("The index file changed while it was written.", path=published_relative)
+        beside = system.relook_beside(published)
+        if beside is not None and beside.kind in ("not_a_file", "unreadable", "failed"):
+            refused = _writer_state_error(published)
+            if refused is not None:
+                raise refused
     for suffix in ("", "-wal", "-shm"):
         _owner_only(Path(str(published) + suffix))
     if created:
@@ -1282,6 +1302,17 @@ def _writer_first(connection: sqlite3.Connection) -> str:
     return str(mode)
 
 
+def _writer_state_error(published: Path) -> MemoryForestError | None:
+    reading = _facts(published.parent.parent, open_index=False)
+    since = system.abandoned_since(published)
+    if since is not None:
+        facts = dataclasses.replace(reading.facts, open="abandoned", metadata=derived.NR,
+                                    part=derived._moment(since))
+        reading = dataclasses.replace(reading, facts=facts)
+    decision = derived.decide(reading.facts, "build")
+    return derived.refusal(decision, reading) if decision.code is not None else None
+
+
 def _open_writer(
     published: Path, relative: str, busy_seconds: float = WRITER_TIMEOUT_SECONDS
 ) -> system.IndexFile:
@@ -1296,12 +1327,20 @@ def _open_writer(
     try:
         index, mode = system.open_index(published, immutable=False, write=True, first=_writer_first,
                                         busy_seconds=busy_seconds)
-    except system.Busy as exc:
-        raise index_busy_error("The index file could not be opened in time.", path=relative) from exc
-    except system.Changed as exc:
-        raise index_busy_error("The index file changed while it was opened.", path=relative) from exc
+    except system.Outcome as exc:
+        refused = _writer_state_error(published)
+        if refused is not None:
+            raise refused from exc
+        if exc.kind == "busy":
+            raise index_busy_error("The open of the index did not come back within its deadline.", path=relative) from exc
+        if exc.kind == "changed":
+            raise index_busy_error("The index file changed while it was opened.", path=relative) from exc
+        raise
     except sqlite3.Error as exc:
-        raise index_error(exc, busy_message=_WRITER_HELD, path=relative) from exc
+        refused = _writer_state_error(published)
+        if refused is not None:
+            raise refused from exc
+        raise index_error(exc, path=relative) from exc
     if str(mode).lower() != "wal":
         index.close()
         raise index_busy_error(
@@ -1391,7 +1430,7 @@ def expected_objects(trigram: bool) -> frozenset[tuple[str, str]]:
     Read from the schema itself, built once in memory, so an object added to ``_create_schema`` is
     checked without anyone listing it.
     """
-    connection = sqlite3.connect(":memory:")
+    connection = system.memory_database()
     try:
         _create_schema(connection, trigram=trigram)
         rows = connection.execute(
@@ -2213,7 +2252,7 @@ def _page_zone(page: Any, config: Config) -> ZoneInfo:
     if not name:
         return config.zone
     try:
-        return ZoneInfo(name)
+        return system.timezone_info(name)
     except Exception:
         return config.zone
 
@@ -2337,7 +2376,7 @@ def _zone_of(name: str | None, page_zone: ZoneInfo, forest_zone: ZoneInfo) -> Zo
     if parsed is not None:
         return parsed
     try:
-        return ZoneInfo(name)
+        return system.timezone_info(name)
     except Exception:
         return page_zone or forest_zone
 

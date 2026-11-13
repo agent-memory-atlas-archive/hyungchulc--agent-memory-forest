@@ -28,6 +28,8 @@ import sys
 import tempfile
 import time
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -36,6 +38,7 @@ from memory_forest import cli, derived, errors, mcp, search, system, timeline
 from memory_forest.errors import REFUSALS, MemoryForestError
 
 import door_rules
+import door_runtime
 import test_v1_door as door
 from test_v1_find import FILES
 
@@ -143,7 +146,7 @@ class Answer:
         self.command = error.get("command") if refused else None
 
 
-def call(root: Path, which: tuple[str, ...] | str) -> Answer:
+def _call_unwatched(root: Path, which: tuple[str, ...] | str) -> Answer:
     if isinstance(which, tuple):
         code, out, err = door.run_command(root, which)
         try:
@@ -154,6 +157,14 @@ def call(root: Path, which: tuple[str, ...] | str) -> Answer:
     reply = mcp._call(root, READER, {"name": which, "arguments": dict(door.TOOL_ARGUMENTS[which])}, "stdio")
     text = reply["content"][0]["text"]
     return Answer(text, bool(reply["isError"]), json.loads(text))
+
+
+def call(root, which):
+    with door_runtime.watching() as seen:
+        answer = _call_unwatched(root, which)
+    assert not [(name, event) for name, event in seen
+                if name != door_rules.DOOR and name not in door_rules.NOT_YET and name not in door_rules.INTAKE], seen
+    return answer
 
 
 # The intake modules are not through the door yet (``door_rules.NOT_YET``; another branch replaces them). A
@@ -181,6 +192,8 @@ def label(which: tuple[str, ...] | str) -> str:
 
 @unittest.skipIf(os.geteuid() == 0, "the superuser is never denied")
 class SweepTests(unittest.TestCase):
+    bound_seconds = 900
+
     """The sweep. One forest; it is put back from a clean copy whenever a run changed it."""
 
     @classmethod
@@ -339,6 +352,31 @@ class SweepTests(unittest.TestCase):
                          + ", ".join(f"{name} {self.sizes[name]} ({self.seconds[name]:.1f} s)" for name in self.sizes)
                          + f"; {len(self.left_for_merge)} runs left for the merge (a fault inside intake's append)\n")
         self.assertEqual(everything[:40], [], f"{len(everything)} problems")
+
+    def test_every_path_stays_failed_from_its_first_touch(self):
+        total = 0
+        started = time.monotonic()
+        merge_before = len(self.left_for_merge)
+        sizes = []
+        problems = []
+        for which in self.calls():
+            began = time.monotonic()
+            trace, intake = self._trace(which)
+            paths = {}
+            for number, (name, path) in enumerate(trace.calls):
+                for kind in system.CAN[name]:
+                    paths.setdefault((path, kind), intake[number])
+            for (path, kind), made_by_intake in paths.items():
+                before = time.monotonic()
+                with system.watching(fail_under={path: kind}) as watch:
+                    answer = call(self.root, which)
+                self._judge(which, f"under {_tail(path)}", kind, NEVER_SAID[kind], answer,
+                            time.monotonic() - before, watch, problems, intake_made=made_by_intake)
+                total += 1
+            sizes.append(f"{label(which)} {len(paths)} ({time.monotonic() - began:.1f} s)")
+        sys.stderr.write(f"\npath sweep: {total} runs in {time.monotonic() - started:.1f} s: " + ", ".join(sizes)
+                         + f"; {len(self.left_for_merge) - merge_before} runs left for the merge (a fault inside intake’s append)\n")
+        self.assertEqual(problems[:40], [], f"{len(problems)} problems")
 
 
 class EdgeTests(unittest.TestCase):
@@ -617,9 +655,19 @@ class ReviewRowTests(unittest.TestCase):
             target.write_text(text, encoding="utf-8")
         search.build(self.root)
         self.addCleanup(self._temporary.cleanup)
+        self.reference = self.root.parent / "reference"
+        shutil.copytree(self.root, self.reference, symlinks=True)
+
+    def _witness(self, facts: derived.Facts) -> None:
+        from claim_witnesses import Evidence
+        evidence = Evidence(self.root, self.reference)
+        self.witnessed = set(derived.decide(facts, "read").claims)
+        for key in self.witnessed:
+            self.assertTrue(evidence.check(key), (key, facts))
 
     def _expect(self, answer: Answer, label: str, facts: derived.Facts) -> None:
         decision = derived.decide(facts, "read")
+        self.assertTrue(set(decision.claims) <= self.witnessed)
         with self.subTest(door=label):
             self.assertTrue(answer.refused, answer.raw)
             self.assertEqual((answer.code, answer.next), (decision.code, decision.move), answer.raw)
@@ -631,8 +679,10 @@ class ReviewRowTests(unittest.TestCase):
     def test_a_root_listed_and_not_entered_is_one_true_answer_at_every_door(self) -> None:
         before = snapshot(self.root)
         mode = stat.S_IMODE(os.lstat(self.root).st_mode)
+        facts = derived.Facts(root_enter="denied", root_list="ok", root_write="no")
         os.chmod(self.root, 0o444)
         try:
+            self._witness(facts)
             answers = {f"forest {label(words)}": call(self.root, words) for words in door.agent_commands()}
             for words in (("index", "status"), ("index", "build"), ("index", "reset")):
                 answers[f"forest {label(words)}"] = _owner_command(self.root, *words)
@@ -646,9 +696,7 @@ class ReviewRowTests(unittest.TestCase):
         finally:
             os.chmod(self.root, mode)
         self.assertEqual(snapshot(self.root), before)
-        # Opening the folder follows the read bit on this system, so 0444 is entered and then
-        # forest.toml cannot be read. The execute bit alone is not what the act of entering asks.
-        facts = derived.Facts(root_enter="ok", root_list="ok", root_write="no", settings="denied")
+        # A dot lookup requires search (x); listing alone only proves read permission.
         self.assertGreater(len(answers), 20)
         for name, answer in answers.items():
             self._expect(answer, name, facts)
@@ -657,8 +705,11 @@ class ReviewRowTests(unittest.TestCase):
         folder = self.root / ".forest"
         before = snapshot(self.root)
         mode = stat.S_IMODE(os.lstat(folder).st_mode)
+        facts = derived.Facts(settings="ok", folder="folder", folder_enter="ok", folder_list="denied",
+                              folder_write="yes")
         os.chmod(folder, 0o300)
         try:
+            self._witness(facts)
             answers = {f"forest {' '.join(words)}": _owner_command(self.root, *words)
                        for words in (("index", "build"), ("index", "reset"))}
             for name in ("search.build", "search.reset"):
@@ -670,8 +721,6 @@ class ReviewRowTests(unittest.TestCase):
         finally:
             os.chmod(folder, mode)
         self.assertEqual(snapshot(self.root), before)
-        facts = derived.Facts(settings="ok", folder="folder", folder_enter="denied", folder_list="denied",
-                              folder_write="no")
         for name, answer in answers.items():
             self._expect(answer, name, facts)
 

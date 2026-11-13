@@ -24,7 +24,7 @@ import os
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
-from pathlib import Path, PurePosixPath
+from pathlib import PurePath as Path, PurePosixPath
 from typing import Any, Final
 
 from . import layout, numbers, registry, system

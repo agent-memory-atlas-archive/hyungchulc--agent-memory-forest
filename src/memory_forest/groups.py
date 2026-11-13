@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Any
 
 from . import agents as agents_mod

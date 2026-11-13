@@ -5,6 +5,8 @@ The bakery, its bots and their shifts are invented.
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import json
 import threading
 from datetime import datetime, timedelta, timezone

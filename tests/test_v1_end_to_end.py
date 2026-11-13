@@ -6,6 +6,8 @@ studio, her kiln, a glaze she mixes, and three agents.
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import subprocess
 import sys
 from pathlib import Path

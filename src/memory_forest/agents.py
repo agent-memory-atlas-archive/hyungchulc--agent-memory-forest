@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Any, Final
 
 from . import layout, registry, system

@@ -5,6 +5,8 @@ Every value is made up for the test; the names are from the invented kiln.
 
 from __future__ import annotations
 
+import bounds
+
 import io
 import json
 import sqlite3

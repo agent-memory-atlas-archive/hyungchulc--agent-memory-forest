@@ -10,6 +10,8 @@ import json
 import random
 import sys
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path

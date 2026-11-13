@@ -6,6 +6,8 @@ read at run time, and are not written into the tree.
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import json
 import os
 import subprocess

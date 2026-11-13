@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from unittest import mock
 
 from memory_forest import derived, search, system
@@ -101,6 +103,22 @@ class ReadRowsTests(ForestTestCase):
         self.assertEqual(caught.exception.code, "index_busy")
         self.assertEqual(caught.exception.details["state"], "busy")
         self.assertIn(derived.CLAIMS["index_changed"].sentence, caught.exception.message)
+
+    def test_a_non_sqlite_failure_still_compares_after_the_read(self):
+        def read(db):
+            db.execute("SELECT 1").fetchall()
+            raise OSError("a synthetic read failure")
+        with system.watching() as trace, self.assertRaises(OSError):
+            search._read_index(self.root, read)
+        self.assertIn(("call", "same_index"), _after_last_statement(trace.events))
+
+    def test_a_failure_after_metadata_compares_before_the_reading_is_closed(self):
+        def changes(reading):
+            reading.index.connection.execute("SELECT 1").fetchall()
+            raise OSError("a synthetic listing failure")
+        with system.watching() as trace, self.assertRaises(OSError):
+            search._facts(self.root, changes=changes)
+        self.assertIn(("call", "same_index"), _after_last_statement(trace.events))
 
 
 if __name__ == "__main__":

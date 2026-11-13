@@ -510,9 +510,9 @@ open and the metadata. What a state refuses with:
 | --- | --- | --- |
 | `access_denied` | this account cannot enter or list the forest folder or `.forest/`, or cannot read `forest.toml`, or, in a `.forest/` it cannot write, cannot read the pointer or the index. The text names what, and the access the owner gives | `report` |
 | `filesystem_error` | the system answered an error for a step of the path (the text names the error), and nothing this account may run cures it | `report` |
-| `index_busy` | the index lock is held, or the index, its pointer or `forest.toml` was in use or changed while it was read, or SQLite's open met its deadline | `retry` after `after_seconds`, stop at `stop_after_seconds` |
+| `index_busy` | the index lock is held, or the index, its pointer or `forest.toml` was in use or changed while it was read, or SQLite's open did not return by its deadline | `retry` after `after_seconds`, stop at `stop_after_seconds` |
 | `index_cannot_open` | `.forest/` is not a folder, the pointer is not a file, or SQLite cannot open the index | `report` |
-| `index_disk_full` | the disk is full | `report` |
+| `index_disk_full` | SQLite reports that index storage is full (the volume or its database page limit) | `report` |
 | `index_failed` | SQLite refused for a reason this package does not classify, a lock conflict inside this connection, or SQLite answered that the index cannot be written | `report` |
 | `index_io_error` | the disk returned an I/O error, or the locking protocol failed and this call's budget is spent | `report` |
 | `index_missing` | there is no index and none could be built yet | `run` `forest index build` |
@@ -587,7 +587,7 @@ lock, or the folder cannot be written, the JSON answer includes `stale` and the 
 and the search reads the index that is already published. A changed page of a tree is not counted in
 `stale`: `index status` lists the page, and a build brings it in.
 
-What a query costs, after a build with nothing changed: a search or a timeline read lists each folder of
+What a query costs, after a build with nothing changed and no live SQLite sidecars: a search or a timeline read lists each folder of
 the daily pages and of the lanes once and adds nothing per daily page or turn, but it compiles the
 registry from the trees on every call, so it reads each leaf of `04 stm` whole, with 46 door calls per
 leaf (its read, a look at its home as a registered subject, its names checked against the masking), and
@@ -793,3 +793,14 @@ forest mcp --as till-bot
 forest mcp --as till-bot --http 8765
 forest mcp --as-group bakery-bots --http 8765
 ```
+
+
+The boundary tests and both fault sweeps run under Python's audit hook. Silent filesystem calls are
+wrapped and checked against the running interpreter's function inventory. Each read compares the opened
+index after its last statement, before returning rows, and again before classifying a failed read.
+After a SQLite error or deadline the sidecar names are looked at again. An earlier still-blocked opener
+is `index_open_abandoned` with `report`, including after a path swap. Read probes of live sidecars use a
+helper process to preserve this process's SQLite locks. The test runs reported here were on macOS.
+
+When sidecars are present, each readable sidecar is probed by a bounded helper process before SQLite opens.
+Those processes are additional to the clean, closed-index counts above.

@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Any, Final, NoReturn
 
 from . import __version__
@@ -16,9 +16,11 @@ from . import archive as forest_archive
 from . import layout as forest_layout
 from . import credentials as forest_credentials
 from . import system
+
+system.configure_argument_library()
 from . import movelog as forest_movelog
 from . import registry as forest_registry
-from .config import CONFIG_FILENAME, DEFAULT_CONFIG, Config, find_root, load_config
+from .config import CONFIG_FILENAME, DEFAULT_CONFIG, Config, find_root, load_config, no_forest, selected_root
 from .core import audit_forest, doctor_forest, initialize_forest, validate_forest
 from .errors import MemoryForestError
 from .leaving import Masking, body as leaving_body
@@ -364,12 +366,7 @@ class ForestCommand:
 def _no_forest(root: str | None) -> MemoryForestError:
     """No forest where the call looked: the call names one (``fix``). No command is given: only the caller knows
     which folder holds its forest, and ``forest init`` makes a new one only in an empty folder."""
-    where = "this folder or any folder above it" if root is None else root
-    return MemoryForestError(
-        "no_forest",
-        f"No forest.toml in {where}. Name the forest's folder with `--root <folder>`; "
-        "`forest init <folder>` makes a new forest in an empty folder.",
-    )
+    return no_forest(root)
 
 
 def forest_root(arguments: argparse.Namespace) -> Path:
@@ -380,18 +377,7 @@ def forest_root(arguments: argparse.Namespace) -> Path:
     """
     chosen = getattr(arguments, "root", None)
     if chosen:
-        root = require_real_root(chosen)
-        settings = system.kind(root / CONFIG_FILENAME)
-        if settings is None:
-            raise _no_forest(shlex.quote(str(root)))
-        if settings != "file":
-            raise MemoryForestError(
-                "settings_invalid",
-                f"forest.toml is a {settings}, not a regular file.",
-                details={"source": CONFIG_FILENAME},
-                next_step="report",
-            )
-        return root
+        return selected_root(chosen)
     found = find_root(system.working_folder())
     if found is None:
         raise _no_forest(None)
@@ -700,7 +686,7 @@ def _hook_place(argv: Sequence[str]) -> str:
 
 
 def _root_for_hook_log(argv: Sequence[str]):
-    from pathlib import Path
+    from pathlib import PurePath as Path
 
     from .config import find_root
 

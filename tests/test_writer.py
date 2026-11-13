@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from pathlib import Path
 from unittest.mock import patch
 

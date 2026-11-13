@@ -8,6 +8,8 @@ byte with what they were before.
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import contextlib
 import io
 import os
@@ -85,7 +87,7 @@ class JournalTests(MoveTestCase):
                 root = self.forest_with_history()
                 before, before_folders = files(root), folders(root)
                 self.kill_at(root, point)
-                self.assertTrue(journal.journal_path(root).is_file())
+                self.assertTrue(Path(journal.journal_path(root)).is_file())
                 self.assertNotEqual(files(root), before)
                 problems = [problem.code for problem in run_checks(root, load_config(root), ["journal"])[1]]
                 self.assertEqual(problems, [journal.STANDING_CODE])
@@ -93,7 +95,7 @@ class JournalTests(MoveTestCase):
                 with contextlib.redirect_stderr(said), writer_lock(root, label="the next writer"):
                     pass
                 self.assertIn("rolled back an unfinished commit", said.getvalue())
-                self.assertFalse(journal.journal_path(root).exists())
+                self.assertFalse(Path(journal.journal_path(root)).exists())
                 self.assertEqual(files(root), before)
                 self.assertEqual(folders(root), before_folders)
                 self.assertEqual(movelog.resolve(root, MILLSTONE).path, MILLSTONE)
@@ -116,7 +118,7 @@ class JournalTests(MoveTestCase):
             with self.assertRaises(KeyboardInterrupt), contextlib.redirect_stderr(io.StringIO()):
                 with writer_lock(root):
                     pass
-        self.assertTrue(journal.journal_path(root).is_file())
+        self.assertTrue(Path(journal.journal_path(root)).is_file())
         result = subprocess.run(
             [sys.executable, "-c", "from memory_forest.cli import forest_main; raise SystemExit(forest_main())",
              "recover", "--root", str(root)], capture_output=True, text=True,
@@ -128,7 +130,7 @@ class JournalTests(MoveTestCase):
     def test_a_commit_that_succeeds_leaves_no_journal(self) -> None:
         root = self.forest()
         move.execute(root, "promote", subject="millstone-flour", today=TODAY)
-        self.assertFalse(journal.journal_path(root).exists())
+        self.assertFalse(Path(journal.journal_path(root)).exists())
         self.assertEqual(run_checks(root, load_config(root), ["journal"])[1], [])
 
     def test_a_failing_move_log_append_puts_every_page_back(self) -> None:
@@ -141,22 +143,22 @@ class JournalTests(MoveTestCase):
         with mock.patch.object(movelog, "append", broken):
             with self.assertRaises(OSError):
                 move.execute(root, "promote", subject="millstone-flour", today=TODAY)
-        self.assertFalse(journal.journal_path(root).exists())
+        self.assertFalse(Path(journal.journal_path(root)).exists())
         self.assertEqual(files(root), before)
         self.assertEqual(folders(root), before_folders)
 
     def test_an_unreadable_journal_is_refused_and_kept(self) -> None:
         root = self.forest()
-        journal.journal_path(root).parent.mkdir(parents=True, exist_ok=True)
-        journal.journal_path(root).write_bytes(b"not json")
+        Path(journal.journal_path(root)).parent.mkdir(parents=True, exist_ok=True)
+        Path(journal.journal_path(root)).write_bytes(b"not json")
         with self.assertRaises(MemoryForestError):
             with writer_lock(root):
                 pass
-        self.assertTrue(journal.journal_path(root).is_file())
+        self.assertTrue(Path(journal.journal_path(root)).is_file())
 
     def test_a_journal_of_an_unknown_schema_stops_the_next_writer_before_any_write(self) -> None:
         root = self.forest_with_history()
-        path = journal.journal_path(root)
+        path = Path(journal.journal_path(root))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{"schema": "memory-forest-journal/99", "pages": {}}', encoding="ascii")
         before = files(root)
@@ -175,8 +177,8 @@ class JournalTests(MoveTestCase):
         shutil.copytree(root, copy)
         with contextlib.redirect_stderr(io.StringIO()), writer_lock(copy, label="the copy's writer"):
             pass
-        self.assertFalse(journal.journal_path(copy).exists())
+        self.assertFalse(Path(journal.journal_path(copy)).exists())
         self.assertEqual(files(copy), before)
-        self.assertTrue(journal.journal_path(root).is_file())  # the original keeps its journal and its pages
+        self.assertTrue(Path(journal.journal_path(root)).is_file())  # the original keeps its journal and its pages
         self.assertEqual(files(root), half)
 

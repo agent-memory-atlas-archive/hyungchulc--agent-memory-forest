@@ -20,6 +20,8 @@ import sqlite3
 import stat
 import tempfile
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Callable

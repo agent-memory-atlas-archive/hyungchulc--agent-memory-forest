@@ -36,31 +36,22 @@ INTAKE = frozenset(name for name, owner in NOT_YET.items() if "intake branch" in
 }
 DOOR = "system.py"
 
-# Functions of these modules touch the disk, or the process's place on it. ``os.path`` names those that ask
-# the disk (``abspath`` asks for the working folder); the pure ones (``join``, ``dirname``) are not here.
-FORBIDDEN_MODULE_FUNCTIONS: dict[str, frozenset[str]] = {
-    "os": frozenset({
-        "open", "fdopen", "stat", "lstat", "fstat", "scandir", "listdir", "walk", "fwalk", "mkdir", "makedirs",
-        "remove", "unlink", "rmdir", "removedirs", "rename", "renames", "replace", "chmod", "lchmod", "fchmod",
-        "chown", "lchown", "fchown", "access", "utime", "readlink", "symlink", "link", "truncate", "ftruncate",
-        "read", "write", "pread", "pwrite", "close", "lseek", "fsync", "fdatasync", "mkfifo", "mknod",
-        "statvfs", "fstatvfs", "getcwd", "getcwdb", "chdir", "fchdir", "chroot", "sendfile", "copy_file_range",
-        "dup", "dup2", "pipe", "openpty",
-    }),
-    "os.path": frozenset({
-        "exists", "lexists", "isfile", "isdir", "islink", "ismount", "isjunction", "getsize", "getmtime",
-        "getatime", "getctime", "realpath", "samefile", "sameopenfile", "abspath",
-    }),
-    "io": frozenset({"open", "open_code", "FileIO"}),
-    "codecs": frozenset({"open"}),
-    "fcntl": frozenset({"flock", "lockf", "fcntl", "ioctl"}),
+# Imports are closed. These modules compute in memory; the narrow socket/http imports implement the
+# transport, not a file reader. sqlite3 is types, constants and errors only. Path is lexical only.
+ALLOWED_IMPORTS = frozenset({
+    "__future__", "argparse", "bisect", "calendar", "collections", "collections.abc", "contextlib",
+    "dataclasses", "datetime", "enum", "errno", "functools", "hashlib", "hmac", "http.server",
+    "itertools", "json", "os", "pathlib", "re", "secrets", "shlex", "socket", "sqlite3",
+    "sys", "threading", "time", "tomllib", "typing", "unicodedata", "urllib.parse", "zoneinfo",
+})
+# No path lookup: PathLike is a protocol, fspath converts, getpid reads this process's identifier.
+# path is checked separately.
+ALLOWED_OS = {
+    "PathLike": "typing protocol", "fspath": "text conversion", "getpid": "own process identifier",
+    "path": "lexical functions checked separately",
 }
-# Every function of these modules touches the disk.
-FORBIDDEN_MODULES = frozenset({"shutil", "tempfile", "glob"})
-# Methods of a path object that touch the disk, with the number of positional arguments the path method
-# takes: a method of the same name with another count (``plan.exists(page)``, ``text.replace(a, b)``) is
-# another object's. ``group`` is left out: a path's group and a match's group cannot be told apart, and no
-# module asks a path for its group.
+ALLOWED_OS_PATH = frozenset({"join", "dirname", "basename", "split", "splitext", "splitdrive", "normpath",
+                             "normcase", "isabs", "commonprefix", "commonpath"})
 PATH_METHODS: dict[str, tuple[int, ...]] = {
     "exists": (0,), "is_file": (0,), "is_dir": (0,), "is_symlink": (0,), "is_fifo": (0,), "is_socket": (0,),
     "is_block_device": (0,), "is_char_device": (0,), "is_mount": (0,), "is_junction": (0,), "stat": (0,),
@@ -71,10 +62,6 @@ PATH_METHODS: dict[str, tuple[int, ...]] = {
     "readlink": (0,), "resolve": (0, 1), "absolute": (0,), "samefile": (1,), "owner": (0,),
     "cwd": (0,), "home": (0,), "copy": (1,), "copy_into": (1,), "move": (1,), "move_into": (1,),
 }
-# Receivers whose methods of those names are the package's own (a plan, a view, the door itself).
-OWN_RECEIVERS = frozenset({"plan", "Plan", "self", "view", "ForestView", "forest", "system"})
-
-
 def modules() -> list[tuple[str, ast.Module]]:
     """Every module of the package, by its path under the package."""
     return [
@@ -83,81 +70,129 @@ def modules() -> list[tuple[str, ast.Module]]:
     ]
 
 
-def _imports(tree: ast.Module) -> dict[str, str]:
-    """Local names bound to the modules the rules name, and to their functions: ``{local: dotted}``."""
-    bound: dict[str, str] = {}
-    watched = set(FORBIDDEN_MODULE_FUNCTIONS) | FORBIDDEN_MODULES | {"builtins", "sqlite3", "os.path"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in watched:
-                    bound[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
-        elif isinstance(node, ast.ImportFrom) and node.module in watched:
-            for alias in node.names:
-                bound[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-    return bound
 
-
-def _dotted(node: ast.expr) -> str | None:
+def _dotted(node):
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
         base = _dotted(node.value)
-        return None if base is None else f"{base}.{node.attr}"
+        return None if base is None else base + "." + node.attr
     return None
 
 
-def _module_names(tree: ast.Module) -> set[str]:
-    """Local names bound to a module (``import x``, ``from . import x``): a call on one is a module's function."""
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and (node.module is None or node.level > 0):
-            names.update(alias.asname or alias.name for alias in node.names)
-    return names
-
-
 def forbidden_calls(tree: ast.Module) -> list[tuple[int, str]]:
-    """Every call in ``tree`` that touches the disk without the door: ``(line, what)``."""
-    bound = _imports(tree)
-    module_names = _module_names(tree) - set(bound)
-    found: list[tuple[int, str]] = []
+    """Fail closed on imports, filesystem capabilities and dynamic lookup, even passed as a value.
+
+    A receiver is a package class only through its import, annotation, constructor or enclosing class.
+    Relative imports of symbols are not assumed to be modules.
+    """
+    bound = {}
+    own = set()
+    classes = {}
+    found = set()
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    bound[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
+                    if alias.name not in ALLOWED_IMPORTS and not alias.name.startswith("memory_forest"):
+                        found.add((node.lineno, "import " + alias.name))
+            else:
+                module = node.module or ""
+                if module == "os" and any(a.name not in ALLOWED_OS for a in node.names):
+                    found.add((node.lineno, "non-pure os import"))
+                if module == "os.path" and any(a.name not in ALLOWED_OS_PATH for a in node.names):
+                    found.add((node.lineno, "non-pure os.path import"))
+                if module == "sqlite3" and any(a.name in {"connect", "Connection"} for a in node.names):
+                    found.add((node.lineno, "SQLite constructor import"))
+                if module == "pathlib" and any(a.name in {"Path", "PosixPath", "WindowsPath"} for a in node.names):
+                    found.add((node.lineno, "concrete path"))
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    bound[local] = module + "." + alias.name
+                    if node.level or module.startswith("memory_forest"):
+                        if module:
+                            own.add(module)
+                        # Resolve actual modules/classes, never the receiver's spelling.
+                        source = PACKAGE / (module.replace(".", "/") + ".py") if module else None
+                        if source is not None and source.is_file():
+                            symbols = {item.name for item in ast.parse(source.read_text()).body if isinstance(item, ast.ClassDef)}
+                            if alias.name in symbols:
+                                own.add(local)
+                        if not module and (PACKAGE / (alias.name + ".py")).is_file():
+                            own.add(local)
+                if not node.level and module not in ALLOWED_IMPORTS and not module.startswith("memory_forest"):
+                    found.add((node.lineno, "import " + module))
+        if isinstance(node, ast.ClassDef):
+            classes[node.name] = {n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            own.add(node.name)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg) and isinstance(node.annotation, ast.Name) and node.annotation.id in own:
+            own.add(node.arg)
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            if isinstance(value, ast.Call):
+                base = (_dotted(value.func) or "").split(".")[0]
+                if base in own:
+                    for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                        if isinstance(target, ast.Name):
+                            own.add(target.id)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            full = bound.get(node.id, node.id)
+            if full in {"open", "builtins.open", "eval", "exec", "compile", "__import__"}:
+                found.add((node.lineno, full))
+        if isinstance(node, ast.Attribute):
+            dotted = _dotted(node)
+            if dotted:
+                head, _, rest = dotted.partition(".")
+                full = bound.get(head, head) + ("." + rest if rest else "")
+                if full.startswith("os.path.") and full.split(".")[2] not in ALLOWED_OS_PATH:
+                    found.add((node.lineno, full))
+                elif full.startswith("os.") and not full.startswith("os.path.") and full.split(".")[1] not in ALLOWED_OS:
+                    found.add((node.lineno, full))
+                if full in {"sqlite3.connect", "sqlite3.Connection", "builtins.open"}:
+                    current = node
+                    annotation = False
+                    while current in parents:
+                        parent = parents[current]
+                        if isinstance(parent, (ast.arg, ast.AnnAssign)) and parent.annotation is current:
+                            annotation = True
+                            break
+                        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and parent.returns is current:
+                            annotation = True
+                            break
+                        if isinstance(parent, ast.stmt):
+                            break
+                        current = parent
+                    if not annotation:
+                        found.add((node.lineno, full))
         if not isinstance(node, ast.Call):
             continue
-        func = node.func
-        if isinstance(func, ast.Name) and func.id == "open" and "open" not in bound:
-            found.append((node.lineno, "open()"))
-            continue
-        dotted = _dotted(func)
-        if dotted is not None:
-            head, _, rest = dotted.partition(".")
-            full = f"{bound[head]}.{rest}" if head in bound and rest else bound.get(head, dotted)
-            module, _, name = full.rpartition(".")
-            if module == "builtins" and name == "open":
-                found.append((node.lineno, full))
-                continue
-            if module in FORBIDDEN_MODULES or full.split(".")[0] in FORBIDDEN_MODULES:
-                found.append((node.lineno, full))
-                continue
-            if name in FORBIDDEN_MODULE_FUNCTIONS.get(module, ()):
-                found.append((node.lineno, full))
-                continue
-            if full == "sqlite3.connect":
-                first = node.args[0] if node.args else None
-                if not (isinstance(first, ast.Constant) and first.value == ":memory:"):
-                    found.append((node.lineno, full))
-                continue
-        if isinstance(func, ast.Attribute) and func.attr in PATH_METHODS:
-            receiver = func.value
-            name = receiver.id if isinstance(receiver, ast.Name) else (
-                receiver.attr if isinstance(receiver, ast.Attribute) else None
-            )
-            if name in OWN_RECEIVERS or (name is not None and (name in bound or name in module_names)):
-                continue
+        if isinstance(node.func, ast.Name) and node.func.id == "getattr":
+            if len(node.args) < 2 or not isinstance(node.args[1], ast.Constant) or not isinstance(node.args[1].value, str):
+                found.add((node.lineno, "dynamic getattr"))
+            elif node.args[1].value in PATH_METHODS or node.args[1].value in {"connect", "Connection", "open"}:
+                found.add((node.lineno, "getattr filesystem capability"))
+        if isinstance(node.func, ast.Attribute) and node.func.attr in PATH_METHODS:
+            receiver = node.func.value
+            head = (_dotted(receiver) or "").split(".")[0]
+            allowed = head in own or (head in bound and bound[head] in ALLOWED_IMPORTS and bound[head] != "pathlib")
+            if head in {"self", "cls"}:
+                parent = node
+                while parent in parents and not isinstance(parent, ast.ClassDef):
+                    parent = parents[parent]
+                allowed = isinstance(parent, ast.ClassDef) and node.func.attr in classes[parent.name]
             if isinstance(receiver, ast.Constant) and isinstance(receiver.value, str):
-                continue
-            if len(node.args) in PATH_METHODS[func.attr]:
-                found.append((node.lineno, f".{func.attr}()"))
+                allowed = True
+            if not allowed and len(node.args) in PATH_METHODS[node.func.attr]:
+                found.add((node.lineno, "." + node.func.attr + "()"))
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "backup":
+            found.add((node.lineno, "SQLite backup"))
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                sql = arg.value.upper().strip()
+                if sql.startswith("ATTACH ") or sql.startswith("VACUUM INTO "):
+                    found.add((node.lineno, "SQLite file statement"))
     return sorted(found)

@@ -28,7 +28,7 @@ import re
 import secrets
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Any, Final
 
 from . import layout, system

@@ -32,12 +32,12 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import PurePath as Path, PurePosixPath
 from typing import Any, Final, NoReturn
 
 from . import archive, layout, movelog, registry, system
 from .config import Config, load_config
-from .errors import MemoryForestError
+from .errors import MemoryForestError, raise_refusal
 from .locking import LockToken, atomic_write, writer_lock
 from .model import (
     CODE_SPAN_RE,
@@ -66,7 +66,7 @@ _HEADING_RE: Final[re.Pattern[str]] = re.compile(r"(?P<marks>#{1,6})[ \t]+(?P<te
 
 def refuse(code: str, message: str, **details: Any) -> NoReturn:
     """Stop an operation with a named error; nothing has been written."""
-    raise MemoryForestError(code, message, details=details)
+    raise_refusal(code, message, details=details)
 
 
 # ═══════════════════════════════ page text helpers ═══════════════════════════════

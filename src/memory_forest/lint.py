@@ -21,7 +21,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import PurePath as Path, PurePosixPath
 from typing import Any, Final
 
 from . import audit as forest_audit
@@ -735,10 +735,9 @@ _RUN_MAY_NOT_ADD_EXTRA: set[str] = set()
 
 def load_registering_modules() -> None:
     """Import the modules that register codes (each registers once, at its import)."""
-    import importlib
+    from . import maps, levels, collections, agents
 
-    for name in REGISTERING_MODULES:
-        importlib.import_module(f"{__package__}.{name}")
+    _ = maps, levels, collections, agents
 
 
 # ─────────────────────────────── baselines ───────────────────────────────

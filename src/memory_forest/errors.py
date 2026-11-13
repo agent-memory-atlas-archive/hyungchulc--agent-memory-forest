@@ -5,7 +5,7 @@ import functools
 import os
 import shlex
 from collections.abc import Callable, Mapping
-from typing import Any, TypeVar
+from typing import Any, NoReturn, TypeVar
 
 
 # The next move a program follows after a refusal (section 15.4). Who can act decides it, and every document
@@ -527,3 +527,24 @@ def door_refusal(exc: OSError, *, root: str | os.PathLike[str] | None = None) ->
         details=details,
         next_step="report",
     )
+
+
+class ArchiveProofError(MemoryForestError):
+    """Lines that were to leave a page are not all in its archive copy."""
+
+
+def state_error(code: str, message: str, *, details: Mapping[str, Any], next_step: str | None,
+                command: str | None, waited_seconds: float | None) -> MemoryForestError:
+    """Construct the pure state's closed-table refusal here, including its table-selected move."""
+    return MemoryForestError(code, message, details=details, next_step=next_step,
+                             command=command, waited_seconds=waited_seconds)
+
+
+def storage_error(code: str, message: str, *, details: Mapping[str, Any]) -> MemoryForestError:
+    """Construct one of the fixed SQLite storage-class refusals."""
+    return MemoryForestError(code, message, details=details, next_step="report")
+
+
+def raise_refusal(code: str, message: str, *, details: Mapping[str, Any]) -> NoReturn:
+    """The planned operation's code is followed to its literal callers by the codes walk."""
+    raise MemoryForestError(code, message, details=details)

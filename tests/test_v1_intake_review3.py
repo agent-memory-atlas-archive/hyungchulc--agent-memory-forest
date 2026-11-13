@@ -6,6 +6,8 @@ the tree. Nothing here is copied from a real transcript.
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import io
 import json
 import os

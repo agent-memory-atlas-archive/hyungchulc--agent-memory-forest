@@ -4,6 +4,8 @@ import gzip
 import os
 import sys
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from datetime import datetime, timezone
 from pathlib import Path
 

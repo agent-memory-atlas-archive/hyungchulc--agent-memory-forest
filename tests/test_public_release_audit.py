@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import tempfile
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from pathlib import Path
 
 

@@ -23,7 +23,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from pathlib import Path
 from unittest import mock
 
@@ -32,6 +35,7 @@ from memory_forest.errors import REFUSALS, MemoryForestError
 
 from test_v1_find import FILES
 from wait_child import read_fifo, write_fifo
+from claim_witnesses import Evidence, WITNESSES
 
 READER = "till-bot"
 PAGE = "04 stm/bakery/ovens/floor.md"
@@ -69,6 +73,7 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual({derived.state_of(facts) for facts in self.combinations}, set(derived.STATES))
 
     def test_every_claim_said_holds(self) -> None:
+        self.assertEqual(set(WITNESSES), set(derived.CLAIMS))
         said: set[str] = set()
         for (facts, command), decision in self.decisions.items():
             for key in decision.claims:
@@ -348,7 +353,7 @@ DECISIONS: list[tuple[str, derived.Facts, str, dict[str, tuple]]] = [
      every(refuse("access_denied", "report", "index_enter_denied", "give_index_enter"))),
     ("a file beside the index cannot be read",
      inside("no", pointer="name", generation="file", beside="unreadable"), "index_unusable",
-     every(refuse("access_denied", "report", "beside_unreadable", "give_beside_read"))),
+     every(refuse("access_denied", "report", "beside_unreadable", "give_beside_read", "writer_reset_folder"))),
     ("the index changed while opened", inside("no", pointer="name", generation="file", beside="none",
                                               open="changed"), "busy", busy("index_changed")),
     ("the metadata is busy", inside("yes", **INDEX, metadata="busy"), "busy", busy("index_busy")),
@@ -432,7 +437,7 @@ class DecisionTableTests(unittest.TestCase):
 
     def test_the_walk_has_its_size(self) -> None:
         # The number of combinations ``impossible`` leaves: a change of a step's values or of a rule changes it.
-        self.assertEqual(len(list(derived.combinations())), 2888)
+        self.assertEqual(len(list(derived.combinations())), 2792)
 
 
 # ─────────────────────────── the facts, read from a real disk ───────────────────────────
@@ -456,31 +461,25 @@ with open(sys.argv[2], "w") as handshake:
 sys.stdin.read()
 """
 
-# What this system cannot be made to answer on a healthy disk, by step and value, and why.
+# Every entry tries the nearest reproducible state on a fresh real forest.
+from fact_probes import attempt, RACE_PROBES, metadata_locked, metadata_full
+
 NOT_PRODUCED = {
-    ("settings", "busy"): "reading a regular file does not answer EAGAIN or EBUSY here; a fifo is not_a_file",
-    ("settings", "other"): "an error such as EIO needs a failing disk",
-    ("folder", "denied"): "the root can be entered (an earlier step), so looking at a name in it is never denied",
-    ("folder", "other"): "an error such as EIO needs a failing disk",
-    ("pointer", "busy"): "reading a regular file does not answer EAGAIN or EBUSY here",
-    ("pointer", "other"): "an error such as EIO needs a failing disk",
-    ("generation", "denied"): ".forest can be entered (an earlier step), so looking at a name in it is never denied",
-    ("generation", "other"): "an error such as EIO needs a failing disk",
-    ("beside", "failed"): ".forest can be entered (an earlier step), so only an error such as EIO, which needs a "
-                          "failing disk, makes looking at a name in it fail",
-    ("open", "other"): "an error such as EIO needs a failing disk",
-    ("open", "busy"): "a deadline is its own fact; a lock SQLite reports before the deadline is the metadata step",
-    ("open", "abandoned"): "an abandoned open is the process's own earlier thread, which this one call does not leave",
-    ("open", "in_progress"): "a second call while the first open is still inside its deadline is this process's other thread",
-    ("generation", "enter_denied"): "lstat of a name in a folder this account entered is not an enter denial",
-    ("metadata", "locked"): "SQLITE_LOCKED is a conflict inside one connection; the read opens its own",
-    ("metadata", "read_only"): "a read never writes, so SQLite never answers SQLITE_READONLY to it",
-    ("metadata", "io"): "SQLITE_IOERR needs a failing disk",
-    ("metadata", "full"): "SQLITE_FULL needs a full disk, and a read does not grow the file",
-    ("metadata", "cannot_open"): "the door opened the file first, so SQLite finds it",
-    ("metadata", "protocol"): "SQLITE_PROTOCOL needs a lock race this test does not make on demand",
-    ("metadata", "other"): "an unclassified SQLite error needs a fault of SQLite itself",
+    (step, wanted): attempt(step, wanted, nearest)
+    for step, wanted, nearest in (
+        ("settings", "busy", "not_a_file"), ("settings", "other", "invalid"),
+        ("folder", "denied", ("root_enter", "denied")), ("folder", "other", "not_a_folder"),
+        ("pointer", "busy", "not_a_file"), ("pointer", "other", "damaged"),
+        ("generation", "denied", ("open", "denied")),
+        ("generation", "other", "not_a_file"), ("beside", "failed", ("folder_enter", "denied")),
+        ("open", "other", "denied"), ("open", "busy", "deadline"),
+        ("metadata", "locked", "equal"), ("metadata", "full", "equal"),
+        ("metadata", "protocol", "busy"), ("metadata", "other", "damaged"),
+    )
 }
+
+NOT_PRODUCED[("metadata", "locked")] = metadata_locked
+NOT_PRODUCED[("metadata", "full")] = metadata_full
 
 
 class FactsOnDiskTests(unittest.TestCase):
@@ -549,9 +548,16 @@ class FactsOnDiskTests(unittest.TestCase):
                 os.chmod(path, 0o700 if path.is_dir() else 0o600)
 
     def _facts(self, root: Path, **options) -> derived.Facts:
+        info, _ = __import__("claim_witnesses").tried(os.stat, root / ".forest/index.sqlite")
+        identity = (info.st_dev, info.st_ino) if info is not None else None
+        started = time.monotonic()
         reading = search._facts(root, changes=lambda found: search._stale_files(root, found.index.connection),
                                 check_lock=True, **options)
         reading.close()
+        evidence = Evidence(root, self.built, identity, time.monotonic() - started)
+        for command in derived.COMMANDS:
+            for key in derived.decide(reading.facts, command).claims:
+                self.assertTrue(evidence.check(key), (key, command, reading.facts))
         return reading.facts
 
     def _held(self, script: str, *args: str):
@@ -621,6 +627,30 @@ class FactsOnDiskTests(unittest.TestCase):
                 return {"deadline": deadline}
             return make
 
+        def abandoned(root):
+            ended = threading.Event()
+            clear = system._clear_abandoned
+            def cleared(path):
+                clear(path)
+                ended.set()
+            self.enterContext(mock.patch.object(system, "_clear_abandoned", cleared))
+            self.addCleanup(lambda: self.assertTrue(ended.wait(10), "abandoned open never ended"))
+            self._held(EXCLUSIVE, str(index(root)))
+            with self.assertRaises(system.Busy):
+                system.open_index(index(root), immutable=False, first=lambda db: db.execute("SELECT * FROM metadata"),
+                                  busy_seconds=30, deadline_seconds=0.02)
+
+        def generation_enter_denied(root):
+            original = system.look
+            changed = False
+            def looked(path):
+                nonlocal changed
+                if Path(path) == index(root) and not changed:
+                    changed = True
+                    os.chmod(folder(root), 0o600)
+                return original(path)
+            self.enterContext(mock.patch.object(system, "look", looked))
+
         def swapped(root):
             return {"swap": True}
 
@@ -635,11 +665,10 @@ class FactsOnDiskTests(unittest.TestCase):
 
         settings = lambda root: root / "forest.toml"  # noqa: E731
         # Every mode of the forest folder and of .forest by its owner's three bits: what each step reads there.
-        # What doing the act answers on this system, for the owner's three bits. Opening a folder here
-        # follows the read bit; ``os.access`` on the execute bit does not.
+        # The dot lookup proves search; a separate listing proves read. Neither is os.access.
         modes = {
-            0o700: ("ok", "ok", "yes"), 0o600: ("ok", "ok", "no"), 0o500: ("ok", "ok", "no"),
-            0o400: ("ok", "ok", "no"), 0o300: ("denied", "denied", "no"), 0o100: ("denied", "denied", "no"),
+            0o700: ("ok", "ok", "yes"), 0o600: ("denied", "ok", "no"), 0o500: ("ok", "ok", "no"),
+            0o400: ("denied", "ok", "no"), 0o300: ("ok", "denied", "yes"), 0o100: ("ok", "denied", "no"),
             0o200: ("denied", "denied", "no"), 0o000: ("denied", "denied", "no"),
         }
         return [
@@ -676,6 +705,7 @@ class FactsOnDiskTests(unittest.TestCase):
             ("pointer", "not_a_file", lambda root: pointer(root).mkdir()),
             ("generation", "absent", lambda root: index(root).unlink()),
             ("generation", "file", lambda root: None),
+            ("generation", "enter_denied", generation_enter_denied),
             ("generation", "link", replace(index, "link")),
             ("generation", "not_a_file", replace(index, "fifo")),
             ("beside", "none", lambda root: None),
@@ -687,6 +717,7 @@ class FactsOnDiskTests(unittest.TestCase):
             ("open", "denied", chmod(index, 0o200)),
             ("open", "deadline", exclusive(0.5)),
             ("open", "changed", swapped),
+            ("open", "abandoned", abandoned),
             ("metadata", "equal", lambda root: None),
             ("metadata", "masking_changed", sql("UPDATE metadata SET value = 'another' WHERE key = 'masking'")),
             ("metadata", "masking_missing", sql("DELETE FROM metadata WHERE key = 'masking'")),
@@ -720,8 +751,14 @@ class FactsOnDiskTests(unittest.TestCase):
                 self.assertIsNone(derived.impossible(facts), facts)
                 produced.add((step, value))
         every = {(step, value) for step, values in derived.STEPS.items() for value in values if value != derived.NR}
-        self.assertEqual(sorted(every - produced - set(NOT_PRODUCED)), [], "an outcome with neither a forest nor a reason")
+        self.assertEqual(sorted(every - produced - set(NOT_PRODUCED) - set(RACE_PROBES)), [], "an outcome with neither a forest nor a reason")
         self.assertEqual(sorted(produced & set(NOT_PRODUCED)), [], "an outcome produced and said to be impossible")
+
+    def test_each_unproduced_outcome_is_tried(self):
+        for key, probe in {**NOT_PRODUCED, **RACE_PROBES}.items():
+            with self.subTest(outcome=key):
+                self.assertTrue(callable(probe))
+                probe(self, self._forest())
 
 
 class FactsReadingTests(unittest.TestCase):
@@ -993,8 +1030,10 @@ class ActionClaimTests(unittest.TestCase):
     def test_each_access_the_owner_gives_cures_its_state(self) -> None:
         search.build(self.root)
         rows = (
-            ("give_root_enter", self.root, 0o000, 0o700),
-            ("give_folder_enter", self.folder, 0o000, 0o700),
+            ("give_root_enter", self.root, 0o600, 0o700),
+            ("give_root_list", self.root, 0o100, 0o700),
+            ("give_folder_enter", self.folder, 0o600, 0o700),
+            ("give_folder_list", self.folder, 0o300, 0o700),
             ("give_settings_read", self.root / "forest.toml", 0o000, 0o600),
         )
         for key, path, mode, bits in rows:
@@ -1006,6 +1045,65 @@ class ActionClaimTests(unittest.TestCase):
                 self.assertEqual(decision.move, "report")
                 os.chmod(path, bits)
                 self._sound()
+
+    def test_the_named_ancestor_is_the_folder_whose_search_access_cures_the_read(self):
+        search.build(self.root)
+        parent = self.root.parent / "ancestor"
+        parent.mkdir()
+        moved = parent / "forest"
+        os.rename(self.root, moved)
+        self.root, self.folder = moved, moved / ".forest"
+        os.chmod(parent, 0o600)
+        try:
+            decision, reading = self._decision()
+            self.assertEqual(reading.facts.part, "..")
+            self.assertIn("give_root_above_enter", decision.claims)
+            self.assertEqual(derived.refusal(decision, reading).details["folder"], "..")
+            os.chmod(parent, 0o700)
+            self._sound()
+        finally:
+            os.chmod(parent, 0o700)
+
+    def test_read_access_and_the_named_writer_commands_cure_each_unreadable_sidecar(self):
+        search.build(self.root)
+        for suffix in ("-wal", "-shm", "-journal"):
+            path = self.folder / (Path(search.index_relative(self.root)).name + suffix)
+            path.write_bytes(b"synthetic sidecar")
+            os.chmod(path, 0)
+            os.chmod(self.folder, 0o500)
+            try:
+                decision, reading = self._decision()
+                self.assertIn("give_beside_read", decision.claims)
+                self.assertEqual(derived.refusal(decision, reading).details["beside"], path.name)
+                os.chmod(path, 0o400)
+                self._as_writer(self.folder, derived.CLAIMS["writer_reset_folder"].action[2:])
+                self._sound()
+            finally:
+                os.chmod(self.folder, 0o700)
+                path.unlink(missing_ok=True)
+
+    def test_search_access_changed_after_the_folder_was_entered_is_the_named_cure(self):
+        search.build(self.root)
+        original = system.look
+        index = self.folder / "index.sqlite"
+        for denied_folder, relative in ((self.folder, ".forest"), (self.root, "."), (self.root.parent, "..")):
+            changed = False
+            mode = denied_folder.stat().st_mode & 0o777
+            def looked(path):
+                nonlocal changed
+                if Path(path) == index and not changed:
+                    changed = True
+                    os.chmod(denied_folder, 0o600)
+                return original(path)
+            try:
+                with mock.patch.object(system, "look", looked):
+                    decision, reading = self._decision()
+                self.assertIn("give_index_enter", decision.claims)
+                self.assertEqual(reading.facts.part, relative)
+                self.assertEqual(derived.refusal(decision, reading).details["folder"], relative)
+            finally:
+                os.chmod(denied_folder, mode)
+            self._sound()
 
     def test_read_access_to_the_pointer_and_the_index_in_a_folder_that_cannot_be_written(self) -> None:
         search.build(self.root)
@@ -1081,20 +1179,11 @@ class ActionClaimTests(unittest.TestCase):
             ("give", "root", "enter"), ("give", "root", "list"), ("give", "folder", "enter"),
             ("give", "folder", "list"), ("give", "settings", "read"), ("give", "pointer", "read"),
             ("give", "index", "read"), ("owner", "settings"), ("owner", "pointer"), ("owner", "folder"),
-            ("wait",),
+            ("wait",), ("give", "above", "enter"), ("give", "beside", "read"), ("give", "index", "enter"),
         }
         not_carried = {
             ("owner", "index"): "said only with an error of the disk or of SQLite this system does not produce "
                                 "on demand (NOT_PRODUCED)",
-            ("give", "root", "list"): "on this system the enter act and the list act fail together for the owner, "
-                                      "so a list the enter act allowed is not produced",
-            ("give", "folder", "list"): "on this system the enter act and the list act fail together for the owner, "
-                                        "so a list the enter act allowed is not produced",
-            ("give", "above", "enter"): "the folder above the forest is outside it; the test names it and does not "
-                                        "change a directory the forest does not own",
-            ("give", "beside", "read"): "a mode 000 file beside the index in a folder this account cannot write",
-            ("give", "index", "enter"): "a look refused for enter after the folder was entered is not produced here "
-                                        "(NOT_PRODUCED)",
         }
         named = {claim.action for claim in derived.CLAIMS.values() if claim.action}
         self.assertEqual(named, carried | set(not_carried))

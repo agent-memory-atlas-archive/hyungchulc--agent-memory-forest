@@ -304,11 +304,14 @@ is reported at once and not tried again.
 **One state of the derived folder.** One function reads what is true on disk and gives one state:
 `sound`, `masking_changed`, `missing`, `damaged`, `pointer_damaged` or `wal`, and whether this process
 can write the folder the index lives in (`.forest/`, or the forest root while there is no `.forest/`,
-because a build would make it there). The state gives the refusal of a read and of a write, their text
+because a build would make it there). Enter facts come from looking up the directory’s dot entry through the door, which tests search
+permission independently of listing. Read facts come from an open or a listing through the door. Only write permission uses the system's access check, because attempting that write would
+change the forest; its claims explicitly say "The system says". The state gives the refusal of a read and of a write, their text
 and their next move, and `index status`, `index build`, `index reset`, `search`, the timeline and every
 MCP tool that reads or writes the index or a lane ask it, so no command meets a different check first.
 A refusal's `details.state` and the `state` of `index status` name it. Its text is made of fixed
-sentences, each a claim about the disk or about what a call does, and a test checks each by doing it.
+sentences, each a claim about the disk or about what a call does, and independent test witnesses check real-disk claims with their own opens, listings and SQLite reads.
+The exhaustive decision test separately checks every reachable combination.
 In a folder this process can write, a missing index or a masking change is built before a read
 answers, and a damaged index or pointer is `index_unreadable`, next `run` `forest index reset`. In a
 folder it cannot write, no command of this account cures anything: every state but `sound` is
@@ -326,11 +329,33 @@ answered: the answer is `index_busy` with `retry`. That compare is inside the on
 statement and before the answer is given. A failed read compares again before its refusal is chosen.
 No public function returns the connection or a cursor. A file that went away or was replaced between the
 door's look and SQLite's open is `index_busy` too, and so is an open that does not finish within
-`OPEN_DEADLINE_SECONDS` (10). Immutable mode is never used on a folder this process can write.
+`OPEN_DEADLINE_SECONDS` (10). Its sentence says the open did not return by its deadline.
+After every SQLite error or open deadline the three sidecar names are examined again. A non-file or
+unreadable file is named in the state's refusal. Read access is proved by opening, not by permission
+bits or `os.access`; a sidecar access probe opens in a short-lived helper process, because closing a
+descriptor of a POSIX-locked file could release another SQLite connection's locks in this process.
+A FIFO is released with a nonblocking write open. A still-blocked open, including one whose index path
+changed, is counted; no second opener starts while it remains. Later calls and `index status` report
+`index_open_abandoned`, with `report` and the need to restart the answering process.
+Immutable mode is never used on a folder this process can write.
 `memory_log` and `forest log` in a forest this account cannot write are `log_read_only`, next `report`:
 nothing is written, and the text names `forest log` for an account that can. Publishing a
 fresh copy by an atomic rename was the other model; it was not chosen because it copies the whole
 database for every appended line.
+
+**What the tests observe.** The syntax check allows named imports and pure `os` uses only, and callers
+construct lexical paths. Python's audit hook observes filesystem, process and SQLite events, with wrappers
+for functions the live interpreter inventory finds silent. The watch stays active through review rows
+and both fault sweeps, one failing call at a time and one persistently failing path at a time. Import
+machinery's loading of Python code is classified separately. Argument translations and zone-database
+reads also go through the door. Deferred modules remain listed in `tests/door_rules.py`.
+The interpreter cannot observe SQLite's C-level opens of `-journal`, `-wal` and `-shm`; the pre-open
+checks, rechecks after errors/deadlines, FIFO release and counted abandoned opener cover that boundary.
+Index traces require a compare after the last statement for reads and writes, in writable and
+read-only forests. Every open first looks at the index identity and all three neighbouring names. Every unittest
+invocation has a process bound that dumps all thread stacks and exits nonzero, including direct single-test
+runs. The mutation report separates assertions, bounds and survivors. These checks were run on macOS;
+they are not evidence of execution on Linux or Windows.
 
 **Appends.** A raw lane only grows. For each lane file the index keeps `indexed_bytes`, the end of its
 last complete line, and the hash of the bytes before it. When the file has only grown, those bytes are
@@ -676,7 +701,11 @@ that agent's own job.
   while that sum is below `stop_after_seconds`, and report the message once the sum would reach it.
 A protocol error is tried again only inside a query's reads and a write, and is an I/O refusal at
 once in `status`, the timeline and while the file opens. A refusal that has already waited the whole
-stop time is reported at once and not tried again. A refusal of any command or tool has the same form:
+stop time is reported at once and not tried again. Dynamic state and storage-class refusals are constructed in `errors.py`. Outside that module and the
+exact deferred roster, constructor codes are string literals or literal module constants, and explicit
+moves are literals. The code walk rejects class aliases, subclasses outside `errors.py`, mutation of
+refusal fields and unknown dictionaries carrying a refusal code. Named diagnostic records and JSON-RPC
+errors retain their separate `code` fields. A refusal of any command or tool has the same form:
   `code`, `message`, `details` and `next`, with its `command` or `after_seconds`. Every code the package
   raises, with its next move, is in `docs/refusals.md`, and a test proves that list is the code's. The agent
   asks, runs the command again with `--answer key=value`, and is finished when `forest doctor` passes. An

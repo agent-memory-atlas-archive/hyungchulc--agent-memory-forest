@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import date
 from functools import cached_property
-from pathlib import Path
+from pathlib import PurePath as Path
 
 from . import layout, system
 from . import registry as forest_registry

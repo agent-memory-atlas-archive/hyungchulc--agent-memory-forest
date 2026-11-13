@@ -15,6 +15,8 @@ import io
 import json
 import tempfile
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 import unicodedata
 from pathlib import Path
 from unittest import mock

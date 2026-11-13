@@ -4,6 +4,11 @@ All notable changes to Memory Forest are documented in this file. The project fo
 
 ## Unreleased — 1.0.0a1
 
+- The filesystem boundary is checked with import allow-lists and interpreter audit events during both
+  fault sweeps. Tests have a process deadline, independent disk witnesses, and separate assertion and
+  bound mutation results. Sidecar read probes preserve live SQLite locks; a blocked opener is counted
+  even after an index-path swap. Verification in this round ran on macOS.
+
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones. The
 `forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests.
 Milestone 2 now has intake, the search index, timeline, reader scopes and the MCP server. Setup
@@ -21,7 +26,7 @@ the version 1 commands replace it.
   reads, writes or locks answers one of eight outcomes (absent, denied, not a file, not a folder, link,
   changed, busy, other), and the code decides on outcomes, not on the system's raw errors. The derived
   folder's state is read as facts in one walk (`derived.read_facts`), decided by one pure function
-  (`derived.decide`) into one of 23 states, and told in claims kept as data; a test walks all 2,888
+  (`derived.decide`) into one of 23 states, and told in claims kept as data; a test walks all 2,792
   combinations of the facts and checks every claim of every decision. A forest folder that can be listed
   but not entered, a `.forest` folder that cannot be entered or listed, a pointer this account cannot
   read and an error the system did not name each have their own state and true sentences, the same from

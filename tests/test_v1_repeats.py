@@ -5,6 +5,8 @@ The forest is the invented bakery of ``v1_support`` (Ilse Varrow, her deck oven 
 
 from __future__ import annotations
 
+import bounds  # every invocation has a deadline
+
 import json
 import os
 import subprocess

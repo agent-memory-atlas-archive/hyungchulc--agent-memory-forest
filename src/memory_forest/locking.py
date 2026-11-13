@@ -7,7 +7,6 @@ write helpers every module uses for pages and kept state follow below it.
 
 from __future__ import annotations
 
-import ctypes
 import json
 import os
 import re
@@ -20,7 +19,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import PurePath as Path
 
 from . import system
 from .errors import MemoryForestError
@@ -157,45 +156,7 @@ def _read_owner(path: Path) -> dict[str, object] | None:
 
 
 def _process_status(pid: int) -> int | None:
-    """The process state, or None when this system will not say. ``_STOPPED`` is a stopped process."""
-    if sys.platform == "darwin":
-        library = ctypes.CDLL("/usr/lib/libproc.dylib")
-        info = _DarwinStatus()
-        read = library.proc_pidinfo(
-            ctypes.c_int(pid), ctypes.c_int(13), ctypes.c_uint64(0),
-            ctypes.byref(info), ctypes.c_int(ctypes.sizeof(info)),
-        )
-        if read <= 0:
-            return None
-        return int(info.pbsi_status)
-    try:
-        text = system.read_text(f"/proc/{pid}/stat")
-    except system.Outcome:
-        return None
-    end = text.rfind(")")
-    if end < 0 or end + 2 >= len(text):
-        return None
-    return _STOPPED if text[end + 2] == "T" else 0
-
-
-class _DarwinStatus(ctypes.Structure):
-    """``proc_bsdshortinfo``. ``pbsi_status`` is the kernel's ``p_stat`` (4 is stopped)."""
-
-    _fields_ = (
-        ("pbsi_pid", ctypes.c_uint32),
-        ("pbsi_ppid", ctypes.c_uint32),
-        ("pbsi_pgid", ctypes.c_uint32),
-        ("pbsi_status", ctypes.c_uint32),
-        ("pbsi_comm", ctypes.c_char * 16),
-        ("pbsi_flags", ctypes.c_uint32),
-        ("pbsi_uid", ctypes.c_uint32),
-        ("pbsi_gid", ctypes.c_uint32),
-        ("pbsi_ruid", ctypes.c_uint32),
-        ("pbsi_rgid", ctypes.c_uint32),
-        ("pbsi_svuid", ctypes.c_uint32),
-        ("pbsi_svgid", ctypes.c_uint32),
-        ("pbsi_rfu", ctypes.c_uint32),
-    )
+    return system.process_status(pid)
 
 
 def _holder_stopped(pid: object) -> bool:
@@ -206,15 +167,7 @@ def _holder_stopped(pid: object) -> bool:
 
 
 def _process_alive(pid: object) -> bool:
-    if type(pid) is not int or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return system.process_alive(pid)
 
 
 def _flock_free(path: Path) -> bool:

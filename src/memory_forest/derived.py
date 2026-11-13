@@ -19,12 +19,12 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, fields
-from pathlib import Path
+from pathlib import PurePath as Path
 from typing import Any, Final
 
 from . import layout, system
 from .config import CONFIG_FILENAME, DEFAULT_CONFIG, MAX_CONFIG_BYTES, Config, settings_from_bytes
-from .errors import MemoryForestError
+from .errors import MemoryForestError, state_error
 
 NR: Final = "not_reached"
 
@@ -56,7 +56,7 @@ STEPS: Final[dict[str, tuple[str, ...]]] = {
     "pointer": ("absent", "name", "damaged", "denied", "link", "not_a_file", "busy", "other", NR),
     "generation": ("absent", "file", "link", "not_a_file", "denied", "enter_denied", "other", NR),
     "beside": ("none", "wal", "journal", "not_a_file", "unreadable", "failed", NR),
-    "open": ("ok", "denied", "busy", "deadline", "abandoned", "in_progress", "changed", "other", NR),
+    "open": ("ok", "denied", "busy", "deadline", "abandoned", "changed", "other", NR),
     "metadata": (
         "equal", "masking_changed", "masking_missing", "other_version", "not_committed", "damaged",
         "busy", "locked", "read_only", "io", "full", "cannot_open", "protocol", "other", NR,
@@ -137,7 +137,7 @@ RULES: Final = ("reached_after_a_stop", "skipped_though_reached", "root_write_wi
 def impossible(facts: Facts, upto: str | None = None) -> str | None:
     """The rule that removes ``facts`` (or its steps up to ``upto``), or None when the walk can give it."""
     for step in STEPS:
-        value = getattr(facts, step)
+        value = (facts.root, facts.root_enter, facts.root_list, facts.root_write, facts.settings, facts.folder, facts.folder_enter, facts.folder_list, facts.folder_write, facts.pointer, facts.generation, facts.beside, facts.open, facts.metadata, facts.changes, facts.lock)[tuple(STEPS).index(step)]
         reached = _reached(facts, step)
         if reached == "never" and value != NR:
             return "reached_after_a_stop"
@@ -205,7 +205,7 @@ def _inside(facts: Facts) -> bool:
 def _busy(facts: Facts) -> bool:
     return (
         facts.settings == "busy" or facts.pointer == "busy"
-        or facts.open in ("busy", "changed", "deadline", "in_progress")
+        or facts.open in ("busy", "changed", "deadline")
         or facts.metadata == "busy"
     )
 
@@ -222,10 +222,10 @@ CLAIMS: Final[dict[str, Claim]] = {
         Claim("root_above_file", "A part of the path is a file ({part}), so the forest folder is not there.",
               lambda f: f.root == "above_file"),
         Claim("root_above_denied",
-              "This account cannot enter the folder above the forest folder, so the forest folder cannot be read.",
+              "This account cannot enter {part}, relative to the forest folder, so the forest folder cannot be read.",
               lambda f: f.root == "above_denied"),
         Claim("give_root_above_enter",
-              "The owner gives this account enter (x) access to the folder above the forest folder.",
+              "The owner gives this account enter (x) access to {part}, relative to the forest folder.",
               lambda f: f.root == "above_denied", ("give", "above", "enter")),
         Claim("root_not_folder", "The forest folder is not a folder.",
               lambda f: f.root == "not_a_folder"),
@@ -318,7 +318,7 @@ CLAIMS: Final[dict[str, Claim]] = {
         Claim("masking_missing", "The index has no masking fingerprint.", lambda f: f.metadata == "masking_missing"),
         Claim("pages_changed", "{count} files changed since the build.", lambda f: f.changes == "some"),
         Claim("index_busy", "The index file is in use.",
-              lambda f: f.open == "busy" or f.metadata == "busy" or f.open == "in_progress"),
+              lambda f: f.open == "busy" or f.metadata == "busy"),
         Claim("index_deadline", "The open of the index did not come back in {seconds}.",
               lambda f: f.open == "deadline"),
         Claim("index_abandoned",
@@ -337,7 +337,7 @@ CLAIMS: Final[dict[str, Claim]] = {
               lambda f: f.metadata == "io"),
         Claim("sqlite_protocol", "SQLite's locking protocol failed while the index was opened.",
               lambda f: f.metadata == "protocol"),
-        Claim("sqlite_full", "The disk that holds the forest is full.", lambda f: f.metadata == "full"),
+        Claim("sqlite_full", "SQLite reported that storage for the search index is full.", lambda f: f.metadata == "full"),
         Claim("sqlite_cannot_open", "SQLite could not open the index file or the files it keeps beside it.",
               lambda f: f.metadata == "cannot_open"),
         Claim("sqlite_other", "SQLite refused the search index for a reason this package does not classify.",
@@ -469,7 +469,7 @@ def state_of(facts: Facts) -> str:
         return "index_unusable"
     if f.open == "abandoned":
         return "abandoned"
-    if f.open in ("busy", "changed", "deadline", "in_progress") or f.metadata == "busy":
+    if f.open in ("busy", "changed", "deadline") or f.metadata == "busy":
         return "busy"
     if f.metadata in ("other_version", "not_committed"):
         return "missing"
@@ -560,7 +560,7 @@ def decide(facts: Facts, command: str) -> Decision:
         if f.generation == "enter_denied":
             return Decision(state, "access_denied", "report", None, ("index_enter_denied", "give_index_enter"))
         if f.beside == "unreadable" and not writable(f):
-            return Decision(state, "access_denied", "report", None, ("beside_unreadable", "give_beside_read"))
+            return Decision(state, "access_denied", "report", None, ("beside_unreadable", "give_beside_read", "writer_reset_folder"))
         if writable(f):
             if command == "reset":
                 return Decision(state)
@@ -712,7 +712,7 @@ def _root_place(root: Path) -> tuple[str, str]:
         folder = Path(exc.folder) if exc.folder else Path(exc.path)
         if folder != root and folder != Path(root):
             # The door's name for a folder outside the forest. Its own directory name is a path of the machine.
-            return "above_denied", ""
+            return "above_denied", _ancestor_name(root, folder)
         return "folder", ""
     except system.Outcome:
         raise
@@ -723,21 +723,29 @@ def _root_place(root: Path) -> tuple[str, str]:
     return "folder", ""
 
 
+def _ancestor_name(root: Path, part: Path) -> str:
+    """An exact ancestor, relative to the chosen root, without a machine path or account name."""
+    for distance, ancestor in enumerate(root.parents, 1):
+        if ancestor == part:
+            return "/".join(".." for _ in range(distance))
+    return "a folder above the forest folder"
+
+
 def _file_part(path: Path) -> str:
     """The path part that is a file, so a folder cannot stand under it."""
     current = path
     while True:
         parent = current.parent
         if parent == current:
-            return current.name or "a file above the forest folder"
+            return _ancestor_name(path, current)
         try:
             info = system.look(parent)
         except system.Outcome:
             current = parent
             continue
         if info.kind != "folder":
-            return parent.name or "a file above the forest folder"
-        return current.name or "a file above the forest folder"
+            return _ancestor_name(path, parent)
+        return _ancestor_name(path, current)
 
 
 def _entered(path: Path) -> tuple[bool, str]:
@@ -874,7 +882,11 @@ def read_facts(
         error = exc.error
         access = exc.access
         if exc.folder:
-            part = Path(exc.folder).name or "the folder that holds the index file"
+            denied_folder = Path(exc.folder)
+            part = (
+                "." if denied_folder == root else denied_folder.relative_to(root).as_posix()
+                if denied_folder.is_relative_to(root) else _ancestor_name(root, denied_folder)
+            )
     else:
         found["generation"] = {"file": "file", "link": "link"}.get(seen.kind, "not_a_file")
     if found["generation"] != "file":
@@ -892,17 +904,20 @@ def read_facts(
             beside = "not_a_file"
             part = Path(f"{path}{suffix}").name
             break
-        # The mode from the look: opening a live write-ahead log here would disturb a writer.
-        if not (there.mode & 0o444):
-            beside = "unreadable"
+        try:
+            system.probe_read(Path(f"{path}{suffix}"))
+        except system.Absent:
+            continue
+        except system.Outcome as exc:
+            beside = "unreadable" if exc.kind == "denied" else "not_a_file" if exc.kind in ("link", "not_a_file") else "failed"
             part = Path(f"{path}{suffix}").name
-            access = "read"
+            access, error = exc.access or "read", exc.error
             break
         if suffix != "-shm":
             beside = suffix[1:]
     found["beside"] = beside
     write = found["folder_write"] == "yes"
-    if beside in ("not_a_file", "failed") or (beside != "none" and not write) or prepare is None or (
+    if beside in ("not_a_file", "unreadable", "failed") or (beside != "none" and not write) or prepare is None or (
         write and not open_writable
     ):
         return done(relative, name=name, config=config)
@@ -925,8 +940,6 @@ def read_facts(
             found["open"] = "abandoned"
             since = system.abandoned_since(path)
             part = _moment(since)
-        elif exc.note == "in_progress":
-            found["open"] = "in_progress"
         elif exc.kind == "busy":
             found["open"] = "busy"
         elif exc.kind == "denied":
@@ -969,7 +982,11 @@ def read_facts(
             reading = done(relative, name=name, index=index, meta=meta, config=config, changed=listed)
         return reading
     except BaseException:
-        index.close()
+        try:
+            if not index.same():
+                raise system.Changed(path)
+        finally:
+            index.close()
         raise
 
 
@@ -1025,9 +1042,13 @@ def refusal(decision: Decision, reading: Reading, **details: Any) -> MemoryFores
     """The refusal a decision gives, with its state and the path a message names."""
     assert decision.code is not None
     shown = {"path": reading.path, "state": decision.state, **details}
+    if reading.facts.beside in ("not_a_file", "unreadable", "failed") and reading.facts.part:
+        shown["beside"] = reading.facts.part
+    if (reading.facts.root == "above_denied" or reading.facts.generation == "enter_denied") and reading.facts.part:
+        shown["folder"] = reading.facts.part
     if reading.facts.error and "{error}" in "".join(CLAIMS[key].sentence for key in decision.claims):
         shown["error"] = reading.facts.error
-    return MemoryForestError(
+    return state_error(
         decision.code,
         sentences(decision, reading.facts),
         details=shown,

@@ -32,13 +32,13 @@ def _listed() -> dict[tuple[str, str], dict[str, Callable[[], set]]]:
     from memory_forest import derived, search
 
     return {
-        ("derived.py", "refusal"): {
+        ("errors.py", "state_error"): {
             "why": lambda: "the state's decision: its code and move are a row of derived.CODES",
             "codes": lambda: set(derived.CODES),
             "pairs": lambda: {(code, move) for code, moves in derived.CODES.items() for move in moves},
             "message": lambda: {"claims"},
         },
-        ("search.py", "index_error"): {
+        ("errors.py", "storage_error"): {
             "why": lambda: "the SQLite class's row of search._PERSON_MESSAGES",
             "codes": lambda: {code for code, _message in search._PERSON_MESSAGES.values()},
             "message": lambda: {message for _code, message in search._PERSON_MESSAGES.values()},
@@ -400,12 +400,15 @@ def _unnamed(package: _Package, classes: set[str]) -> list[str]:
     for module, tree in package.trees.items():
         held: dict[str, str] = {}
         for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and module != "errors.py" and any(_name(base) in classes for base in node.bases):
+                found.append(f"{module}:{node.lineno}: a refusal subclass outside errors.py")
             if isinstance(node, ast.ImportFrom) and _from_errors(node):
                 for alias in node.names:
                     if alias.name not in classes and alias.name != REFUSAL_TYPE:
                         continue
                     if alias.asname and alias.asname != alias.name:
                         held[alias.asname] = "an alias"
+                        found.append(f"{module}:{node.lineno}: an alias of a refusal class")
             elif isinstance(node, ast.Assign):
                 names = [target.id for target in node.targets if isinstance(target, ast.Name)]
                 if len(names) == 1 and (
@@ -415,6 +418,7 @@ def _unnamed(package: _Package, classes: set[str]) -> list[str]:
                 ):
                     why = "type()" if isinstance(node.value, ast.Call) else "a class kept in a variable"
                     held[names[0]] = why
+                    found.append(f"{module}:{node.lineno}: {why}")
                 for target in node.targets:
                     if not isinstance(target, ast.Attribute) or target.attr not in fields:
                         continue
@@ -433,6 +437,12 @@ def _unnamed(package: _Package, classes: set[str]) -> list[str]:
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Attribute):
                 if node.target.attr in fields:
                     found.append(f"{module}:{node.lineno}: assigns the {node.target.attr} of an existing refusal")
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.value, ast.Name) and node.value.id in classes:
+                found.append(f"{module}:{node.lineno}: a class kept in an annotated variable")
+            elif isinstance(node, ast.Call) and _name(node.func) == "setattr":
+                field = node.args[1] if len(node.args) > 1 else None
+                if not isinstance(field, ast.Constant) or field.value in fields:
+                    found.append(f"{module}:{node.lineno}: assigns an existing refusal through setattr")
             elif isinstance(node, ast.Call) and _name(node.func) == "type" and _mentions(node, classes):
                 found.append(f"{module}:{node.lineno}: type() builds a refusal")
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in held:
@@ -589,3 +599,35 @@ def table(result: Walk | None = None) -> str:
         shown = f"`{command}`" if command else ""
         rows.append(f"| `{code}` | `{move}` | {shown} | {said} |\n")
     return TABLE_HEAD + "".join(rows)
+
+
+def spelling_errors(trees: dict[str, ast.Module] | None = None) -> list[str]:
+    """Outside errors and the exact deferred roster, constructor codes are literal module data only."""
+    package = _Package(trees)
+    classes = refusal_classes(package)
+    found = []
+    for module, tree in package.trees.items():
+        if module == "errors.py" or module in door_rules.NOT_YET:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _name(node.func) not in classes:
+                continue
+            code = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "code"), None)
+            if isinstance(code, ast.Name):
+                # A function parameter/local cannot shadow an allowed module constant.
+                owner = package.enclosing(module, node)
+                shadow = owner is not None and any(isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+                                                   and n.id == code.id for n in ast.walk(owner))
+                parameters = [] if owner is None else [*owner.args.posonlyargs, *owner.args.args, *owner.args.kwonlyargs]
+                if owner is not None:
+                    parameters += [arg for arg in (owner.args.vararg, owner.args.kwarg) if arg is not None]
+                if shadow or any(arg.arg == code.id for arg in parameters):
+                    code = None
+                else:
+                    code = package._module_value(module, code.id)
+            if not isinstance(code, ast.Constant) or not isinstance(code.value, str):
+                found.append(f"{module}:{node.lineno}: the constructor code is not a literal module constant")
+            step = next((k.value for k in node.keywords if k.arg == "next_step"), None)
+            if step is not None and not isinstance(step, ast.Constant):
+                found.append(f"{module}:{node.lineno}: the constructor move is not literal")
+    return found

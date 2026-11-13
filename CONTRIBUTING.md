@@ -51,7 +51,12 @@ Then review the full diff manually. Pattern matching does not catch every privac
 
 ## Validation
 
-Run these checks before submitting.
+Run these checks as an ordinary account before submitting. Denial rows cannot be proved by a
+superuser. The run prints their skipped count and fails unless `FOREST_TESTS_ALLOW_SUPERUSER=1` is
+explicitly set; that override acknowledges missing permission evidence, not a passing denial test.
+Every test, including a single test started directly, has a process bound with all thread stacks.
+The long generated sweeps declare a larger bound. Wait for a child with a deadline and a handshake,
+event or marker, never a fixed sleep.
 
 ```sh
 make check
@@ -65,7 +70,8 @@ For a CLI behavior change, also perform a clean initialization in a temporary di
 `scripts/mutate_guards.py` turns each guard of the functions you name round, one at a time, in a private
 copy of the repository: a condition, a comparison, an early return, a `return True` or `return False`, a
 raise, a loop, a `continue` or a `break`. It runs the tests you name for each function and prints which
-changes they notice (`killed`) and which they do not (`survived`). It is not part of `make check`. Run it
+changes assertions notice (`killed`), which terminate at the bound (`timeout`), and which pass (`survived`).
+The report has distinct assertion, bound and survived columns; a timeout is not an assertion kill. It is not part of `make check`. Run it
 niced, one process at a time; Ctrl-C stops it, and the same command goes on from its state file,
 `.mutate-guards.json`.
 

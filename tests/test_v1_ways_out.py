@@ -10,6 +10,7 @@ The bakery and the bots are invented.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import getpass
 import io
@@ -22,11 +23,14 @@ import sys
 import tempfile
 import time
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from pathlib import Path
 from unittest import mock
 
-from memory_forest import cli, mcp, search
+from memory_forest import cli, mcp, search, system
 
+import door_runtime
 from test_v1_sweep import SWEEP_FILES
 
 READER = "till-bot"
@@ -37,6 +41,44 @@ KINDS = ("file", "fifo", "link_folder", "link_nothing")
 TARGETS = ("forest", ".forest", "credentials")
 # ``--as`` on a move is a new name, not the reader. Only these destinations choose who reads.
 READER_DESTS = {"reader": "agent", "group": "group", "caller": "owner"}
+
+
+def _commands(parser=None):
+    """Discover the parser's leaves and reader actions, including commands added outside its table."""
+    parser = cli.build_forest_parser() if parser is None else parser
+    def walk(current, words):
+        children = [action for action in current._actions if isinstance(action, argparse._SubParsersAction)]
+        for action in children:
+            for word, child in action.choices.items():
+                yield from walk(child, (*words, word))
+        if children:
+            return
+        run = current.get_default("_run")
+        if not callable(run):
+            return
+        arguments = []
+        for action in current._actions:
+            if action.dest in {"help", "json", "root", "version"}:
+                continue
+            arguments.append(cli.Argument(tuple(action.option_strings) or (action.dest,),
+                                          {"dest": action.dest, "nargs": action.nargs,
+                                           "required": action.required}))
+        yield cli.ForestCommand(words, run, current.description or "", tuple(arguments),
+                               uses_root=bool(current.get_default("_uses_root")))
+    return list(walk(parser, ()))
+
+
+class ParserProductTests(unittest.TestCase):
+    def test_a_command_added_to_the_parser_is_in_the_product(self):
+        parser = argparse.ArgumentParser()
+        leaf = parser.add_subparsers().add_parser("knead")
+        leaf.add_argument("words")
+        leaf.add_argument("--as", dest="reader")
+        leaf.set_defaults(_run=lambda arguments: 0, _uses_root=True)
+        found = _commands(parser)
+        self.assertEqual([command.words for command in found], [("knead",)])
+        self.assertEqual(_reader_flags(found[0]), [((), "owner"), (("--as", READER), "agent")])
+        self.assertIn("--root", _argv(found[0], Path("synthetic"), (), as_json=True, nonce="0"))
 
 
 def _shapes() -> list[tuple[str, str, int | None]]:
@@ -78,7 +120,10 @@ def _reader_flags(command) -> list[tuple[tuple[str, ...], str]]:
         flags = [flag for flag in argument.flags if flag.startswith("-")]
         flag = flags[0]
         value = "bakers" if dest == "group" else READER
-        found.append(((flag, value), READER_DESTS[dest]))
+        extra = (flag, value)
+        if dest == "group" and any(a.options.get("dest") == "caller" for a in command.arguments):
+            extra += ("--agent", READER)
+        found.append((extra, READER_DESTS[dest]))
     return found
 
 
@@ -102,7 +147,7 @@ def _argv(command, work: Path, extra: tuple[str, ...], *, as_json: bool, nonce: 
     return words
 
 
-def _run(argv: list[str], stdin_bytes: bytes = b"") -> tuple[int, str, str]:
+def _run_unwatched(argv: list[str], stdin_bytes: bytes = b"") -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
     stdin = io.TextIOWrapper(io.BytesIO(stdin_bytes), encoding="utf-8")
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(sys, "stdin", stdin):
@@ -111,6 +156,11 @@ def _run(argv: list[str], stdin_bytes: bytes = b"") -> tuple[int, str, str]:
         except SystemExit as exc:
             code = int(exc.code) if isinstance(exc.code, int) else 1
     return code, out.getvalue(), err.getvalue()
+
+
+def _run(*args, **kwargs):
+    with door_runtime.watching():
+        return _run_unwatched(*args, **kwargs)
 
 
 def _refusal(code: int, out: str, err: str) -> tuple[str | None, str | None]:
@@ -221,6 +271,8 @@ def _apply(work: Path, target: str, kind: str, mode: int | None) -> _Kept:
 
 
 class WaysOutTests(unittest.TestCase):
+    bound_seconds = 900
+
     @classmethod
     def setUpClass(cls) -> None:
         cls._temporary = tempfile.TemporaryDirectory()
@@ -230,12 +282,13 @@ class WaysOutTests(unittest.TestCase):
             target = cls.template / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
+        settings = cls.template / "forest.toml"
+        settings.write_text(settings.read_text() + '\n[agents.groups.bakers]\nmembers = ["till-bot"]\nopen = false\n')
         search.build(cls.template)
         credentials = cls.template / ".forest" / "credentials"
         if not credentials.exists():
-            credentials.write_bytes(b"")
-            os.chmod(credentials, 0o600)
-        cls.commands = list(cli.FOREST_COMMANDS)
+            credentials.mkdir(mode=0o700)
+        cls.commands = _commands()
         cls.tools = list(mcp._TOOLS)
         cls.home = str(Path.home())
         cls.host = socket.gethostname()
@@ -245,15 +298,8 @@ class WaysOutTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls._temporary.cleanup()
 
-    def _copy(self) -> Path:
-        work = self.base / "work"
-        if work.exists():
-            shutil.rmtree(work)
-        shutil.copytree(self.template, work, symlinks=True)
-        return work
-
     def _secret(self, work: Path, text: str) -> str | None:
-        for secret in (str(work), self.home, self.host, self.user):
+        for secret in (str(work), str(self.base), self.home, self.host, self.user):
             if secret and len(secret) > 1 and secret in text:
                 return secret
         return None
@@ -262,47 +308,61 @@ class WaysOutTests(unittest.TestCase):
         self.assertGreater(len(self.commands), 5)
         self.assertGreater(len(self.tools), 3)
         started = time.monotonic()
+        self.cells = 0
         for target, kind, mode in _shapes():
-            work = self._copy()
-            kept = _apply(work, target, kind, mode)
+            self.disk_shape = (target, kind, mode)
             label = f"{target} {kind}" if kind != "mode" else f"{target} {mode:04o}"
-            try:
-                self._one_shape(work, label)
-            finally:
-                kept.restore()
+            self._one_shape(self.template, label)
         elapsed = time.monotonic() - started
         # Kept for the report. A hang would not reach this line.
-        self.assertLess(elapsed, 600, f"{len(_shapes())} shapes took {elapsed:.0f}s")
+        sys.stderr.write(f"\nshape product: {len(_shapes())} states, {self.cells} cells in {elapsed:.1f} s\n")
+        self.assertLess(elapsed, 900, f"{len(_shapes())} shapes took {elapsed:.0f}s")
+
+    @contextlib.contextmanager
+    def cell(self, _work):
+        with tempfile.TemporaryDirectory(dir=self.base) as temporary:
+            work = Path(temporary) / "forest"
+            shutil.copytree(self.template, work, symlinks=True)
+            kept = _apply(work, *self.disk_shape)
+            try:
+                self.cells += 1
+                yield work
+            finally:
+                kept.restore()
 
     def _one_shape(self, work: Path, label: str) -> None:
         tool_answers = {}
         for tool in self.tools:
-            caught = io.StringIO()
-            with contextlib.redirect_stderr(caught):
-                reply = mcp._call(
-                    work, READER, {"name": tool["name"], "arguments": _tool_arguments(tool)}, "stdio"
-                )
-            self.assertNotIn("Traceback", caught.getvalue())
-            body = json.loads(reply["content"][0]["text"])
-            text = reply["content"][0]["text"]
-            self.assertNotIn("Traceback", text)
-            if reply["isError"]:
-                self.assertIsNone(self._secret(work, text), f"{label} {tool['name']}")
-                tool_answers[tool["name"]] = (str(body.get("code")), str(body.get("next") or ""))
-            else:
-                tool_answers[tool["name"]] = (None, None)
+            for who in ("agent", "group"):
+                caught = io.StringIO()
+                arguments = _tool_arguments(tool)
+                if who == "group":
+                    arguments["agent"] = READER
+                with contextlib.redirect_stderr(caught), self.cell(work) as current, door_runtime.watching():
+                    reply = mcp._call(current, READER, {"name": tool["name"], "arguments": arguments}, "stdio",
+                                      group="bakers" if who == "group" else None)
+                self.assertNotIn("Traceback", caught.getvalue())
+                body = json.loads(reply["content"][0]["text"])
+                text = reply["content"][0]["text"]
+                self.assertNotIn("Traceback", text)
+                if reply["isError"]:
+                    self.assertIsNone(self._secret(work, text), f"{label} {tool['name']}")
+                    tool_answers[(tool["name"], who)] = (str(body.get("code")), str(body.get("next") or ""))
+                else:
+                    tool_answers[(tool["name"], who)] = (None, None)
         for command in self.commands:
             paired = "memory_" + command.words[0]
             if command.words[0] == "timeline":
                 paired = "memory_timeline"
-            if paired not in tool_answers:
+            if (paired, "agent") not in tool_answers:
                 paired = ""
             for extra, who in _reader_flags(command):
                 answers = []
                 for as_json in (False, True):
-                    argv = _argv(command, work, extra, as_json=as_json, nonce=str(as_json))
-                    stdin_bytes = b"the till counted the trays\n" if command.words == ("log",) else b""
-                    code, out, err = _run(argv, stdin_bytes)
+                    with self.cell(work) as current:
+                        argv = _argv(command, current, extra, as_json=as_json, nonce=str(as_json))
+                        stdin_bytes = b"the till counted the trays\n" if command.words == ("log",) else b""
+                        code, out, err = _run(argv, stdin_bytes)
                     refusal = _refusal(code, out, err)
                     answers.append(refusal)
                     with self.subTest(shape=label, command=" ".join(command.words), extra=extra, json=as_json):
@@ -313,8 +373,64 @@ class WaysOutTests(unittest.TestCase):
                         if who in {"agent", "group"}:
                             self.assertIsNone(self._secret(work, out + err), out + err)
                 self.assertEqual(answers[0], answers[1], f"{label} {' '.join(command.words)} {extra}")
-                if who == "agent" and paired and extra[:1] == ("--as",):
-                    self.assertEqual(answers[1], tool_answers[paired], f"{label} {paired}")
+                if who in {"agent", "group"} and paired and extra[:1] in {("--as",), ("--as-group",)}:
+                    self.assertEqual(answers[1], tool_answers[(paired, who)], f"{label} {paired} {who}")
+
+
+class DiskProductTests(WaysOutTests):
+    """Every distinct real-disk step of FactsOnDiskTests, crossed with the same parser and tool table."""
+    bound_seconds = 1800
+
+    def test_every_command_and_tool_on_every_disk_shape(self):
+        from test_v1_derived import FactsOnDiskTests
+        sample = FactsOnDiskTests()
+        unique = {}
+        for index, (step, value, _make) in enumerate(sample._cases()):
+            unique.setdefault((step, value), index)
+        started = time.monotonic()
+        self.cells = 0
+        for label, index in unique.items():
+            self.case_index = index
+            with self.subTest(disk=label):
+                try:
+                    self._one_shape(self.template, str(label))
+                except AssertionError as error:
+                    sys.stderr.write(f"\ndisk product {label}: {error}\n")
+                    raise
+        sys.stderr.write(f"\ndisk product: {len(unique)} states, {self.cells} cells in {time.monotonic() - started:.1f} s\n")
+
+    @contextlib.contextmanager
+    def cell(self, _work):
+        from test_v1_derived import FactsOnDiskTests
+        with tempfile.TemporaryDirectory(dir=self.base) as temporary:
+            base = Path(temporary)
+            root = base / "forest"
+            shutil.copytree(self.template, root, symlinks=True)
+            case = FactsOnDiskTests()
+            case.base, case.built, case.count = base, self.template, 1
+            case.addCleanup(case._open_up, root)
+            try:
+                step, value, make = case._cases()[self.case_index]
+                made = make(root)
+                options = made if isinstance(made, dict) else {}
+                current = made if isinstance(made, Path) else root
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(system, "OPEN_DEADLINE_SECONDS", min(options.get("deadline", 0.15), 0.15)))
+                    if (step, value) == ("metadata", "busy"):
+                        original = system.open_index
+                        def opened(*args, **kwargs):
+                            kwargs["busy_seconds"] = 0.01
+                            kwargs["deadline_seconds"] = 1.0
+                            return original(*args, **kwargs)
+                        stack.enter_context(mock.patch.object(system, "open_index", opened))
+                    stack.enter_context(mock.patch.object(search, "MASKING_WAIT_SECONDS", 0.05))
+                    stack.enter_context(mock.patch.object(search, "READER_TIMEOUT_SECONDS", 0.05))
+                    if options.get("swap"):
+                        stack.enter_context(system.at(system.POINT_INDEX_OPEN, lambda *, path: Path(path).unlink()))
+                    self.cells += 1
+                    yield current
+            finally:
+                self.assertTrue(case.doCleanups(), "disk-cell cleanup failed")
 
 
 if __name__ == "__main__":

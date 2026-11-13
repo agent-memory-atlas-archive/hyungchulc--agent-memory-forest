@@ -15,6 +15,8 @@ import sys
 import tempfile
 import threading
 import unittest
+
+import bounds  # installs a deadline for every unittest invocation
 from pathlib import Path
 
 import memory_forest
@@ -305,6 +307,35 @@ class RefusalCodeTests(unittest.TestCase):
                 self.assertTrue(any(reason in line for line in result.unresolved), result.unresolved)
                 if label != "an assignment after construction":
                     self.assertEqual(result.sites, [], result.sites)
+
+    def test_unused_and_annotated_class_aliases_and_setattr_are_refused(self):
+        probes = (
+            "from .errors import MemoryForestError as Hidden\n",
+            "from .errors import MemoryForestError\nHeld = MemoryForestError\n",
+            "from .errors import MemoryForestError\nHeld: object = MemoryForestError\n",
+            "def change(error):\n    setattr(error, 'code', 'hidden')\n",
+            "def change(error, key):\n    setattr(error, key, 'hidden')\n",
+        )
+        for source in probes:
+            with self.subTest(source=source):
+                self.assertTrue(codes_walk.walk(_trees(**{"probe.py": source}), listed={}).unresolved)
+
+    def test_constructor_codes_outside_errors_are_literals_or_module_constants(self):
+        self.assertEqual(codes_walk.spelling_errors(), [])
+        prefix = "from .errors import MemoryForestError\n"
+        for source in (
+            "def helper(code): return MemoryForestError(code, 'x')",
+            "def helper():\n code = 'x'\n return MemoryForestError(code, 'x')",
+            "def helper(): return MemoryForestError('x' if True else 'y', 'x')",
+            "CODE='x'\ndef helper(CODE): return MemoryForestError(CODE, 'x')",
+            "CODE='x'\ndef helper(*CODE): return MemoryForestError(CODE, 'x')",
+            "CODE='x'\ndef helper(**CODE): return MemoryForestError(CODE, 'x')",
+            "def helper(move): return MemoryForestError('x', 'x', next_step=move)",
+        ):
+            self.assertTrue(codes_walk.spelling_errors(_trees(**{"probe.py": prefix + source})), source)
+        for source in ("MemoryForestError('x', 'x')", "CODE='x'\nMemoryForestError(CODE, 'x')",
+                       "CODE: str='x'\ndef helper(): return MemoryForestError(CODE, 'x')"):
+            self.assertEqual(codes_walk.spelling_errors(_trees(**{"probe.py": prefix + source})), [], source)
 
     def test_no_site_has_a_code_or_a_move_the_walk_cannot_name(self) -> None:
         self.assertEqual(self.walk.unresolved, [], "resolve it, or list it in codes_walk with its values")

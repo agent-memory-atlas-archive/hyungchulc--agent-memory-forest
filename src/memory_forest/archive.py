@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from . import layout
-from .errors import MemoryForestError
+from .errors import ArchiveProofError, MemoryForestError
 from .locking import LockToken, append_lines, atomic_write, writer_lock
 from .model import split_line_ending
 from .safety import require_real_root
@@ -84,10 +84,6 @@ class ArchiveEntry:
             )
         except (KeyError, TypeError, ValueError):
             return None
-
-
-class ArchiveProofError(MemoryForestError):
-    """Lines that were to leave a page are not all in its archive copy."""
 
 
 def _digest(data: bytes) -> str:

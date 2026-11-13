@@ -37,6 +37,8 @@ test turns them on: no environment variable and no setting does.
 
 from __future__ import annotations
 
+import ctypes
+import sys
 import errno
 import os
 import secrets
@@ -166,7 +168,7 @@ CAN: dict[str, tuple[str, ...]] = {
     "set_mode": ("absent", "denied", "link", "other"),
     "sync_folder": ("absent", "denied", "other"),
     "may": (),
-    "enter_folder": ("absent", "denied", "not_a_folder", "link", "other"),
+    "enter_folder": ("absent", "denied", "not_a_folder", "link", "changed", "other"),
     "name_limit": ("absent", "denied", "not_a_folder", "other"),
     "path_limit": ("absent", "denied", "not_a_folder", "other"),
     "relook_beside": ("absent", "denied", "not_a_folder", "other"),
@@ -299,14 +301,14 @@ def _count_bytes(count: int) -> None:
             watch.bytes_read += count
 
 
-def _statement(sql: str) -> None:
+def _statement(sql: str, path: str = "") -> None:
     watch = _WATCH
     if watch is None:
         return
     with watch.lock:
         watch.statements += 1
         watch.statement_texts.append(" ".join(sql.split())[:80])
-        watch.events.append(("statement", "ran"))
+        watch.events.append(("statement", path))
         kind = watch.fail_statements.get(watch.statements)
         if kind is not None:
             watch.injected.append((watch.statements, "statement", kind))
@@ -479,17 +481,35 @@ def may(path: str | os.PathLike[str], access: str) -> bool:
 
 
 def enter_folder(path: str | os.PathLike[str]) -> None:
-    """Open ``path`` as a folder and close it. That is the act of entering it.
+    """Resolve the dot entry inside a real folder, proving search (x) access without requiring read.
 
-    Success means this account entered. A denial names enter, and ``folder`` is the folder that could not
-    be entered when a folder above ``path`` is the cause.
+    Opening a directory read-only proves read permission instead. The dot lookup is the act of entering;
+    a second no-follow look rejects a name changed during that act.
     """
     _enter("enter_folder", path, "enter")
+    text = os.fspath(path)
     try:
-        descriptor = os.open(os.fspath(path), _DIRECTORY_FLAGS)
+        before = os.lstat(text)
+        if stat.S_ISLNK(before.st_mode):
+            raise Link(path)
+        if not stat.S_ISDIR(before.st_mode):
+            raise NotAFolder(path)
     except OSError as exc:
         raise _classify(exc, path, "enter") from None
-    os.close(descriptor)
+    try:
+        inside = os.lstat(os.path.join(text, "."))
+    except PermissionError as exc:
+        raise Denied(path, number=exc.errno, access="enter", folder=path) from None
+    except OSError as exc:
+        raise _classify(exc, path, "enter") from None
+    try:
+        named = os.lstat(text)
+    except OSError as exc:
+        raise _classify(exc, path, "enter") from None
+    if (before.st_dev, before.st_ino) != (inside.st_dev, inside.st_ino) or (
+        before.st_dev, before.st_ino
+    ) != (named.st_dev, named.st_ino):
+        raise Changed(path)
 
 
 def name_limit(folder: str | os.PathLike[str]) -> int:
@@ -519,10 +539,11 @@ def _path_constant(folder: str | os.PathLike[str], name: str, default: int) -> i
 _ABANDONED: dict[str, float] = {}
 _LIVE_OPEN: set[str] = set()
 _ABANDONED_LOCK = threading.Lock()
+_OPEN_CHANGED = threading.Condition(_ABANDONED_LOCK)
 
 
 def abandoned_since(path: str | os.PathLike[str]) -> float | None:
-    """The monotonic time an open of ``path`` was abandoned, or None when none is still out."""
+    """The UTC wall-clock time an open of ``path`` was abandoned, or None when none is still out."""
     with _ABANDONED_LOCK:
         return _ABANDONED.get(os.fspath(path))
 
@@ -530,6 +551,7 @@ def abandoned_since(path: str | os.PathLike[str]) -> float | None:
 def _note_abandoned(path: str | os.PathLike[str], since: float) -> None:
     with _ABANDONED_LOCK:
         _ABANDONED.setdefault(os.fspath(path), since)
+        _OPEN_CHANGED.notify_all()
 
 
 def _clear_abandoned(path: str | os.PathLike[str]) -> None:
@@ -570,26 +592,39 @@ def relook_beside(path: str | os.PathLike[str]) -> Beside | None:
         if there.kind != "file":
             return Beside("not_a_file", Path(name).name, "", there.kind)
         try:
-            descriptor = os.open(name, _READ_FLAGS)
-        except OSError as exc:
-            outcome = _classify(exc, name, "read")
+            probe_read(name)
+        except Outcome as outcome:
             if outcome.kind == "denied":
                 return Beside("unreadable", Path(name).name, outcome.access or "read", outcome.error)
-            continue
-        else:
-            os.close(descriptor)
+            if outcome.kind in ("link", "not_a_file"):
+                return Beside("not_a_file", Path(name).name, outcome.access, outcome.error)
+            if outcome.kind != "absent":
+                return Beside("failed", Path(name).name, outcome.access, outcome.error)
     return None
 
 
+def _sidecar_problem(path: Path) -> Outcome | None:
+    """An error/deadline is classified after a fresh look, for readers and writers alike."""
+    found = relook_beside(path)
+    if found is None:
+        return None
+    target = path.parent / found.name
+    if found.kind == "not_a_file":
+        return NotAFile(target, found=found.error)
+    if found.kind == "unreadable":
+        return Denied(target, access=found.access or "read")
+    return Other(target, number=getattr(errno, found.error, errno.EIO), access=found.access)
+
+
 def _release_fifos(path: str | os.PathLike[str]) -> bool:
-    """Open each fifo beside the index for writing, without blocking, and close it.
+    """Open each fifo at the index or beside it for writing, without blocking, and close it.
 
     A thread blocked in its open of that fifo then returns. The result of that open is thrown away by
     the caller. True when at least one fifo was opened.
     """
     released = False
     flags = os.O_WRONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
-    for suffix in _BESIDE_SUFFIXES:
+    for suffix in ("", *_BESIDE_SUFFIXES):
         name = os.fspath(path) + suffix
         try:
             there = look(name)
@@ -1165,21 +1200,22 @@ class IndexConnection(sqlite3.Connection):
     connection's own flag (SQLite's immutable mode), so nothing is kept beside it by its address."""
 
     read_only = False
+    forest_path = ""
 
     def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:  # type: ignore[override]
-        _statement(sql)
+        _statement(sql, self.forest_path)
         return super().execute(sql, parameters)
 
     def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:  # type: ignore[override]
-        _statement(sql)
+        _statement(sql, self.forest_path)
         return super().executemany(sql, parameters)
 
     def executescript(self, script: str, /) -> sqlite3.Cursor:  # type: ignore[override]
-        _statement(script)
+        _statement(script, self.forest_path)
         return super().executescript(script)
 
     def commit(self) -> None:
-        _statement("COMMIT")
+        _statement("COMMIT", self.forest_path)
         super().commit()
 
 
@@ -1253,6 +1289,10 @@ class IndexFile:
             self.connection.close()
         finally:
             self.release_descriptor()
+            watch = _WATCH
+            if watch is not None:
+                with watch.lock:
+                    watch.events.append(("closed_index", os.fspath(self.path)))
 
 
 def open_index(
@@ -1275,10 +1315,16 @@ def open_index(
     or ``changed`` when the path names something else by then; SQLite's own thread finishes on its own and
     closes what it opened.
     """
-    target = Path(path)
+    target = absolute(path)
     deadline = OPEN_DEADLINE_SECONDS if deadline_seconds is None else deadline_seconds
     if abandoned_since(target) is not None:
         raise Busy(target, note="abandoned", seconds=deadline)
+    # A writer can create a missing index too. Its three neighbouring names still belong to the
+    # same file family, and must be checked before SQLite is allowed to open any of them.
+    look_or_none(target)
+    problem = _sidecar_problem(target)
+    if problem is not None:
+        raise problem
     _enter("open_index", target, "write" if write else "read")
     if write:
         flags = (
@@ -1312,6 +1358,7 @@ def open_index(
                 uri, uri=True, timeout=busy_seconds, factory=factory, check_same_thread=False,
                 isolation_level=None if write else "",
             )
+            connection.forest_path = os.fspath(target)
             result = first(connection) if first is not None else None
             handle_box["connection"] = connection
             handle_box["result"] = result
@@ -1337,10 +1384,18 @@ def open_index(
                 _clear_abandoned(target)
                 with _ABANDONED_LOCK:
                     _LIVE_OPEN.discard(os.fspath(target))
+                    _OPEN_CHANGED.notify_all()
 
     key = os.fspath(target)
     opener = threading.Thread(target=run, name="memory-forest index open", daemon=True)
-    with _ABANDONED_LOCK:
+    until = time.monotonic() + deadline
+    with _OPEN_CHANGED:
+        while key in _LIVE_OPEN and key not in _ABANDONED:
+            left = until - time.monotonic()
+            if left <= 0:
+                os.close(descriptor)
+                raise Busy(target, note="deadline", seconds=deadline)
+            _OPEN_CHANGED.wait(left)
         if key in _ABANDONED:
             os.close(descriptor)
             raise Busy(target, note="abandoned", seconds=deadline)
@@ -1354,25 +1409,30 @@ def open_index(
                 state["abandoned"] = True
         if late:
             try:
+                _enter("same_index", target, "read")
                 named = os.lstat(target)
             except OSError:
                 named = None
             moved = named is None or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)
-            if not moved:
-                _release_fifos(target)
+            _release_fifos(target)
             if not done.is_set():
                 done.wait(1.0)
-            # A path that changed is the swap the caller retries. Only an open that is still blocked on
-            # the same file is abandoned, so a later call does not start a second thread.
-            if not done.is_set() and not moved:
-                _note_abandoned(target, time.time())
+            # Count a still-blocked worker even when the index path changed. Registration and worker
+            # completion share the guard, so completion cannot race ahead of the registration.
+            with guard:
+                if not done.is_set():
+                    _note_abandoned(target, time.time())
+            problem = _sidecar_problem(target)
             if moved:
                 raise Changed(target, note="deadline", seconds=deadline)
+            if problem is not None:
+                raise problem
             raise Busy(target, note="deadline", seconds=deadline)
     finally:
         if abandoned_since(target) is None:
             with _ABANDONED_LOCK:
                 _LIVE_OPEN.discard(key)
+                _OPEN_CHANGED.notify_all()
     opened = IndexFile(
         handle_box.get("connection"), descriptor, target, info, immutable=immutable, through=through  # type: ignore[arg-type]
     )
@@ -1381,10 +1441,137 @@ def open_index(
         moved = not opened.same()
         os.close(descriptor)
         opened.descriptor = -1
+        problem = _sidecar_problem(target)
         if moved:
             raise Changed(target) from error
+        if problem is not None:
+            raise problem from error
         raise error
     if not opened.same():
         opened.close()
         raise Changed(target)
     return opened, handle_box.get("result")
+
+
+def memory_database() -> sqlite3.Connection:
+    """A private in-memory database; even SQLite construction crosses the door."""
+    return sqlite3.connect(":memory:")
+
+
+def process_alive(pid: object) -> bool:
+    """Whether the kernel still knows this process (permission to signal is not needed)."""
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+_STOPPED = 4
+
+
+def process_status(pid: int) -> int | None:
+    """The process state, or None when this system will not say. ``_STOPPED`` is a stopped process."""
+    if sys.platform == "darwin":
+        library = ctypes.CDLL("/usr/lib/libproc.dylib")
+        info = _DarwinStatus()
+        read = library.proc_pidinfo(
+            ctypes.c_int(pid), ctypes.c_int(13), ctypes.c_uint64(0),
+            ctypes.byref(info), ctypes.c_int(ctypes.sizeof(info)),
+        )
+        if read <= 0:
+            return None
+        return int(info.pbsi_status)
+    try:
+        text = read_text(f"/proc/{pid}/stat")
+    except Outcome:
+        return None
+    end = text.rfind(")")
+    if end < 0 or end + 2 >= len(text):
+        return None
+    return _STOPPED if text[end + 2] == "T" else 0
+
+
+class _DarwinStatus(ctypes.Structure):
+    """``proc_bsdshortinfo``. ``pbsi_status`` is the kernel's ``p_stat`` (4 is stopped)."""
+
+    _fields_ = (
+        ("pbsi_pid", ctypes.c_uint32),
+        ("pbsi_ppid", ctypes.c_uint32),
+        ("pbsi_pgid", ctypes.c_uint32),
+        ("pbsi_status", ctypes.c_uint32),
+        ("pbsi_comm", ctypes.c_char * 16),
+        ("pbsi_flags", ctypes.c_uint32),
+        ("pbsi_uid", ctypes.c_uint32),
+        ("pbsi_gid", ctypes.c_uint32),
+        ("pbsi_ruid", ctypes.c_uint32),
+        ("pbsi_rgid", ctypes.c_uint32),
+        ("pbsi_svuid", ctypes.c_uint32),
+        ("pbsi_svgid", ctypes.c_uint32),
+        ("pbsi_rfu", ctypes.c_uint32),
+    )
+
+
+
+def timezone_info(name: str):
+    """Loading a zone can read the system zone database, so it crosses the door."""
+    from zoneinfo import ZoneInfo
+
+    return ZoneInfo(name)
+
+
+def argument_text(message: str) -> str:
+    """The argument library's translation may read a locale catalogue."""
+    import gettext
+
+    return gettext.gettext(message)
+
+
+def argument_plural(single: str, plural: str, count: int) -> str:
+    import gettext
+
+    return gettext.ngettext(single, plural, count)
+
+
+def configure_argument_library() -> None:
+    """Keep argparse's ordinary translations, with their resource reads through the door."""
+    import argparse
+
+    argparse._ = argument_text
+    argparse.ngettext = argument_plural
+
+
+# Closing any descriptor of a POSIX-locked file releases this process's locks on that file. SQLite
+# may have a live WAL connection in another thread, so an access probe must use another process.
+_READ_PROBE = """
+import errno, os, stat, sys
+fd = -1
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    info = os.fstat(fd)
+    print(0 if stat.S_ISREG(info.st_mode) else errno.EISDIR)
+except OSError as error:
+    print(error.errno)
+finally:
+    if fd >= 0: os.close(fd)
+"""
+
+
+def probe_read(path: str | os.PathLike[str]) -> None:
+    """Actually open a sidecar for reading without releasing this process's SQLite locks."""
+    import subprocess
+
+    _enter("open_file", path, "read")
+    try:
+        child = subprocess.run([sys.executable, "-c", _READ_PROBE, os.fspath(path)],
+                               capture_output=True, timeout=OPEN_DEADLINE_SECONDS, check=True)
+        number = int(child.stdout)
+    except (subprocess.SubprocessError, ValueError, OSError):
+        # A helper failure is not evidence of a disk errno or corrupt index.
+        raise RuntimeError("The sidecar read-access probe did not complete.") from None
+    if number:
+        raise _classify(OSError(number, os.strerror(number)), path, "read")
