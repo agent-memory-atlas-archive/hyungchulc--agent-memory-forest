@@ -193,5 +193,21 @@ class ReadPathTests(CheckForestTestCase):
         self.assertNotIn(PHONE.encode(), shown.stdout)
 
 
+
+class AddressSpanTests(unittest.TestCase):
+    def test_addresses_are_found_as_the_pattern_finds_them_in_one_pass(self) -> None:
+        import random
+
+        generator = random.Random(20510302)
+        for _round in range(20000):
+            text = "".join(generator.choice("ab1+.-:/ \nhtps:/x\u00e9\t") for _letter in range(generator.randint(0, 50)))
+            self.assertEqual(numbers.url_spans(text), [found.span() for found in numbers._URL_RE.finditer(text)],
+                             repr(text))
+        long = "a" * 200_000
+        self.assertEqual(numbers.url_spans(long + "://x"), [(0, len(long) + 4)])
+        self.assertEqual(numbers.url_spans(long), [])
+        self.assertEqual(numbers.url_spans("see 1http://kiln.example/a b"), [(5, 26)])
+
+
 if __name__ == "__main__":
     unittest.main()

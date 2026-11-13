@@ -55,7 +55,13 @@ ACCOUNT_MIN_DIGITS: Final[int] = 8
 ACCOUNT_MAX_DIGITS: Final[int] = 34
 KINDS: Final[tuple[str, ...]] = ("account", "iban", "card", "identity", "phone")
 
+# What an address is: a scheme, ``://`` and what follows up to white space. ``url_spans`` finds exactly what
+# this pattern finds, in one pass: the pattern tried at every letter of a long word reads the rest of the word
+# each time, which is quadratic in the length of a turn.
 _URL_RE: Final[re.Pattern[str]] = re.compile(r"[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
+_SCHEME_CHARACTERS: Final[frozenset[str]] = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
+_SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(r"://")
+_SPACE_RE: Final[re.Pattern[str]] = re.compile(r"\s")
 _IBAN_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z0-9*])[A-Z]{2}[0-9]{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?(?![A-Za-z0-9*])"
 )
@@ -179,9 +185,31 @@ def _keep_whole(number: str, config: Config) -> bool:
     )
 
 
+def url_spans(text: str) -> list[tuple[int, int]]:
+    """The spans ``_URL_RE.finditer`` gives, in time linear in the text: each ``://`` is looked at once."""
+    spans: list[tuple[int, int]] = []
+    end = 0
+    for found in _SEPARATOR_RE.finditer(text):
+        separator = found.start()
+        if separator < end:
+            continue
+        start = separator
+        while start > end and text[start - 1] in _SCHEME_CHARACTERS:
+            start -= 1
+        while start < separator and not text[start].isalpha():  # the scheme begins with its first letter
+            start += 1
+        after = found.end()
+        if start == separator or after >= len(text) or text[after].isspace():
+            continue
+        space = _SPACE_RE.search(text, after)
+        end = len(text) if space is None else space.start()
+        spans.append((start, end))
+    return spans
+
+
 def find_numbers(text: str, *, config: Config) -> list[NumberSpan]:
     """Every number of the kinds above that ``text`` writes in full, in the order they appear."""
-    taken: list[tuple[int, int]] = [(found.start(), found.end()) for found in _URL_RE.finditer(text)]
+    taken: list[tuple[int, int]] = url_spans(text)
     spans: list[NumberSpan] = []
 
     def free(start: int, end: int) -> bool:
