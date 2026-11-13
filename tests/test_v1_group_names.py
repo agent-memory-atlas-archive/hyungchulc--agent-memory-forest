@@ -511,13 +511,15 @@ class NameRuleTests(ForestTestCase):
         self.assertFalse(reply["result"]["isError"])
         path = root / ".forest" / "mcp" / "seen.json"
         first = path.read_bytes()
+        marked = first + b" \n"
+        path.write_bytes(marked)
         again, _version = mcp.handle_message(
             root, "", _call("memory_search", {"agent": "till-bot", "words": "trays"}, call_id=2), "stdio",
             "2025-11-25", group="bakery-bots",
         )
         assert isinstance(again, dict)
         self.assertFalse(again["result"]["isError"])
-        self.assertEqual(path.read_bytes(), first)
+        self.assertEqual(path.read_bytes(), marked)
         seen = json.loads(first)
         seen["till-bot"]["last"] = "2000-01-01T00:00:00Z"
         path.write_text(json.dumps(seen), encoding="utf-8")
