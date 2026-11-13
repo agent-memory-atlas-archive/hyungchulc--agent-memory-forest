@@ -150,8 +150,15 @@ def subject(
     stale = search.refresh_lanes_and_daily(safe)
     built = registry_mod.build(safe, config=config)
     scope = for_reader(config, built, reader, named=named, root=safe)
-    connection = search.require_index(safe)
-    try:
+    def read(connection: sqlite3.Connection | None) -> dict[str, Any]:
+        if connection is None:
+            raise MemoryForestError(
+                "index_missing",
+                "The forest has no search index. Run `forest index build`.",
+                details={"path": search.index_relative(safe)},
+                next_step="run",
+                command="forest index build",
+            )
         try:
             earliest = {
                 int(row[0]): row[1]
@@ -175,11 +182,13 @@ def subject(
             payload["subject"] = subject_id
             if stale:
                 payload["stale"] = stale
+            if id(connection) in search._IMMUTABLE_IDS:
+                payload["read_only"] = True
             return payload
         except sqlite3.Error as exc:
-            raise search.finish_read(exc) from exc
-    finally:
-        connection.close()
+            raise search.finish_read(exc, path=search.index_relative(safe)) from exc
+
+    return search._checked_read(safe, read)
 
 
 def resolve(
@@ -234,8 +243,15 @@ def _collect(
 ) -> dict[str, Any]:
     built = registry_mod.build(root, config=config)
     scope = for_reader(config, built, reader, named=named, root=root)
-    connection = search.require_index(root)
-    try:
+    def read(connection: sqlite3.Connection | None) -> dict[str, Any]:
+        if connection is None:
+            raise MemoryForestError(
+                "index_missing",
+                "The forest has no search index. Run `forest index build`.",
+                details={"path": search.index_relative(root)},
+                next_step="run",
+                command="forest index build",
+            )
         try:
             pages: dict[str, dict[str, Any]] = {}
             stamps: dict[str, str] = {}
@@ -264,11 +280,13 @@ def _collect(
             payload = search._envelope(scope, ordered)
             payload["phrase"] = phrase
             payload["when"] = _when_dict(when)
+            if id(connection) in search._IMMUTABLE_IDS:
+                payload["read_only"] = True
             return payload
         except sqlite3.Error as exc:
-            raise search.finish_read(exc) from exc
-    finally:
-        connection.close()
+            raise search.finish_read(exc, path=search.index_relative(root)) from exc
+
+    return search._checked_read(root, read)
 
 
 def _matching_lines(

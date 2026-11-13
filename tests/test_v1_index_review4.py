@@ -50,7 +50,7 @@ class ReviewFourTests(ForestTestCase):
         body = json.loads(out)["error"]
         self.assertEqual(body["code"], "index_busy")
         self.assertEqual(body["next"], "retry")
-        self.assertIn("another program holds the index file", body["message"].casefold())
+        self.assertIn("the index file is in use", body["message"].casefold())
         self.assertNotIn("already running", body["message"].casefold())
         self.assertIn("waited", body["message"].casefold())
         self.assertGreater(body["stop_after_seconds"], body["after_seconds"])
@@ -60,15 +60,15 @@ class ReviewFourTests(ForestTestCase):
         locked_body = json.loads(locked_out)["error"]
         self.assertEqual(locked_body["code"], "index_busy")
         self.assertIn("index lock", locked_body["message"].casefold())
-        self.assertNotIn("another program", locked_body["message"].casefold())
+        self.assertNotIn("in use", locked_body["message"].casefold())
 
     def test_locked_is_a_fault_and_a_protocol_error_ends_as_io(self) -> None:
-        locked = search.index_error(_sqlite_error("database table is locked", 6, "SQLITE_LOCKED"))
+        locked = search.index_error(_sqlite_error("database table is locked", 6, "SQLITE_LOCKED"), path=".forest/index.sqlite")
         self.assertEqual(locked.code, "index_failed")
         self.assertEqual(locked.next_step, "report")
 
         def raise_locked(path: Path, busy_seconds: float = 0.0) -> sqlite3.Connection:
-            raise search.index_error(_sqlite_error("database table is locked", 6, "SQLITE_LOCKED"))
+            raise search.index_error(_sqlite_error("database table is locked", 6, "SQLITE_LOCKED"), path=".forest/index.sqlite")
 
         pauses: list[float] = []
         with mock.patch.object(search, "_open_writer", raise_locked), \
@@ -84,7 +84,7 @@ class ReviewFourTests(ForestTestCase):
         def once(path: Path, busy_seconds: float = search.WRITER_TIMEOUT_SECONDS) -> sqlite3.Connection:
             calls["n"] += 1
             if calls["n"] == 1:
-                raise search.index_error(_sqlite_error("locking protocol", 15, "SQLITE_PROTOCOL"))
+                raise search.index_error(_sqlite_error("locking protocol", 15, "SQLITE_PROTOCOL"), path=".forest/index.sqlite")
             return real(path, busy_seconds)
 
         with mock.patch.object(search, "_open_writer", once), \
@@ -93,10 +93,10 @@ class ReviewFourTests(ForestTestCase):
         self.assertFalse(built["busy"])
         self.assertEqual(calls["n"], 2)
         self.assertEqual(len(pauses), 1)
-        self.assertEqual(search.index_error(_sqlite_error("locking protocol", 15, "SQLITE_PROTOCOL")).code, "index_protocol")
+        self.assertEqual(search.index_error(_sqlite_error("locking protocol", 15, "SQLITE_PROTOCOL"), path=".forest/index.sqlite").code, "index_protocol")
 
         def always(path: Path, busy_seconds: float = 0.0) -> sqlite3.Connection:
-            raise search.index_error(_sqlite_error("locking protocol", 15, "SQLITE_PROTOCOL"))
+            raise search.index_error(_sqlite_error("locking protocol", 15, "SQLITE_PROTOCOL"), path=".forest/index.sqlite")
 
         with mock.patch.object(search, "_open_writer", always):
             with self.assertRaises(MemoryForestError) as spent:
@@ -132,7 +132,7 @@ class ReviewFourTests(ForestTestCase):
             def close(self) -> None:
                 return None
 
-        with mock.patch.object(search, "require_index", lambda root: Connection()):
+        with mock.patch.object(search, "connect", lambda root: Connection()):
             found = search.query(self.root, "trays", reader="till-bot")
             self.assertIsInstance(found["results"], list)
             mode["name"] = "busy"
@@ -221,18 +221,20 @@ class ReviewFourTests(ForestTestCase):
                 self.assertIn(command, rows[code], code)
 
     @unittest.skipIf(os.geteuid() == 0, "the superuser writes a read-only folder")
-    def test_a_read_only_forest_folder_cannot_be_searched(self) -> None:
+    def test_a_read_only_forest_folder_can_be_searched_when_no_log_stands_beside_the_index(self) -> None:
         search.build(self.root)
         folder = self.index.parent
         os.chmod(folder, 0o555)
         try:
-            for call in (
-                lambda: search.status(self.root),
-                lambda: search.query(self.root, "trays", reader="till-bot"),
-            ):
-                with self.assertRaises(MemoryForestError) as refused:
-                    call()
-                self.assertEqual(refused.exception.code, "index_read_only")
-                self.assertEqual(refused.exception.next_step, "report")
+            if os.access(folder, os.W_OK):
+                self.skipTest("this user can still write a read-only folder")
+            state = search.status(self.root)
+            self.assertTrue(state["read_only"])
+            self.assertTrue(state["available"])
+            found = search.query(self.root, "trays", reader="till-bot")
+            self.assertTrue(found["read_only"])
+            with self.assertRaises(MemoryForestError) as refused:
+                search.build(self.root)
+            self.assertEqual(refused.exception.code, "index_read_only")
         finally:
             os.chmod(folder, 0o700)

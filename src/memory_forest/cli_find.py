@@ -16,7 +16,7 @@ def cmd_index_build(arguments: Any) -> int:
         raise search.index_busy_error(
             str(result.get("message") or "The index was not built."),
             waited_seconds=float(result.get("waited_seconds") or 0.0),
-            path=str(result.get("path") or search.INDEX_RELATIVE),
+            path=str(result.get("path") or search.index_relative(forest_root(arguments))),
         )
     _show_index(arguments, result)
     return 0
@@ -176,7 +176,7 @@ COMMANDS: list[ForestCommand] = [
     ForestCommand(
         ("index", "build"),
         cmd_index_build,
-        "Build or update .forest/index.sqlite. A reader never waits for this.",
+        "Build or update the search index. A reader never waits for this. A damaged index is `forest index reset`.",
         (
             arg(
                 "--verify",

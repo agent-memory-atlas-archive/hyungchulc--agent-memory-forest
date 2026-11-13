@@ -478,8 +478,8 @@ sections.
 
 ## `forest index`
 
-`forest index build` writes `.forest/index.sqlite`. The file is derived: delete it and build again and
-the same rows come back. One row is one page section, one collection entry, one marked block of a daily
+`forest index build` writes the search index. With no pointer the file is `.forest/index.sqlite`.
+The file is derived: `forest index reset` points at a new file, and the next build makes the same rows. One row is one page section, one collection entry, one marked block of a daily
 page, or one raw-lane turn. The text in the row is the text a read would print, with sign-in values
 masked and numbers starred. The build holds the `index` lock and writes the file in place, in one
 transaction in WAL mode, so a search that is already running keeps reading the last committed index and
@@ -507,8 +507,8 @@ What SQLite refuses is sorted by its result code:
 | Code | When | Next move |
 | --- | --- | --- |
 | `index_unreadable` | the file is corrupt, is not a database, or its schema mark matches but a table or column is missing | `run` `forest index reset` |
-| `index_busy` | the index lock is held, or another program holds the file | `retry` after `after_seconds`, stop at `stop_after_seconds` |
-| `index_read_only` | the file, its `-wal` or `-shm`, or `.forest/` cannot be written, so it cannot be read either | `report` |
+| `index_busy` | the index lock is held, or the index file is in use | `retry` after `after_seconds`, stop at `stop_after_seconds` |
+| `index_read_only` | the index file cannot be written (reading it still answers), or `.forest/` cannot be written and a `-wal` file stands beside the index or there is no index to read | `report` |
 | `index_disk_full` | the disk is full | `report` |
 | `index_io_error` | the disk returned an I/O error, or the locking protocol failed and this call's budget is spent | `report` |
 | `index_cannot_open` | the path cannot be opened or created (a folder in its place) | `report` |
@@ -518,13 +518,20 @@ What SQLite refuses is sorted by its result code:
 | `symlink_forbidden` | a symlink stands where the index or its pointer would be | `report` |
 
 A build that does not build is a refusal: `index_busy`, a non-zero exit, next move `retry`. The message
-says which cause it can tell apart, the index lock or another program holding the file. On `retry`,
+says which cause it can tell apart, the index lock or the index file being in use. It does not
+guess which program holds the file. On `retry`,
 `waited_seconds` is how long this call already waited and `stop_after_seconds` is the total after which
-the caller reports instead of calling again. A search with the same masking answers `stale`. `report`
+the caller reports instead of calling again. A refusal that has already waited that whole time is
+reported at once and not tried again. A protocol error is tried again only inside a query's reads and
+inside a write. `status`, the timeline and opening the file turn it into an I/O refusal at once.
+A search with the same masking answers `stale`. `report`
 means no command helps: the message says what a person has to do. Resetting a working index on a full
 disk would lose it and the rebuild would fail again. A file whose first build has not committed yet is
-not refused: it is no index yet. A `.forest/` folder that cannot be written cannot be searched at all,
-even when the index is unchanged, because opening the file asks that folder to be writable.
+not refused: it is no index yet. A `.forest/` folder this process cannot write can still be searched
+when the index is whole and no write-ahead log stands beside it: the answer says `read_only: true`
+and names pages changed since the build. A write-ahead log in that folder, or no index at all, is
+`index_read_only`. The cure is one `forest index build` by an account that can write the folder,
+which folds the log in. `build` and `reset` still refuse, because they need a folder they can write.
 
 `forest index reset` is for an index that is corrupt or damaged. The index file's name carries a
 generation. `.forest/index.current` names the current file, and with no pointer `.forest/index.sqlite`

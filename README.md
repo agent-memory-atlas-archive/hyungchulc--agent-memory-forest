@@ -204,7 +204,8 @@ Agent Memory Forest is alpha software. The version in this tree is 1.0.0a1.
   tests on made-up forests and the synthetic forest passing every check.
 - **Milestone 2, connecting and finding (intake, the index, search and the MCP server are in this tree):**
   `forest intake` reads each tool's transcripts into that agent's raw lane. `forest index` builds
-  `.forest/index.sqlite`. `forest search`, `forest read` and `forest timeline` answer from it, inside
+  the search index (`.forest/index.sqlite` until `forest index reset` points at a new file).
+  `forest search`, `forest read` and `forest timeline` answer from it, inside
   `agents.readable_trees`, and `forest mcp` serves search, read, timeline, navigate and `memory_log`.
   Setup carried out by the owner's agent (`forest setup`, `forest doctor`, the guide, the plugins) is
   not built yet ([design, section 15](docs/v1-design.md#15-connecting-agents)).

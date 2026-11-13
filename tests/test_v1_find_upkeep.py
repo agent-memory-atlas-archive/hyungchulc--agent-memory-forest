@@ -553,7 +553,7 @@ class SqliteErrorClassTests(ForestTestCase):
         self.assertGreater(body["after_seconds"], 0)
         self.assertNotIn("command", body)
         self.assertIn("fingerprint", body["message"].casefold())
-        self.assertIn("another program", body["message"].casefold())
+        self.assertIn("in use", body["message"].casefold())
         self.assertIn("stop_after_seconds", body)
         self.assertIn("waited_seconds", body)
         self.assertTrue(self.index.is_file())

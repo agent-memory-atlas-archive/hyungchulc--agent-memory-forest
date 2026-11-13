@@ -196,8 +196,9 @@ its own is read in the page's `timezone:`.
 ## 10. Retrieval
 
 Finding is `forest index`, `forest search`, `forest read` and `forest timeline`, over one rebuildable
-index, `.forest/index.sqlite`. The lanes themselves still hold no index. The derived file does, so an
-hour that has not been filed can be found, and deleting the file and building again makes the same index.
+index. With no pointer the file is `.forest/index.sqlite`. The lanes themselves still hold no index.
+The derived file does, so an hour that has not been filed can be found, and `forest index reset`
+followed by a build makes the same index.
 
 `forest index build` holds the `index` lock. A second build that finds the lock held, or a file another
 program holds, does not build: it refuses with `index_busy`, a non-zero exit, and next move `retry`.
@@ -234,8 +235,16 @@ error is retried inside the call like a busy file, and when that call's budget i
 file or folder, a full disk, an I/O error and a path that cannot be opened have codes of their own
 (`index_read_only`, `index_disk_full`, `index_io_error`, `index_cannot_open`) whose next move is
 `report`: no command helps, and resetting a working index on a full disk would only lose it. A
-`.forest/` folder that cannot be written cannot be searched, from `status` or from a search, even when
-the index is unchanged: opening the file asks that folder to be writable. Publishing a
+protocol error is tried again only inside a query's reads and inside a write. `status`, the timeline
+and opening the file report it as I/O at once. A refusal that has already waited the whole stop time
+is reported at once and not tried again. A `.forest/` folder this process cannot write can still be
+searched when no write-ahead log stands beside the index: the open is SQLite's immutable mode, the
+answer says `read_only: true`, and pages changed since the build are reported as for any stale index.
+The file's size, time and inode are compared after the read; if they changed, the read is done once
+more, and if they changed again the answer is `index_busy` with `retry`. Immutable mode is never used
+on a folder this process can write. A write-ahead log in a folder that cannot be written, or no index
+there at all, is `index_read_only`: one `forest index build` by an account that can write the folder
+folds the log in, and a build needs a folder it can write. Publishing a
 fresh copy by an atomic rename was the other model; it was not chosen because it copies the whole
 database for every appended line.
 
@@ -552,7 +561,10 @@ that agent's own job.
   why only the owner can answer), `run` (a command), `retry` (the same call again after `after_seconds`),
   `report` (what to tell the owner) or `done`. On `retry`, add this answer's `waited_seconds` and the
   `after_seconds` it asks the caller to wait onto the time already spent, call again after `after_seconds`
-  while that sum is below `stop_after_seconds`, and report the message once the sum would reach it. A refusal of any command or tool has the same form:
+  while that sum is below `stop_after_seconds`, and report the message once the sum would reach it.
+A protocol error is tried again only inside a query's reads and a write, and is an I/O refusal at
+once in `status`, the timeline and while the file opens. A refusal that has already waited the whole
+stop time is reported at once and not tried again. A refusal of any command or tool has the same form:
   `code`, `message`, `details` and, when there is one, `next` with its `command` or `after_seconds`. The agent
   asks, runs the command again with `--answer key=value`, and is finished when `forest doctor` passes. An
   agent that never read a guide, or lost its place, still ends in the right state by following the output.

@@ -13,6 +13,11 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- A `.forest/` folder this process cannot write can still be searched when no write-ahead log stands
+  beside the index. The answer says `read_only: true`. A log there, or no index at all, is
+  `index_read_only`, and the cure is one `forest index build` by an account that can write.
+- A refusal names the current index file, not the first name, and says what is actually wrong: a
+  read-only file can still be read, and a held file is in use.
 - One intake in a server waits as long as the file lock waits, and no longer. A caller that does
   not get its turn receives `lock_busy` with `next: retry` and the `waited_seconds` it actually waited.
   The turn and the file lock share one budget.
