@@ -123,6 +123,7 @@ def query(
     now: datetime | None = None,
     limit: int = 50,
     config: Config | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     """What falls in ``phrase`` across the raw lanes, the daily pages and the forest."""
     safe = require_real_root(root)
@@ -133,7 +134,7 @@ def query(
     payload = _collect(safe, config, reader, named, when, limit=limit, phrase=phrase.strip())
     if stale:
         payload["stale"] = stale
-    return payload
+    return search.restrict_source(safe, payload, source) if source else payload
 
 
 @search._public
@@ -145,6 +146,7 @@ def subject(
     named: Iterable[str] = (),
     limit: int = 50,
     config: Config | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     """The indexed sections whose subjects include ``subject_id``, in time order."""
     safe = require_real_root(root)
@@ -190,7 +192,8 @@ def subject(
         except sqlite3.Error as exc:
             raise search.finish_read(exc, path=search.index_relative(safe)) from exc
 
-    return search._checked_read(safe, read)
+    payload = search._checked_read(safe, read)
+    return search.restrict_source(safe, payload, source) if source else payload
 
 
 def resolve(

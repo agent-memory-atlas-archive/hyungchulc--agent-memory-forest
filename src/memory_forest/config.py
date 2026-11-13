@@ -35,6 +35,10 @@ TOOL_OUTPUTS: Final[tuple[str, ...]] = ("omit", "keep")
 REQUIRED_TYPES: Final[tuple[str, ...]] = ("agent", "collection")
 
 _SLUG_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9][a-z0-9-]*")
+# The greatest length of an agent argument, and of an id that becomes a file name.
+# A directory and `<id>_MTM.md` both have to fit where a file name may be 255
+# bytes. 200 leaves that room, including an `-agent` suffix.
+AGENT_TEXT_MAX: Final[int] = 200
 _LANGUAGE_RE: Final[re.Pattern[str]] = re.compile(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 _HIDE_RE: Final[re.Pattern[str]] = re.compile(r"after-hyphen|last-(?P<count>[1-9][0-9]?)")
 _SHAPE_RE: Final[re.Pattern[str]] = re.compile(r"[NA][NA \-./]*[NA]|[NA]")
@@ -231,12 +235,16 @@ class AgentGroup:
     """Several agents behind one connection, ``[agents.groups.<id>]``.
 
     ``members`` are agent ids. ``open`` is false until a new name the caller
-    gives may become a member by itself. The group's id is not an agent.
+    gives may become a member by itself. ``max_members`` is unset until the
+    owner sets a bound. ``source`` names a reader of an app's own member list.
+    The group's id is not an agent.
     """
 
     id: str
     members: tuple[str, ...] = ()
     open: bool = False
+    max_members: int | None = None
+    source: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +261,8 @@ class AgentSettings:
     known: tuple[KnownAgent, ...] = ()
     # One connection that several of the owner's agents share, by group id.
     groups: tuple[AgentGroup, ...] = ()
+    # Ids the settings name that cannot be a file name. A pass reports each and goes on.
+    unplaceable: tuple[tuple[str, str], ...] = ()
 
     def declared(self, agent_id: str) -> KnownAgent | None:
         return next((item for item in self.known if item.id == agent_id), None)
@@ -498,15 +508,24 @@ def parse_identity_format(text: str, *, key: str = "numbers.identity_formats", s
     return IdentityFormat(shape=shape, hide=hide)
 
 
-def _known_agents(key: str, raw: Any, source: str | None) -> tuple[KnownAgent, ...]:
-    """``[agents.known.<id>]`` tables: each id a slug, each table with an optional ``name`` and ``role``."""
+def _id_ok(value: str) -> bool:
+    """An id that can be a file name: a slug no longer than :data:`AGENT_TEXT_MAX`."""
+    return isinstance(value, str) and _SLUG_RE.fullmatch(value) is not None and len(value) <= AGENT_TEXT_MAX
+
+
+def _known_agents(
+    key: str, raw: Any, source: str | None
+) -> tuple[tuple[KnownAgent, ...], list[tuple[str, str]]]:
+    """``[agents.known.<id>]`` tables. An id that cannot be a file name is reported, and the rest load."""
     if not isinstance(raw, Mapping):
         raise _error(key, "must be a table of agents, one `[agents.known.<id>]` each", source)
     found = []
+    unplaceable: list[tuple[str, str]] = []
     for agent_id, table in raw.items():
         dotted = f"{key}.{agent_id}"
-        if _SLUG_RE.fullmatch(agent_id) is None:
-            raise _error(dotted, f"{agent_id!r} is not a slug", source)
+        if not _id_ok(str(agent_id)):
+            unplaceable.append((dotted, str(agent_id)))
+            continue
         if not isinstance(table, Mapping):
             raise _error(dotted, "must be a table with `name` and `role`", source)
         values: dict[str, str] = {}
@@ -514,40 +533,72 @@ def _known_agents(key: str, raw: Any, source: str | None) -> tuple[KnownAgent, .
             if field_name not in ("name", "role"):
                 raise _error(f"{dotted}.{field_name}", "is not a known setting", source)
             values[field_name] = " ".join(_string(f"{dotted}.{field_name}", value, source).split())
-        found.append(KnownAgent(agent_id, **values))
-    return tuple(sorted(found, key=lambda item: item.id))
+        found.append(KnownAgent(str(agent_id), **values))
+    return tuple(sorted(found, key=lambda item: item.id)), unplaceable
 
 
-def _agent_groups(key: str, raw: Any, source: str | None) -> tuple[AgentGroup, ...]:
-    """``[agents.groups.<id>]`` tables: member ids, and whether a new name may join."""
+def _agent_groups(
+    key: str, raw: Any, source: str | None, known: tuple[KnownAgent, ...]
+) -> tuple[tuple[AgentGroup, ...], list[tuple[str, str]]]:
+    """``[agents.groups.<id>]`` tables. A member id that cannot be a file name is reported, and the rest load.
+
+    A member written as an agent's name is that agent's id (:func:`memory_forest.agents.find_agent`).
+    """
     if not isinstance(raw, Mapping):
         raise _error(key, "must be a table of groups, one `[agents.groups.<id>]` each", source)
+    from . import agents as agents_mod
+
+    rows = [(item.id, item.name) for item in known]
     found = []
+    unplaceable: list[tuple[str, str]] = []
     for group_id, table in raw.items():
         dotted = f"{key}.{group_id}"
-        if _SLUG_RE.fullmatch(group_id) is None:
-            raise _error(dotted, f"{group_id!r} is not a slug", source)
+        if not _id_ok(str(group_id)):
+            unplaceable.append((dotted, str(group_id)))
+            continue
         if not isinstance(table, Mapping):
             raise _error(dotted, "must be a table with `members` and `open`", source)
-        members: tuple[str, ...] = ()
+        members: list[str] = []
         open_group = False
+        max_members: int | None = None
+        member_source = ""
         for field_name, value in table.items():
             item_key = f"{dotted}.{field_name}"
             if field_name == "members":
-                members = _strings(item_key, value, source)
-                for item in members:
-                    if _SLUG_RE.fullmatch(item) is None:
-                        raise _error(item_key, f"{item!r} is not a slug", source)
+                if not isinstance(value, list):
+                    raise _error(item_key, "must be a list of strings", source)
+                seen: set[str] = set()
+                for item in value:
+                    text = _string(item_key, item, source)
+                    if _id_ok(text):
+                        chosen = text
+                    else:
+                        hits = agents_mod.find_agent(text, rows)
+                        if len(hits) == 1 and _id_ok(hits[0]):
+                            chosen = hits[0]
+                        else:
+                            unplaceable.append((item_key, text))
+                            continue
+                    if chosen in seen:
+                        raise _error(item_key, "lists a value twice", source)
+                    seen.add(chosen)
+                    members.append(chosen)
             elif field_name == "open":
                 if not isinstance(value, bool):
                     raise _error(item_key, "must be true or false", source)
                 open_group = value
+            elif field_name == "max_members":
+                max_members = _integer(item_key, value, source)
+            elif field_name == "source":
+                member_source = _string(item_key, value, source)
+                if member_source and not _id_ok(member_source):
+                    raise _error(item_key, f"{member_source!r} is not a slug", source)
             else:
                 raise _error(item_key, "is not a known setting", source)
         if group_id in members:
             raise _error(dotted, "the group's own id is not a member", source)
-        found.append(AgentGroup(group_id, members, open_group))
-    return tuple(sorted(found, key=lambda item: item.id))
+        found.append(AgentGroup(str(group_id), tuple(members), open_group, max_members, member_source))
+    return tuple(sorted(found, key=lambda item: item.id)), unplaceable
 
 
 _INTAKE_FIELDS: Final[tuple[str, ...]] = ("enabled", "agent", "include", "exclude", "import_earlier", "path")
@@ -603,10 +654,8 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
                 parse_identity_format(item, key=dotted, source=source)
                 for item in _strings(dotted, value, source)
             )
-        elif name == "agents" and key == "known":
-            values[key] = _known_agents(dotted, value, source)
-        elif name == "agents" and key == "groups":
-            values[key] = _agent_groups(dotted, value, source)
+        elif name == "agents" and key in ("known", "groups"):
+            continue
         elif name == "intake" and key == "tools":
             values[key] = _intake_tools(dotted, value, source)
         elif isinstance(default, bool):
@@ -619,6 +668,20 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
             values[key] = _strings(dotted, value, source)
         else:
             values[key] = _string(dotted, value, source)
+    if name == "agents":
+        known_agents, bad_known = _known_agents(f"{name}.known", raw.get("known", {}), source)
+        groups, bad_groups = _agent_groups(f"{name}.groups", raw.get("groups", {}), source, known_agents)
+        kept_orchestrators = []
+        bad_orchestrators: list[tuple[str, str]] = []
+        for item in values.get("orchestrators", defaults.orchestrators):
+            if _id_ok(item):
+                kept_orchestrators.append(item)
+            else:
+                bad_orchestrators.append((f"{name}.orchestrators", item))
+        values["orchestrators"] = tuple(kept_orchestrators)
+        values["known"] = known_agents
+        values["groups"] = groups
+        values["unplaceable"] = tuple([*bad_known, *bad_groups, *bad_orchestrators])
     return replace(defaults, **values)
 
 
@@ -673,13 +736,20 @@ def _validate(config: Config) -> Config:
         raise _error("embeddings.provider", f"must be one of {', '.join(EMBEDDING_PROVIDERS)}", source)
     if config.intake.tool_output not in TOOL_OUTPUTS:
         raise _error("intake.tool_output", f"must be one of {', '.join(TOOL_OUTPUTS)}", source)
+    intake_tools = []
+    intake_bad: list[tuple[str, str]] = []
     for tool in config.intake.tools:
-        if tool.agent and _SLUG_RE.fullmatch(tool.agent) is None:
-            raise _error(
-                f"intake.tools.{tool.id}.agent",
-                f"{tool.agent!r} is not a slug",
-                source,
-            )
+        if tool.agent and not _id_ok(tool.agent):
+            intake_bad.append((f"intake.tools.{tool.id}.agent", tool.agent))
+            intake_tools.append(replace(tool, agent=""))
+        else:
+            intake_tools.append(tool)
+    if intake_bad:
+        config = replace(
+            config,
+            intake=replace(config.intake, tools=tuple(intake_tools)),
+            agents=replace(config.agents, unplaceable=(*config.agents.unplaceable, *intake_bad)),
+        )
     for key in ("phone_patterns", "keep_whole"):
         for value in getattr(config.numbers, key):
             try:
@@ -774,7 +844,7 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
         lines.append("")
         lines.append(f"[{name}]")
         for item in fields(section):
-            if name == "agents" and item.name in {"known", "groups"}:
+            if name == "agents" and item.name in {"known", "groups", "unplaceable"}:
                 continue
             if name == "intake" and item.name == "tools":
                 continue
@@ -797,4 +867,8 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
                 lines.append(f"[agents.groups.{group.id}]")
                 lines.append(f"members = {_toml_value(group.members)}")
                 lines.append(f"open = {_toml_value(group.open)}")
+                if group.max_members is not None:
+                    lines.append(f"max_members = {_toml_value(group.max_members)}")
+                if group.source:
+                    lines.append(f"source = {_toml_value(group.source)}")
     return "\n".join(lines) + "\n"

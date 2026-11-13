@@ -25,12 +25,10 @@ names a value.
 | `about_invalid` | `fix` |  | `none` stands alone in `about:`. |
 | `address_unknown` | `fix` |  | That address is not a section of the page. |
 | `agent_ambiguous` | `fix` |  | `…` has more than one member that name could be. Pass the member's id. |
-| `agent_is_group` | `fix` |  | `…` is the group, not an agent. Pass a member. |
-| `agent_name_invalid` | `fix` |  | That name cannot be an agent. Pass a member's id. |
-| `agent_near_miss` | `fix` |  | `…` is one edit from `…` (…). A typing slip does not make another agent. Pass agent …. |
+| `agent_name_invalid` | `retry` |  | That name cannot be an agent. Pass text of at most … characters that gives a slug. |
 | `agent_needs_group` | `fix` |  | --as is the reader. A caller's name belongs with --as-group, and it cannot change --as. |
-| `agent_not_in_group` | `fix` |  | `…` is not a member of `…`. Call again with one of them. |
-| `agent_outside_group` | `fix` |  | The name is an agent outside the group, or one edit away from one. |
+| `agent_not_in_group` | `retry` |  | `…` is not a member of `…`. Call again under your own name, as it is listed. |
+| `agent_unplaceable` | `report` |  | `…` is in the settings and cannot be placed. The rest of the forest goes on. |
 | `agent_unset` | `fix` |  | Name the caller with --agent. |
 | `already_a_tree` | `fix` |  | The subject is a tree already. |
 | `already_ended` | `fix` |  | The agent is retired already. |
@@ -100,6 +98,7 @@ names a value.
 | `forest_identity_missing` | `report` |  | This forest predates write identities; canonical writes require a forest_id created by a supported migration or new initialization. |
 | `forest_invalid` | `report` |  | Indexing requires a forest that passes validation and audit. |
 | `fts5_unavailable` | `report` |  | The local SQLite FTS5 index could not be built. |
+| `group_full` | `report` |  | `…` already has its max_members (…). The owner raises max_members, or leaves it unset. |
 | `group_unknown` | `report` |  | There is no group `…`. The owner declares [agents.groups.…] in forest.toml. |
 | `hook_incomplete` | `fix` |  | The hook payload has no transcript path. |
 | `hook_invalid` | `fix` |  | The hook payload is not a JSON object. |
@@ -182,7 +181,9 @@ names a value.
 | `log_agent_unset` | `fix` |  | Name the agent with --as, or the group and the caller with --as-group and --agent. |
 | `log_caller_fields` | `fix` |  | The command sets the role and the origin. A caller cannot. Leave out --role and --origin. |
 | `log_read_only` | `report` |  | This account cannot write the forest's .forest folder or the agent's raw lane, so the turn was not written. An account that can write the forest keeps it with `forest log --as …`, the turn on stdin. |
+| `log_read_timeout` | `retry` |  | `forest log` stopped because stdin did not end. The turn was stored nowhere. |
 | `log_text_from_stdin` | `fix` |  | The turn is read from stdin, never from an argument. An argument would show in the process list. Write the turn on stdin of `forest log --as <agent>`. |
+| `log_too_large` | `fix` |  | The turn is longer than … bytes. `forest log` did not store it. |
 | `maintenance_lock_busy` | `retry` |  | The sibling maintenance lock is already held. |
 | `mcp_agent_unset` | `fix` |  | Name the agent with --as. The reader id comes from the connection, not from a tool argument. |
 | `mcp_bind` | `fix` |  | --http is PORT or HOST:PORT. |
@@ -219,7 +220,6 @@ names a value.
 | `numbers_path_invalid` | `fix` |  | Only pages of the four forest layers are starred. |
 | `numbers_star_incomplete` | `report` |  | A number would still stand in full; not written. |
 | `operation_unknown` | `fix` |  | The collections tool has no such action. |
-| `orchestrator_outside_group` | `fix` |  | The name is an orchestrator that is not a member of the group. |
 | `out_of_scope` | `fix` |  | That path is outside this reader's trees and lane. |
 | `page_changed_meanwhile` | `retry` |  | A page changed while the pass read it; nothing of it written. |
 | `page_is_home` | `fix` |  | The page is a subject's registry home; move or merge the subject first. |
@@ -278,9 +278,11 @@ names a value.
 | `root_not_found` | `fix` |  | The selected forest root does not exist. |
 | `root_not_owned` | `report` |  | The selected forest root must be owned by the current user. |
 | `scan_failed` | `report` |  | A forest directory could not be scanned. |
+| `scope_widened` | `fix` |  | This command is an agent's door, so it takes no flag that chooses a wider scope. Leave out --named. |
 | `search_empty` | `fix` |  | Search needs the words to look for. |
 | `search_limit` | `fix` |  | The limit is at least 1. |
-| `settings_unpatched` | `report` |  | The group's members line could not be updated. The owner writes members as a list of slugs under the group. |
+| `settings_unpatched` | `report` |  | forest.toml has no [agents.groups.…] table that can be extended. The owner adds the lines. |
+| `settings_unwritable` | `report` |  | forest.toml could not be written, so the turn was stored nowhere. The owner adds the lines. |
 | `standing_invalid` | `fix` |  | A standing line is `said — "<words>" (YYYY-MM-DD)` or `own — "<words>"`. |
 | `state_permissions` | `report` |  | The derived-state directory must exist with mode 0700. |
 | `stream_empty` | `fix` |  | Name the pages of one stream. |

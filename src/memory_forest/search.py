@@ -2756,6 +2756,61 @@ def _end_of_local_day(moment: datetime) -> datetime:
 # ─────────────────────────────── search ───────────────────────────────
 
 
+def _source_names(record: Mapping[str, Any]) -> set[str]:
+    source = record.get("source")
+    if not isinstance(source, dict):
+        return set()
+    return {
+        value
+        for key in ("group", "door", "adapter", "transcript")
+        if isinstance((value := source.get(key)), str) and value
+    }
+
+
+def filter_lane_text(text: str, source: str) -> str:
+    """The lane lines whose group or door is ``source``."""
+    kept = []
+    for line in _lane_lines(text):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and source in _source_names(record):
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def restrict_source(root: str | os.PathLike[str], payload: dict[str, Any], source: str | None) -> dict[str, Any]:
+    """Keep the turns of one group or tool. A page that is not a lane is left out."""
+    if not source:
+        return payload
+    kept = []
+    for page in payload.get("results") or []:
+        path = str(page.get("path") or "")
+        if not _is_lane(path):
+            continue
+        try:
+            file_text, _ignored = _read_text(layout.resolve(root, path, must_exist=True))
+        except (MemoryForestError, OSError):
+            continue
+        lines = _lane_lines(file_text)
+        sections = []
+        for section in page.get("sections") or []:
+            span = section.get("lines") or [1, 1]
+            start = int(span[0]) if span else 1
+            if start < 1 or start > len(lines):
+                continue
+            try:
+                record = json.loads(lines[start - 1])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict) and source in _source_names(record):
+                sections.append(section)
+        if sections:
+            kept.append({**page, "sections": sections})
+    return {**payload, "results": kept}
+
+
 @_public
 def query(
     root: str | os.PathLike[str],
@@ -2765,6 +2820,7 @@ def query(
     named: Iterable[str] = (),
     limit: int = 10,
     config: Config | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     """Registry names first, then words, then vectors when a provider is registered."""
     safe = require_real_root(root)
@@ -2807,7 +2863,8 @@ def query(
 
     while True:
         try:
-            return _checked_read(safe, read)
+            payload = _checked_read(safe, read)
+            return restrict_source(safe, payload, source) if source else payload
         except MemoryForestError as exc:
             if exc.code != "index_protocol":
                 raise
@@ -2827,6 +2884,7 @@ def read(
     named: Iterable[str] = (),
     lines: tuple[int, int] | None = None,
     config: Config | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     """The page, or the addressed section, as written. Masking is the caller's, at the edge that prints."""
     safe = require_real_root(root)
@@ -2849,6 +2907,8 @@ def read(
         raise
     except OSError as exc:
         raise MemoryForestError("read_failed", "The page could not be read.", details={"path": path}) from exc
+    if source and info.role is layout.PageRole.RAW_FILE:
+        file_text = filter_lane_text(file_text, source)
     start, end, body, heading = _addressed(path, file_text, address, config)
     if lines is not None:
         want_start, want_end = lines

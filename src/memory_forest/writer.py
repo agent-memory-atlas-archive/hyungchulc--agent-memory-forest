@@ -422,7 +422,15 @@ class _MutationSession:
                     "A required parent directory was not captured in the write journal.",
                     details={"path": _relative_or_name(self.root, cursor)},
                 )
-            cursor.mkdir(mode=0o700)
+            try:
+                cursor.mkdir(mode=0o700)
+            except FileExistsError:
+                if cursor.is_symlink() or not cursor.is_dir():
+                    raise MemoryForestError(
+                        "unsafe_parent_directory",
+                        "Writer parent directories must be real and private.",
+                        details={"path": _relative_or_name(self.root, cursor)},
+                    )
             os.chmod(cursor, 0o700, follow_symlinks=False)
             _fsync_directory(cursor.parent)
 

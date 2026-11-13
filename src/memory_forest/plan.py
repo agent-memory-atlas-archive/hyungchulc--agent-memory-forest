@@ -1224,11 +1224,13 @@ def _make_folders(root: Path, folder: str) -> list[Path]:
     for depth in range(1, len(parts) + 1):
         relative = "/".join(parts[:depth])
         target = layout.resolve(root, relative)
-        if not target.exists():
+        try:
             target.mkdir(mode=0o700)
+        except FileExistsError:
+            if target.is_symlink() or not target.is_dir():
+                refuse("unsafe_existing_path", "An expected folder is a symlink or a file.", path=relative)
+        else:
             made.append(target)
-        elif target.is_symlink() or not target.is_dir():
-            refuse("unsafe_existing_path", "An expected folder is a symlink or a file.", path=relative)
     return made
 
 

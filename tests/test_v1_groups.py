@@ -152,21 +152,9 @@ class GroupResolutionTests(ForestTestCase):
         self.assertEqual(groups.resolve_caller(root, "night-kiln", "kilnbot").id, "kiln-bot")
         self.assertEqual((root / "forest.toml").read_bytes(), before)
 
-    def test_each_near_miss_and_the_refusals_name_the_next_move(self) -> None:
+    def test_a_near_name_is_not_refused_and_a_closed_group_lists_its_members(self) -> None:
         root = self._studio()
         before = (root / "forest.toml").read_bytes()
-        slips = ("kiln-bott", "kiln-bt", "kinl-bot")
-        for given in slips:
-            with self.subTest(given=given):
-                with self.assertRaises(MemoryForestError) as caught:
-                    groups.resolve_caller(root, "night-kiln", given)
-                self.assertEqual(caught.exception.code, "agent_near_miss")
-                self.assertEqual(caught.exception.details["agent"], "kiln-bot")
-                self.assertEqual(caught.exception.details["name"], "Kiln Bot")
-                self.assertEqual(caught.exception.next_step, "fix")
-                self.assertIn("Pass agent kiln-bot", caught.exception.message)
-        self.assertEqual((root / "forest.toml").read_bytes(), before)
-
         with self.assertRaises(MemoryForestError) as stranger:
             groups.resolve_caller(root, "studio-counter", "parcel-clerk")
         self.assertEqual(stranger.exception.code, "agent_not_in_group")
@@ -175,27 +163,25 @@ class GroupResolutionTests(ForestTestCase):
             sorted((row["id"], row["name"]) for row in listed),
             [("kiln-bot", "Kiln Bot"), ("ledger-bot", "Ledger Bot")],
         )
-        self.assertEqual(stranger.exception.next_step, "fix")
-
-        with self.assertRaises(MemoryForestError) as outside:
-            groups.resolve_caller(root, "night-kiln", "Post Bot")
-        self.assertEqual(outside.exception.code, "agent_outside_group")
-        self.assertEqual(outside.exception.details["agent"], "post-bot")
-        with self.assertRaises(MemoryForestError) as slipped:
-            groups.resolve_caller(root, "night-kiln", "post-bott")
-        self.assertEqual(slipped.exception.code, "agent_outside_group")
-        self.assertEqual(slipped.exception.details["agent"], "post-bot")
-        self.assertIn("one edit", slipped.exception.message)
-
-        with self.assertRaises(MemoryForestError) as orchestrator:
-            groups.resolve_caller(root, "night-kiln", "Studio Hub")
-        self.assertEqual(orchestrator.exception.code, "orchestrator_outside_group")
-        self.assertEqual(orchestrator.exception.details["agent"], "studio-hub")
-
-        with self.assertRaises(MemoryForestError) as itself:
-            groups.resolve_caller(root, "night-kiln", "night-kiln")
-        self.assertEqual(itself.exception.code, "agent_is_group")
+        self.assertEqual(stranger.exception.next_step, "retry")
+        self.assertNotIn("Pass agent", stranger.exception.message)
         self.assertEqual((root / "forest.toml").read_bytes(), before)
+
+        # The main agent is not a member, and is not held back.
+        hub = groups.resolve_caller(root, "night-kiln", "Studio Hub")
+        self.assertEqual((hub.id, hub.wrote), ("studio-hub", False))
+        self.assertEqual((root / "forest.toml").read_bytes(), before)
+
+        # A name some other agent already has is that agent, and it joins this open group.
+        joined = groups.resolve_caller(root, "night-kiln", "Post Bot")
+        self.assertEqual((joined.id, joined.wrote), ("post-bot", True))
+        self.assertIn("post-bot", load_config(root).agents.group("night-kiln").members)
+
+        # A name one edit away is a new agent. Nothing is refused for being near.
+        slipped = groups.resolve_caller(root, "night-kiln", "kiln-bott")
+        self.assertEqual(slipped.id, "kiln-bott")
+        self.assertTrue(slipped.wrote)
+        self.assertEqual(load_config(root).agents.declared("kiln-bott").name, "kiln-bott")
 
     def test_an_open_group_admits_a_name_once_and_the_second_call_writes_nothing(self) -> None:
         root = self._studio()
@@ -408,7 +394,7 @@ class GroupConnectionTests(ForestTestCase):
         self.assertTrue(stranger["result"]["isError"])
         body = _tool_body(stranger)
         self.assertEqual(body["code"], "agent_not_in_group")
-        self.assertEqual(body["next"], "fix")
+        self.assertEqual(body["next"], "retry")
         self.assertIn("till-bot", json.dumps(body["details"]))
         self.assertIn("Till Bot", json.dumps(body["details"]))
 
@@ -423,6 +409,7 @@ class GroupConnectionTests(ForestTestCase):
         self.assertTrue(body["wrote"])
         self.assertIn("06 istm/parcel-clerk/", body["path"])
         self.assertIn("evening crates", (self.root / body["path"]).read_text(encoding="utf-8"))
+        self.assertTrue((self.root / "02 ltm" / "parcel-clerk_LTM.md").is_file())
         known = load_config(self.root).agents.declared("parcel-clerk")
         assert known is not None
         self.assertEqual(known.name, "Parcel Clerk")
@@ -574,7 +561,6 @@ class GroupCommandTests(ForestTestCase):
         lane = (self.root / body["path"]).read_text(encoding="utf-8")
         self.assertNotIn("tulip7x", lane)
         self.assertIn("password", lane)
-        levels.apply(self.root, ["parcel-clerk"])
         self.assertTrue((self.root / "02 ltm" / "parcel-clerk_LTM.md").is_file())
         blob = (self.root / "forest.toml").read_bytes()
         again = self._cli(

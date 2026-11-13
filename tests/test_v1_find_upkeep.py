@@ -893,7 +893,7 @@ class QuerySizeTests(ForestTestCase):
 
 # One digest of MASKING_VERSION and the sources a read runs. Raise the version when those sources change,
 # then replace this pin with the digest the failure prints.
-_MASKING_PIN = "d374ac38ba3c71ba9e92939e138270f25cf9bb3579243e2ca4c97c6bf6699641"
+_MASKING_PIN = "515fb019a4cca54038463d4144942f2a8ab10610a3468d0bd808077bb763381b"
 _MASKING_SOURCES = (
     ("numbers.py", "star_numbers: the code a read runs on a number"),
     ("credentials.py", "the sign-in rules, shown, and MASKING_VERSION"),

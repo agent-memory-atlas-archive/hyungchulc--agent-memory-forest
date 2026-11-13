@@ -79,8 +79,16 @@ _REGISTRY_MARKS: Final[tuple[str, ...]] = ("·", ";", "`")
 
 
 def _slug(value: str, what: str) -> str:
+    from .config import AGENT_TEXT_MAX
+
     if not isinstance(value, str) or not layout.is_slug(value):
         refuse("not_a_slug", f"The {what} must be a slug ([a-z0-9][a-z0-9-]*).", value=value)
+    if len(value) > AGENT_TEXT_MAX:
+        refuse(
+            "not_a_slug",
+            f"The {what} must be at most {AGENT_TEXT_MAX} characters, so it can be a file name.",
+            value=value[:40],
+        )
     return value
 
 

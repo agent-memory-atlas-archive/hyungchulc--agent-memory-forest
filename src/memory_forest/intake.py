@@ -26,6 +26,7 @@ import itertools
 import json
 import os
 import re
+import select
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -36,6 +37,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import credentials, layout, numbers
+from .config import AGENT_TEXT_MAX
 from . import adapters as adapter_loader
 from .adapters.common import (
     ORIGINS,
@@ -198,6 +200,76 @@ def _discover(adapter: Any, settings: IntakeToolSettings) -> list[Transcript]:
     return list(itertools.islice(iter(found), DISCOVER_LIMIT))
 
 
+# How long ``forest log`` waits for stdin to end. The same bound as a tool's read.
+LOG_READ_SECONDS = 30.0
+
+
+def read_bounded(stream: Any, *, limit: int, seconds: float) -> str:
+    """Read at most ``limit`` bytes, and stop when ``seconds`` pass with no end.
+
+    The bytes are not repaired. A text that is not UTF-8 is ``invalid_utf8``.
+    More than ``limit`` bytes is ``log_too_large``. A stream that does not end
+    is ``log_read_timeout``.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    deadline = time.monotonic() + seconds
+    while total <= limit:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MemoryForestError(
+                "log_read_timeout",
+                f"`forest log` stopped after {seconds:g} seconds because stdin did not end. "
+                "The turn was stored nowhere.",
+                details={"seconds": seconds},
+                next_step="retry",
+            )
+        chunk = _read_some(stream, min(65536, limit + 1 - total), remaining)
+        if chunk is None:
+            raise MemoryForestError(
+                "log_read_timeout",
+                f"`forest log` stopped after {seconds:g} seconds because stdin did not end. "
+                "The turn was stored nowhere.",
+                details={"seconds": seconds},
+                next_step="retry",
+            )
+        if chunk == b"":
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > limit:
+            raise MemoryForestError(
+                "log_too_large",
+                f"The turn is longer than {limit} bytes. `forest log` did not store it.",
+                details={"limit": limit},
+                next_step="fix",
+            )
+    try:
+        return b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MemoryForestError(
+            "invalid_utf8",
+            "The turn is not UTF-8, so `forest log` did not store it.",
+            next_step="fix",
+        ) from exc
+
+
+def _read_some(stream: Any, size: int, seconds: float) -> bytes | None:
+    """Up to ``size`` bytes, or ``b""`` at the end, or None when ``seconds`` pass with nothing."""
+    fileno = getattr(stream, "fileno", None)
+    if callable(fileno):
+        try:
+            number = fileno()
+        except (OSError, ValueError):
+            number = None
+        if isinstance(number, int) and number >= 0:
+            ready, _ignored, _also = select.select([number], [], [], seconds)
+            if not ready:
+                return None
+            return os.read(number, size)
+    return stream.read(size)
+
+
 def append_owned(
     root: str | os.PathLike[str],
     agent: str,
@@ -207,9 +279,17 @@ def append_owned(
     origin: str,
     session: str = "mcp",
     at: datetime | None = None,
+    door: str = "mcp",
+    group: str = "",
 ) -> dict[str, Any]:
-    """Append one turn to ``agent``'s raw lane. The caller has already chosen role and origin."""
-    if not layout.is_slug(agent):
+    """Append one turn to ``agent``'s raw lane. The caller has already chosen role and origin.
+
+    The id is a hash of the session, the role and the stored text. It does not
+    depend on the door or on the clock, so the same turn through ``forest log``
+    and ``memory_log`` is one line. ``source`` names the door and, when the
+    call came through a group, that group.
+    """
+    if not layout.is_slug(agent) or len(agent) > AGENT_TEXT_MAX:
         raise MemoryForestError("intake_agent_invalid", f"{agent} is not a slug.", details={"agent": agent})
     if not _role_ok(role):
         raise MemoryForestError("intake_role_invalid", "That role is not one the lane records.", details={"role": role})
@@ -233,10 +313,19 @@ def append_owned(
         place=moment.isoformat(),
         origin=origin,
     )
-    transcript = Transcript(key="mcp", path=Path("mcp"), session=session_name, cwd="", origin=origin)
-    record = _record(config, agent, "mcp", transcript, turn)
+    door_name = door.strip() or "mcp"
+    transcript = Transcript(key=door_name, path=Path(door_name), session=session_name, cwd="", origin=origin)
+    record = _record(config, agent, door_name, transcript, turn)
     if record is None:
         raise MemoryForestError("intake_turn_rejected", "The turn was not a record the lane keeps.")
+    source = record.get("source")
+    if isinstance(source, dict):
+        source["door"] = door_name
+        if group:
+            source["group"] = group
+    record["id"] = hashlib.sha256(
+        "\0".join((str(record["session"]), str(record["role"]), str(record["text"]))).encode("utf-8")
+    ).hexdigest()[:20]
     day = _day(record["at"], config)
     with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="memory_log"):
         if _id_taken(root, agent, day, record["id"], full=True):

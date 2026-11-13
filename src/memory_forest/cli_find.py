@@ -9,7 +9,7 @@ from typing import Any
 
 from .cli import ForestCommand, _print_json, _print_lines, arg, forest_root
 from .config import load_config
-from . import groups, mcp, search, timeline
+from . import groups, intake, mcp, search, timeline
 from .errors import MemoryForestError
 
 
@@ -52,24 +52,88 @@ def cmd_index_reset(arguments: Any) -> int:
     return 0
 
 
-def _caller(arguments: Any, *, required: bool = False) -> str | None:
+# A flag that chooses whose pages a reader sees. Refused on an agent's door.
+# Anything else on an agent's command cannot change what the reader may see.
+SCOPE_DESTS = frozenset({"named"})
+PLAIN_DESTS = frozenset({
+    "caller",
+    "group",
+    "limit",
+    "lines",
+    "origin",
+    "path",
+    "phrase",
+    "reader",
+    "role",
+    "session",
+    "source",
+    "subject_id",
+    "text",
+    "text_flag",
+    "words",
+})
+
+
+def argument_dest(argument: Any) -> str:
+    """The destination an ``Argument`` writes, the same name argparse would use."""
+    if "dest" in argument.options:
+        return str(argument.options["dest"])
+    flag = argument.flags[0]
+    if flag.startswith("--"):
+        return flag[2:].replace("-", "_")
+    return flag.lstrip("-")
+
+
+def flag_effect(dest: str) -> str:
+    """``refused`` when the flag widens a scope, ``plain`` when it cannot.
+
+    A destination that is neither fails the walk, so a flag added later is seen.
+    """
+    if dest in SCOPE_DESTS:
+        return "refused"
+    if dest in PLAIN_DESTS:
+        return "plain"
+    raise KeyError(dest)
+
+
+def _agent_door(arguments: Any) -> bool:
+    return bool(getattr(arguments, "reader", None) or getattr(arguments, "group", None))
+
+
+def _refuse_widening(arguments: Any) -> None:
+    """An agent's command takes no flag the tools do not take."""
+    if _agent_door(arguments) and getattr(arguments, "named", None):
+        raise MemoryForestError(
+            "scope_widened",
+            "This command is an agent's door, so it takes no flag that chooses a wider scope. "
+            "Leave out --named. The tools take no such argument.",
+            next_step="fix",
+        )
+
+
+def _caller(arguments: Any, *, required: bool = False, door: str = "") -> str | None:
     """The reader: ``--as``, or the member ``--agent`` names inside ``--as-group``.
 
     ``--as`` is unchanged by ``--agent``. A command that logs requires a reader.
+    ``door`` is ``log`` when the refusal must name ``forest log``.
     """
     reader = getattr(arguments, "reader", None) or None
     group = getattr(arguments, "group", None) or None
     caller = getattr(arguments, "caller", None) or None
+    log = door == "log"
     if reader and group:
         raise MemoryForestError(
             "reader_conflict",
-            "Pass --as or --as-group, not both.",
+            "Pass --as or --as-group on `forest log`, not both." if log else "Pass --as or --as-group, not both.",
             next_step="fix",
         )
     if caller and not group:
         raise MemoryForestError(
             "agent_needs_group",
-            "--as is the reader. A caller's name belongs with --as-group, and it cannot change --as.",
+            "`forest log --as` is the reader. A caller's name belongs with `forest log --as-group`, "
+            "and it cannot change --as."
+            if log
+            else "--as is the reader. A caller's name belongs with --as-group, and it cannot change --as.",
             next_step="fix",
         )
     if group and not caller:
@@ -82,7 +146,8 @@ def _caller(arguments: Any, *, required: bool = False) -> str | None:
         if required and not reader:
             raise MemoryForestError(
                 "log_agent_unset",
-                "Name the agent with --as, or the group and the caller with --as-group and --agent.",
+                "Name the agent with `forest log --as`, or the group and the caller with "
+                "`forest log --as-group` and `--agent`.",
                 next_step="fix",
             )
         return reader
@@ -91,54 +156,63 @@ def _caller(arguments: Any, *, required: bool = False) -> str | None:
 
 
 def cmd_search(arguments: Any) -> int:
+    _refuse_widening(arguments)
     result = search.query(
         forest_root(arguments),
         arguments.words,
         reader=_caller(arguments),
         named=arguments.named or (),
         limit=arguments.limit,
+        source=arguments.source,
     )
     _show_pages(arguments, result)
     return 0
 
 
 def cmd_read(arguments: Any) -> int:
+    _refuse_widening(arguments)
     result = search.read(
         forest_root(arguments),
         arguments.path,
         reader=_caller(arguments),
         named=arguments.named or (),
         lines=search.parse_lines(arguments.lines),
+        source=arguments.source,
     )
     _show_pages(arguments, result)
     return 0
 
 
 def cmd_timeline_query(arguments: Any) -> int:
+    _refuse_widening(arguments)
     result = timeline.query(
         forest_root(arguments),
         arguments.phrase,
         reader=_caller(arguments),
         named=arguments.named or (),
         limit=arguments.limit,
+        source=arguments.source,
     )
     _show_pages(arguments, result)
     return 0
 
 
 def cmd_timeline_subject(arguments: Any) -> int:
+    _refuse_widening(arguments)
     result = timeline.subject(
         forest_root(arguments),
         arguments.subject_id,
         reader=_caller(arguments),
         named=arguments.named or (),
         limit=arguments.limit,
+        source=arguments.source,
     )
     _show_pages(arguments, result)
     return 0
 
 
 def cmd_navigate(arguments: Any) -> int:
+    _refuse_widening(arguments)
     result = search.navigate(
         forest_root(arguments),
         reader=_caller(arguments),
@@ -146,6 +220,14 @@ def cmd_navigate(arguments: Any) -> int:
     )
     _show_pages(arguments, result)
     return 0
+
+
+def _log_text() -> str:
+    """The turn on stdin, bounded the same way ``memory_log`` bounds a message."""
+    raw = getattr(sys.stdin, "buffer", None)
+    if raw is None:
+        return sys.stdin.read()
+    return intake.read_bounded(raw, limit=mcp.MESSAGE_LIMIT, seconds=intake.LOG_READ_SECONDS)
 
 
 def cmd_log(arguments: Any) -> int:
@@ -160,22 +242,26 @@ def cmd_log(arguments: Any) -> int:
     if arguments.role is not None or arguments.origin is not None:
         raise MemoryForestError(
             "log_caller_fields",
-            "The command sets the role and the origin. A caller cannot. Leave out --role and --origin.",
+            "`forest log` sets the role and the origin. A caller cannot. Leave out --role and --origin.",
             next_step="fix",
         )
-    reader = _caller(arguments, required=True)
+    _refuse_widening(arguments)
+    reader = _caller(arguments, required=True, door="log")
     if not reader:
         raise MemoryForestError(
             "log_agent_unset",
-            "Name the agent with --as, or the group and the caller with --as-group and --agent.",
+            "Name the agent with `forest log --as`, or the group and the caller with "
+            "`forest log --as-group` and `--agent`.",
             next_step="fix",
         )
     body = mcp.record_turn(
         forest_root(arguments),
         reader,
-        sys.stdin.read(),
+        _log_text(),
         origin="interactive",
         session=arguments.session or "cli",
+        door="cli",
+        group=getattr(arguments, "group", None) or "",
     )
     if arguments.json:
         _print_json(body)
@@ -271,7 +357,8 @@ def _show_pages(arguments: Any, result: dict[str, Any]) -> None:
 _READER = arg("--as", dest="reader", default=None, help="the reader id, from the connection, not from the question")
 _GROUP = arg("--as-group", dest="group", default=None, help="one connection shared by a group of the owner's agents")
 _CALLER = arg("--agent", dest="caller", default=None, help="the caller's own name, resolved only inside --as-group")
-_NAMED = arg("--named", action="append", default=None, help="an agent this task names; not a way for the question to widen scope")
+_NAMED = arg("--named", action="append", default=None, help="an agent this task names; refused on an agent's door")
+_SOURCE = arg("--source", default=None, help="one group or tool of this agent's turns")
 _LIMIT = arg("--limit", type=int, default=10, help="how many pages to return")
 
 COMMANDS: list[ForestCommand] = [
@@ -304,7 +391,7 @@ COMMANDS: list[ForestCommand] = [
         ("search",),
         cmd_search,
         "Find pages: registry names and aliases first, then words, then vectors when a provider is registered.",
-        (arg("words", help="the words to look for"), _READER, _GROUP, _CALLER, _NAMED, _LIMIT),
+        (arg("words", help="the words to look for"), _READER, _GROUP, _CALLER, _NAMED, _SOURCE, _LIMIT),
     ),
     ForestCommand(
         ("read",),
@@ -317,6 +404,7 @@ COMMANDS: list[ForestCommand] = [
             _GROUP,
             _CALLER,
             _NAMED,
+            _SOURCE,
         ),
     ),
     ForestCommand(
@@ -329,6 +417,7 @@ COMMANDS: list[ForestCommand] = [
             _GROUP,
             _CALLER,
             _NAMED,
+            _SOURCE,
             arg("--limit", type=int, default=50, help="how many pages to return"),
         ),
     ),
@@ -342,6 +431,7 @@ COMMANDS: list[ForestCommand] = [
             _GROUP,
             _CALLER,
             _NAMED,
+            _SOURCE,
             arg("--limit", type=int, default=50, help="how many pages to return"),
         ),
     ),

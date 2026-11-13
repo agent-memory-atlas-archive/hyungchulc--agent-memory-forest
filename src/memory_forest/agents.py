@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from . import layout, registry
-from .config import Config, KnownAgent
+from .config import AGENT_TEXT_MAX, Config, KnownAgent
 from .registry import Problem
 
 CONFIG_PATH: Final[str] = "forest.toml"
@@ -80,11 +80,163 @@ def why_invalid(agent_id: str, config: Config, area_trees: Iterable[str]) -> str
     """Why a lane folder's or a declared agent's name cannot be an agent's id, or None."""
     if not layout.is_slug(agent_id):
         return "is not a slug ([a-z0-9][a-z0-9-]*)"
+    if len(agent_id) > AGENT_TEXT_MAX:
+        return f"is longer than {AGENT_TEXT_MAX} characters, so it cannot be a file name"
     if agent_id in set(area_trees):
         return "is the id of a shared tree"
     if agent_id in reserved_ids(config) or agent_id.endswith(registry.COLLECTION_SUFFIX):
         return "is a reserved name (the owner's or the system's id, `none`, or a collection's id)"
     return None
+
+
+def file_id_ok(agent_id: str) -> bool:
+    """Whether ``agent_id`` can be a directory or file name."""
+    return layout.is_slug(agent_id) and len(agent_id) <= AGENT_TEXT_MAX
+
+
+def letters(text: str) -> str:
+    """The letters of ``text``, ignoring case, spaces, hyphens and underscores."""
+    return "".join(character for character in text.casefold() if character not in " -_")
+
+
+def find_agent(given: str, rows: Iterable[tuple[str, str]]) -> list[str]:
+    """The ids ``given`` names, in the order of ``rows``.
+
+    A match is an id, a name exactly, or the same letters apart from case, spaces,
+    hyphens and underscores. Nothing looser. The settings parser, a group
+    connection, a command's ``--agent`` and a reader of an app's member list all
+    use this. An empty list is no agent. More than one id is ambiguous.
+    """
+    if not isinstance(given, str):
+        return []
+    slug = layout.slugify(given)
+    folded = letters(given)
+    exact: list[str] = []
+    folded_hits: list[str] = []
+    for agent_id, name in rows:
+        if given == agent_id or (name and given == name) or (slug and slug == agent_id):
+            if agent_id not in exact:
+                exact.append(agent_id)
+            continue
+        if folded and (folded == letters(agent_id) or (name and folded == letters(name))):
+            if agent_id not in folded_hits:
+                folded_hits.append(agent_id)
+    return exact or folded_hits
+
+
+# Kinds of taken id that do not come from a table. Subject types come from
+# ``subjects.types``; each non-agent type is ``subject:<type>``.
+UNTABLED_ID_KINDS: Final[tuple[str, ...]] = (
+    "owner-id",
+    "owner-name",
+    "owner-alias",
+    "group",
+    "system",
+    "reserved",
+    "collection-suffix",
+    "area-tree",
+)
+
+
+def id_kind_names(config: Config) -> list[str]:
+    """Every kind :func:`taken` can report. Subject types are read from the settings table."""
+    names = ["agent" if item == registry.AGENT_TYPE else f"subject:{item}" for item in config.subjects.types]
+    names.extend(UNTABLED_ID_KINDS)
+    return names
+
+
+def taken(root: str | os.PathLike[str], config: Config) -> dict[str, list[str]]:
+    """Each id that is already something, and the kinds of thing it is.
+
+    An id held by an agent is the kind ``agent``. Anything else blocks a new
+    agent from taking that id. A kind with no table is one of
+    :data:`UNTABLED_ID_KINDS`.
+    """
+    found: dict[str, list[str]] = {}
+
+    def add(slug: str, kind: str) -> None:
+        if not slug or not layout.is_slug(slug):
+            return
+        bucket = found.setdefault(slug, [])
+        if kind not in bucket:
+            bucket.append(kind)
+
+    add(config.owner.id, "owner-id")
+    add(layout.slugify(config.owner.name), "owner-name")
+    for alias in config.owner.aliases:
+        add(layout.slugify(alias), "owner-alias")
+    if config.subjects.system_id:
+        add(config.subjects.system_id, "system")
+    add(registry.ABOUT_NONE, "reserved")
+    for group in config.agents.groups:
+        add(group.id, "group")
+        for member in group.members:
+            add(member, "agent")
+    for known in config.agents.known:
+        add(known.id, "agent")
+    for agent_id in config.agents.orchestrators:
+        add(agent_id, "agent")
+    for tool in config.intake.tools:
+        if tool.agent:
+            add(tool.agent, "agent")
+    try:
+        for lane in lanes(root):
+            add(lane, "agent")
+    except OSError:
+        pass
+    compiled = _registry(root, config)
+    if compiled is not None:
+        for subject_id, subject in compiled.entities.items():
+            kind = str(subject.get("type") or "")
+            if kind == registry.AGENT_TYPE:
+                add(subject_id, "agent")
+            elif kind:
+                add(subject_id, f"subject:{kind}")
+            if str(subject_id).endswith(registry.COLLECTION_SUFFIX):
+                add(subject_id, "collection-suffix")
+        for tree, kind in compiled.tree_kinds.items():
+            if kind != registry.TREE_KIND_AGENT:
+                add(tree, "area-tree")
+    return found
+
+
+def kinds_of(
+    slug: str, taken_map: Mapping[str, list[str]] | None = None, *, root: str | os.PathLike[str] | None = None,
+    config: Config | None = None,
+) -> list[str]:
+    """The kinds that hold ``slug``. A collection suffix counts even when nothing is registered under it."""
+    if taken_map is None:
+        if root is None or config is None:
+            return []
+        taken_map = taken(root, config)
+    found = list(taken_map.get(slug, []))
+    if slug.endswith(registry.COLLECTION_SUFFIX) and "collection-suffix" not in found:
+        found.append("collection-suffix")
+    return found
+
+
+def free_id(slug: str, taken_map: Mapping[str, list[str]]) -> str:
+    """An id for a new agent whose slug is already something that is not an agent.
+
+    The slug, then ``<slug>-agent``, then ``<slug>-agent-<n>``. Empty when none
+    of those fit in a file name.
+    """
+    number = 1
+    while number < 1000:
+        candidate = f"{slug}-agent" if number == 1 else f"{slug}-agent-{number}"
+        if len(candidate) > AGENT_TEXT_MAX:
+            return ""
+        if not kinds_of(candidate, taken_map):
+            return candidate
+        number += 1
+    return ""
+
+
+def _registry(root: str | os.PathLike[str], config: Config) -> registry.Registry | None:
+    try:
+        return registry.build(root, config=config)
+    except (MemoryForestError, OSError):
+        return None
 
 
 def candidates(root: str | os.PathLike[str], config: Config) -> list[Candidate]:
@@ -124,6 +276,11 @@ def problems(root: str | os.PathLike[str], config: Config, subjects: Subjects) -
     """
     found: list[Problem] = []
     declared = {item.id for item in config.agents.known}
+    for where, agent_id in config.agents.unplaceable:
+        found.append(Problem(
+            INVALID, where, None,
+            f"`{agent_id}` cannot be placed; it is not an id a file can be named, and the rest of the pass goes on",
+        ))
     for known in config.agents.known:
         reason = why_invalid(known.id, config, subjects.area_trees)
         kind = subjects.types.get(known.id)

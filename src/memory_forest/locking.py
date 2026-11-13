@@ -141,12 +141,9 @@ _HELD: dict[str, tuple[object, LockToken]] = {}
 def _lock_file(root: str | os.PathLike[str], name: str) -> Path:
     if _LOCK_NAME_RE.fullmatch(name) is None:
         raise MemoryForestError("invalid_lock_name", "A lock name is a slug.", details={"name": name})
-    folder = safe_join(root, LOCKS_RELATIVE)
-    if not folder.exists():
-        # Make, then check: two processes that take their first lock at once both get the folder.
-        safe_join(root, ".forest").mkdir(mode=0o700, exist_ok=True)
-        folder.mkdir(mode=0o700, exist_ok=True)
-        safe_join(root, LOCKS_RELATIVE, must_exist=True)
+    # One step: the other process may have made the folder between the check and the make.
+    safe_join(root, ".forest").mkdir(mode=0o700, exist_ok=True)
+    safe_join(root, LOCKS_RELATIVE).mkdir(mode=0o700, exist_ok=True)
     return safe_join(root, f"{LOCKS_RELATIVE}/{name}.lock")
 
 

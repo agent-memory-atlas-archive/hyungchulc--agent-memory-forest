@@ -246,7 +246,14 @@ def safe_join(
 
 
 def secure_mkdir(path: Path, *, mode: int = 0o700) -> bool:
-    if path.exists():
+    """Make ``path`` private. Another process having made it already is the same outcome.
+
+    An existing directory is made private, which is what init asks for. A caller
+    that must leave an existing mode alone uses ``layout.ensure_folder``.
+    """
+    try:
+        path.mkdir(mode=mode)
+    except FileExistsError:
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             raise MemoryForestError(
@@ -256,7 +263,6 @@ def secure_mkdir(path: Path, *, mode: int = 0o700) -> bool:
             )
         os.chmod(path, mode, follow_symlinks=False)
         return False
-    path.mkdir(mode=mode)
     os.chmod(path, mode, follow_symlinks=False)
     return True
 
@@ -489,10 +495,9 @@ def _validate_receipts_directory(receipts: Path) -> None:
 def secure_state_directory(root: str | os.PathLike[str]) -> Path:
     safe_root = require_real_root(root)
     state = safe_root / STATE_DIRECTORY
-    if state.exists():
-        _validate_state_directory(state)
-        os.chmod(state, 0o700, follow_symlinks=False)
-    else:
+    try:
         state.mkdir(mode=0o700)
-        os.chmod(state, 0o700, follow_symlinks=False)
+    except FileExistsError:
+        _validate_state_directory(state)
+    os.chmod(state, 0o700, follow_symlinks=False)
     return state

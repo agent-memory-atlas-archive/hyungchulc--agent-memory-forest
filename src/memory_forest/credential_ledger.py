@@ -235,7 +235,11 @@ def mask_known(text: str, ledger: Ledger | None, *, guarded: bool = True) -> str
 
 
 def _make_key(path: Path) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    """Make the key. Another process having made it already leaves that key in place."""
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        return
     try:
         os.write(descriptor, secrets.token_bytes(KEY_BYTES))
         os.fsync(descriptor)

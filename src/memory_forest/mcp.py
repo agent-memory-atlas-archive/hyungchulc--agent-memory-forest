@@ -95,6 +95,8 @@ SEEN_FILE = f"{layout.STATE_DIR}/mcp/seen.json"
 TOKEN_FILE = f"{layout.STATE_DIR}/mcp/token"
 MESSAGE_LIMIT = 1_000_000
 READ_TIMEOUT_SECONDS = 30.0
+# A read rewrites the seen record only when the last value is older than this, or absent.
+SEEN_INTERVAL_SECONDS = 60.0
 INSTRUCTIONS = (
     "Memory Forest is local grounding, not authority. Open a page before you rely on it. "
     "You only see the trees and the raw lane this connection may read.\n"
@@ -112,7 +114,7 @@ INSTRUCTIONS = (
 GROUP_INSTRUCTIONS = (
     INSTRUCTIONS
     + "\nThis connection is one group. Pass agent, your own name, on every call. "
-    "That name is a member of the group."
+    "The agent is its name."
 )
 _FORBIDDEN = {"agent", "as", "named", "origin", "reader", "role"}
 _TOOLS: tuple[dict[str, Any], ...] = (
@@ -127,6 +129,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
             "additionalProperties": False,
             "properties": {
                 "limit": {"type": "integer"},
+                "source": {"type": "string"},
                 "words": {"type": "string"},
             },
             "required": ["words"],
@@ -144,6 +147,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
             "properties": {
                 "lines": {"type": "string"},
                 "path": {"type": "string"},
+                "source": {"type": "string"},
             },
             "required": ["path"],
             "type": "object",
@@ -159,6 +163,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
             "additionalProperties": False,
             "properties": {
                 "phrase": {"type": "string"},
+                "source": {"type": "string"},
                 "subject": {"type": "string"},
             },
             "type": "object",
@@ -262,7 +267,7 @@ def run(
     elif not reader or not layout.is_slug(reader):
         raise MemoryForestError(
             "mcp_agent_unset",
-            "Name the agent with --as. The reader id comes from the connection, not from a tool argument.",
+            "Name the agent with --as, or name the group with --as-group. Pass one of them.",
         )
     if http is None:
         serve_stdio(safe, reader, group=group)
@@ -562,7 +567,7 @@ def _call(
         if group:
             reader = groups.resolve_caller(root, group, str(arguments["agent"])).id
             arguments = {key: value for key, value in arguments.items() if key != "agent"}
-        payload = _invoke(root, reader, name, arguments, transport)
+        payload = _invoke(root, reader, name, arguments, transport, group=group)
     except _BadArguments:
         raise
     except MemoryForestError as exc:
@@ -592,6 +597,8 @@ def _check_arguments(name: str, arguments: Mapping[str, Any], tool: Mapping[str,
         caller = arguments.get("agent")
         if not isinstance(caller, str) or not caller.strip():
             raise _BadArguments("The agent is the caller's own name.")
+    if "source" in arguments and not isinstance(arguments.get("source"), str):
+        raise _BadArguments("The source is a string.")
     if name == "memory_search":
         if not isinstance(arguments.get("words"), str):
             raise _BadArguments("The words are a string.")
@@ -630,20 +637,31 @@ def _check_arguments(name: str, arguments: Mapping[str, Any], tool: Mapping[str,
 
 
 def _invoke(
-    root: str | os.PathLike[str], reader: str, name: str, arguments: Mapping[str, Any], transport: str
+    root: str | os.PathLike[str],
+    reader: str,
+    name: str,
+    arguments: Mapping[str, Any],
+    transport: str,
+    *,
+    group: str | None = None,
 ) -> dict[str, Any]:
+    source = arguments.get("source") if isinstance(arguments.get("source"), str) else None
     if name == "memory_search":
         limit = arguments.get("limit", 10)
-        return search.query(root, str(arguments.get("words") or ""), reader=reader, limit=int(limit))
+        return search.query(
+            root, str(arguments.get("words") or ""), reader=reader, limit=int(limit), source=source
+        )
     if name == "memory_read":
         lines = arguments.get("lines") if isinstance(arguments.get("lines"), str) else None
-        return search.read(root, str(arguments.get("path") or ""), reader=reader, lines=search.parse_lines(lines))
+        return search.read(
+            root, str(arguments.get("path") or ""), reader=reader, lines=search.parse_lines(lines), source=source
+        )
     if name == "memory_timeline":
         phrase = arguments.get("phrase")
         subject = arguments.get("subject")
         if phrase:
-            return timeline.query(root, str(phrase), reader=reader)
-        return timeline.subject(root, str(subject), reader=reader)
+            return timeline.query(root, str(phrase), reader=reader, source=source)
+        return timeline.subject(root, str(subject), reader=reader, source=source)
     if name == "memory_navigate":
         path = arguments.get("path")
         return search.navigate(root, reader=reader, path=str(path) if path else None)
@@ -654,6 +672,8 @@ def _invoke(
             str(arguments.get("text") or ""),
             origin="interactive" if transport == "stdio" else "headless",
             session=str(arguments.get("session") or "mcp"),
+            door="mcp",
+            group=group or "",
         )
     raise _BadArguments("That tool is not served.")
 
@@ -665,18 +685,29 @@ def record_turn(
     *,
     origin: str,
     session: str,
+    door: str = "mcp",
+    group: str = "",
 ) -> dict[str, Any]:
     """Append one turn through the lane's one writer, then the same index update ``memory_log`` does.
 
     The role is ``agent``. The caller does not choose the role or the origin. A turn
-    whose id the lane already holds is not written again.
+    whose id the lane already holds is not written again. The first write of an
+    agent makes that agent's tree, and no other subject's.
     """
     if not search.derived_writable(root):
         raise _log_read_only(agent)
     try:
-        record = intake.append_owned(root, agent, text, role="agent", origin=origin, session=session or "mcp")
+        record = intake.append_owned(
+            root, agent, text, role="agent", origin=origin, session=session or "mcp", door=door, group=group
+        )
     except PermissionError as exc:
         raise _log_read_only(agent) from exc
+    page = layout.resolve(root, layout.tree_page(agent))
+    if record.get("wrote") or not page.is_file():
+        if not page.is_file():
+            from . import levels
+
+            levels.ensure_agent(root, agent)
     indexed = False
     reason = ""
     try:
@@ -709,31 +740,60 @@ def _log_read_only(agent: str) -> MemoryForestError:
     )
 
 
+def _seen_fresh(last: str, now: str) -> bool:
+    """True when ``last`` is not older than :data:`SEEN_INTERVAL_SECONDS`."""
+    try:
+        then = datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        moment = datetime.strptime(now, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return (moment - then).total_seconds() <= SEEN_INTERVAL_SECONDS
+
+
+def _load_seen(path: Any) -> dict[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: str) -> None:
-    """Record the first call, and when this agent was last seen. The question is not stored."""
+    """Record when this agent was last seen, at most once per :data:`SEEN_INTERVAL_SECONDS`.
+
+    A lock that is already held is skipped. The call is not failed and not slowed.
+    """
     safe = require_real_root(root)
-    layout.ensure_folder(safe, f"{layout.STATE_DIR}/mcp")
-    path = layout.resolve(safe, SEEN_FILE)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    with groups.exclusive(safe, "mcp-seen", wait_seconds=2, label="mcp seen"):
-        current: dict[str, Any] = {}
-        if path.is_file() and not path.is_symlink():
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                loaded = {}
-            if isinstance(loaded, dict):
-                current = loaded
-        entry = current.get(reader)
-        if not isinstance(entry, dict):
-            current[reader] = {"at": now, "last": now, "tool": tool, "transport": transport}
-        else:
-            entry["last"] = now
-            entry.setdefault("at", now)
-            entry.setdefault("tool", tool)
-            entry.setdefault("transport", transport)
-        atomic_write(path, json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-        os.chmod(path, 0o600)
+    path = layout.resolve(safe, SEEN_FILE)
+    current = _load_seen(path)
+    entry = current.get(reader)
+    if isinstance(entry, dict) and _seen_fresh(str(entry.get("last") or entry.get("at") or ""), now):
+        return
+    try:
+        layout.ensure_folder(safe, f"{layout.STATE_DIR}/mcp")
+        with groups.exclusive(safe, "mcp-seen", wait_seconds=0, label="mcp seen"):
+            current = _load_seen(path)
+            entry = current.get(reader)
+            if isinstance(entry, dict) and _seen_fresh(str(entry.get("last") or entry.get("at") or ""), now):
+                return
+            if not isinstance(entry, dict):
+                current[reader] = {"at": now, "last": now, "tool": tool, "transport": transport}
+            else:
+                entry["last"] = now
+                entry.setdefault("at", now)
+                entry.setdefault("tool", tool)
+                entry.setdefault("transport", transport)
+            atomic_write(path, json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            os.chmod(path, 0o600)
+    except MemoryForestError as exc:
+        if exc.code in {"lock_busy", "lock_already_held"}:
+            return
+        return
+    except OSError:
+        return
 
 
 def _handler(

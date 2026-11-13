@@ -204,23 +204,35 @@ def resolve(root: str | os.PathLike[str], relative: str, *, must_exist: bool = F
     return safe_join(root, normalize(relative), must_exist=must_exist)
 
 
-def ensure_folder(root: str | os.PathLike[str], relative: str) -> Path:
-    """Create ``relative`` and its missing parents inside the root (private folders)."""
-    target = resolve(root, relative)
-    parts = normalize(relative).split("/")
-    current = resolve(root, parts[0])
-    if not current.exists():
-        secure_mkdir(current)
-    for part in parts[1:]:
-        current = current / part
-        if not current.exists():
-            current.mkdir(mode=0o700)
-        elif current.is_symlink() or not current.is_dir():
+def _mkdir_accepting_other(path: Path, relative: str) -> None:
+    """Make ``path``. A directory another process just made is left as it is, mode included."""
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        if path.is_symlink() or not path.is_dir():
             raise MemoryForestError(
                 "unsafe_existing_path",
                 "An expected directory exists as a symlink or non-directory.",
                 details={"path": relative},
             )
+    else:
+        os.chmod(path, 0o700, follow_symlinks=False)
+
+
+def ensure_folder(root: str | os.PathLike[str], relative: str) -> Path:
+    """Create ``relative`` and its missing parents inside the root (private folders).
+
+    Making a folder that another process just made is success, not an error.
+    A directory that was already there keeps its mode, so a read does not make
+    a read-only forest writable.
+    """
+    target = resolve(root, relative)
+    parts = normalize(relative).split("/")
+    current = resolve(root, parts[0])
+    _mkdir_accepting_other(current, parts[0])
+    for part in parts[1:]:
+        current = current / part
+        _mkdir_accepting_other(current, relative)
     return target
 
 

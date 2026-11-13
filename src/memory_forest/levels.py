@@ -37,6 +37,7 @@ from pathlib import PurePosixPath
 from typing import Any, Final
 
 from . import agents, collections, layout, move, registry
+from .config import load_config
 from .errors import MemoryForestError
 from .locking import LockToken, writer_lock
 from .model import TimelineLine, parse_page
@@ -244,7 +245,10 @@ def due(plan: Plan, subjects: Iterable[str] | None = None) -> list[Due]:
             continue
         if ref.type == registry.COLLECTION_TYPE or ref.level == "tree":
             continue
-        current = measure(plan, ref, counter)
+        try:
+            current = measure(plan, ref, counter)
+        except OSError:
+            continue
         leaves = len(current.leaves)
         if ref.type == registry.AGENT_TYPE:
             found.append(Due(subject_id, "promote", ref.level, "branch" if ref.level == "leaf" else "tree", ref.home,
@@ -322,6 +326,60 @@ def carry_out(plan: Plan, item: Due) -> str:
         plan.why = previous
 
 
+def _unplaceable(root: str | os.PathLike[str], wanted: list[str] | None) -> list[dict[str, Any]]:
+    """A settings id that cannot be a file name, reported so the pass can go on."""
+    found = []
+    for where, agent_id in load_config(root).agents.unplaceable:
+        if wanted is not None and agent_id not in wanted:
+            continue
+        exc = MemoryForestError(
+            "agent_unplaceable",
+            f"`{agent_id}` is in the settings and cannot be placed: it is not an id a file can be named. "
+            "The rest of the forest goes on. Remove that id from forest.toml.",
+            details={"agent": agent_id, "where": where},
+            next_step="report",
+        )
+        found.append({"action": "agent", "error": exc.as_dict(), "home": where, "subject": agent_id})
+    return found
+
+
+def ensure_agent(root: str | os.PathLike[str], agent_id: str) -> bool:
+    """Make this one agent's tree. This is not a pass over the forest.
+
+    The lane write of ``memory_log`` and ``forest log`` calls this for the
+    agent that just wrote, and for no other subject. A tree that is already
+    there is left as it is.
+    """
+    safe = require_real_root(root)
+    if not agents.file_id_ok(agent_id):
+        return False
+    if layout.resolve(safe, layout.tree_page(agent_id)).is_file():
+        return False
+    config = load_config(safe)
+    if config.agents.declared(agent_id) is None and not config.agents.auto_create:
+        return False
+
+    def build(plan: Plan) -> bool:
+        if plan.find_subject(agent_id) is not None:
+            return False
+        known = plan.config.agents.declared(agent_id)
+        areas = [
+            tree for tree in plan.trees()
+            if layout.tree_page(tree) not in {ref.home for ref in plan.subjects() if ref.type == registry.AGENT_TYPE}
+        ]
+        if agents.why_invalid(agent_id, plan.config, areas) is not None:
+            return False
+        return move.ensure_agent(
+            plan,
+            agent_id,
+            name=known.name if known and known.name else None,
+            role=known.role if known and known.role else None,
+        )
+
+    report = run(safe, build, why=f"the first lane write of `{agent_id}`")
+    return bool(report.get("result"))
+
+
 def apply(
     root: str | os.PathLike[str],
     subjects: Iterable[str] | None = None,
@@ -339,6 +397,7 @@ def apply(
     """
     safe_root = require_real_root(root)
     wanted = list(subjects) if subjects is not None else None
+    refused_early = _unplaceable(safe_root, wanted)
     if dry_run:
         plan = Plan.open(safe_root, today=today)
         done: list[dict[str, Any]] = []
@@ -351,10 +410,10 @@ def apply(
                 done.append(item.as_dict())
         plan.verify()
         report = plan.report()
-        report.update({"changes": done, "refused": [], "written": False})
+        report.update({"changes": done, "refused": refused_early, "written": False})
         return report
     applied: list[dict[str, Any]] = []
-    refused: list[dict[str, Any]] = []
+    refused: list[dict[str, Any]] = list(refused_early)
     with writer_lock(safe_root, token=lock, label="forest levels apply") as held:
         failed: set[str] = set()
         for _round in range(4):
@@ -364,8 +423,16 @@ def apply(
             for item in items:
                 try:
                     result = run(safe_root, lambda plan, item=item: carry_out(plan, item), lock=held, today=today)
-                except MemoryForestError as exc:
+                except (MemoryForestError, OSError) as exc:
                     failed.add(item.subject)
+                    if isinstance(exc, OSError):
+                        exc = MemoryForestError(
+                            "agent_unplaceable",
+                            f"`{item.subject}` could not be placed ({exc.__class__.__name__}). "
+                            "The rest of the pass goes on.",
+                            details={"subject": item.subject},
+                            next_step="report",
+                        )
                     refused.append({**item.as_dict(), "error": exc.as_dict()})
                     continue
                 applied.append({**item.as_dict(), "moves": len(result["moves"]), "result": result.get("result")})
