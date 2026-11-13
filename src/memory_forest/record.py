@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from . import archive as forest_archive
-from . import layout
+from . import layout, system
 from . import credentials as forest_credentials
 from .config import Config, load_config
 from .errors import MemoryForestError
@@ -424,7 +424,7 @@ def trim_page(
                                     details={"path": relative})
         payload = new_text.encode("utf-8", "surrogateescape")
         atomic_write(target, payload)
-        if target.read_bytes() != payload:
+        if system.read_bytes(target) != payload:
             raise MemoryForestError("write_readback_failed", "The page did not read back as written.",
                                     details={"path": relative})
     result.written = True

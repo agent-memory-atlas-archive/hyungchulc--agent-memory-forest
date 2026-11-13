@@ -28,6 +28,7 @@ from . import audit as forest_audit
 from . import credentials as forest_credentials
 from . import layout
 from . import movelog
+from . import system
 from . import numbers as forest_numbers
 from . import record as forest_record
 from . import repeats as forest_repeats
@@ -808,9 +809,12 @@ def write_baseline(path: str | os.PathLike[str], baseline: Baseline) -> None:
 
 def load_baseline(path: str | os.PathLike[str]) -> Baseline:
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        data = json.loads(system.read_text(path))
+    except system.Outcome as exc:
         raise MemoryForestError("baseline_invalid", "The baseline file cannot be read.",
+                                details={"path": str(path), "reason": exc.kind}) from exc
+    except ValueError as exc:
+        raise MemoryForestError("baseline_invalid", "The baseline file is not JSON.",
                                 details={"path": str(path)}) from exc
     return Baseline.from_dict(data)
 

@@ -20,7 +20,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
-from memory_forest import credential_ledger, credentials, layout, mcp, search
+from memory_forest import credential_ledger, credentials, layout, mcp, search, system
 from memory_forest.errors import MemoryForestError
 from memory_forest.locking import hold_lock
 
@@ -568,23 +568,27 @@ class SqliteErrorClassTests(ForestTestCase):
             with self.assertRaises(MemoryForestError) as refused:
                 call()
             body = refused.exception.as_dict()
-            self.assertEqual(body["code"], "index_read_only")
+            # The folder can be written and the file cannot: the refusal names the file and the access.
+            self.assertEqual(body["code"], "access_denied")
             self.assertEqual(body["next"], "report")
+            self.assertEqual((body["details"]["path"], body["details"]["access"]), (".forest/index.sqlite", "write"))
             self.assertNotIn("command", body)
-            self.assertNotIn("reset", body["message"].replace("A reset would not help", ""))
+            self.assertNotIn("reset", body["message"])
         self.assertTrue(self.index.is_file())
         code, out, _err = _cli(self, ["index", "build", "--json"])
         self.assertEqual(code, 2)
-        self.assertEqual(json.loads(out)["error"]["code"], "index_read_only")
+        self.assertEqual(json.loads(out)["error"]["code"], "access_denied")
 
     def test_an_index_path_that_cannot_be_opened_is_a_refusal_of_its_own(self) -> None:
         self.index.parent.mkdir(mode=0o700, exist_ok=True)
         self.index.mkdir()
         with self.assertRaises(MemoryForestError) as refused:
             search.build(self.root)
-        self.assertEqual(refused.exception.code, "index_cannot_open")
-        self.assertEqual(refused.exception.next_step, "report")
-        self.assertIsNone(refused.exception.command)
+        # A folder in the index's place, in a folder this account can write: a reset is the cure it can run.
+        self.assertEqual(refused.exception.code, "index_unreadable")
+        self.assertEqual(refused.exception.next_step, "run")
+        self.assertEqual(refused.exception.command, "forest index reset")
+        self.assertIn("not a regular file", refused.exception.message)
         reset = search.reset(self.root)
         self.assertTrue(reset["ok"])
         self.assertIn(".forest/index.sqlite", reset["orphans"])
@@ -867,14 +871,14 @@ class QuerySizeTests(ForestTestCase):
         files[TILL] = files[TILL] + "".join(_turn(number, f"빵 {number}번 판이 나갔다") for number in range(1, 1201))
         self.root = self.make_forest(files)
         search.build(self.root)
-        opened = search._connect_reader
+        opened = system.open_index
 
-        def stock(path, relative, *, immutable):
-            connection = opened(path, relative, immutable=immutable)
-            connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
-            return connection
+        def stock(*args, **kwargs):
+            index, result = opened(*args, **kwargs)
+            index.connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+            return index, result
 
-        with mock.patch.object(search, "_connect_reader", stock):
+        with mock.patch.object(system, "open_index", stock):
             found = search.query(self.root, "빵", reader="till-bot")
         sections = [section for page in found["results"] for section in page["sections"]]
         self.assertGreaterEqual(len(sections), 1200)
@@ -893,7 +897,7 @@ class QuerySizeTests(ForestTestCase):
 
 # One digest of MASKING_VERSION and the sources a read runs. Raise the version when those sources change,
 # then replace this pin with the digest the failure prints.
-_MASKING_PIN = "515fb019a4cca54038463d4144942f2a8ab10610a3468d0bd808077bb763381b"
+_MASKING_PIN = "a0b524d664af777fb04ecdaaf9197a621044e483861b4b7c91a594cc583a6f83"
 _MASKING_SOURCES = (
     ("numbers.py", "star_numbers: the code a read runs on a number"),
     ("credentials.py", "the sign-in rules, shown, and MASKING_VERSION"),

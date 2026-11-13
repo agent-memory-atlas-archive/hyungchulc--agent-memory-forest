@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 from unittest import mock
 
-from memory_forest import search, timeline
+from memory_forest import derived, search, timeline
 from memory_forest.errors import MemoryForestError
 
 from test_v1_find import FILES
@@ -50,7 +50,7 @@ def _damaged_bytes(kind: str) -> bytes:
     if kind == "an absolute path":
         return b"/tmp/index.sqlite\n"
     if kind == "longer than a name":
-        return b"x" * (search._POINTER_BYTES + 8)
+        return b"x" * (derived.POINTER_BYTES + 8)
     raise AssertionError(kind)
 
 
@@ -160,46 +160,67 @@ class ReadOnlyForestTests(ForestTestCase):
         finally:
             os.chmod(self.folder, 0o700)
 
-    def _touching(self, *, calls: set[int]):
-        """A stamp that moves the file's time on the calls named, as a writer of another account would."""
-        real = search._descriptor_stamp
+    def _touching(self, *, when: str):
+        """Move the index's time as a writer of another account would: while SQLite opens it (``open``), or
+        after its rows were read (``read``)."""
         seen = {"n": 0}
 
-        def stamp(descriptor: int) -> tuple[int, int, int, int]:
+        def touch() -> None:
             seen["n"] += 1
-            value = real(descriptor)
-            if seen["n"] in calls:
-                later = value[3] + 1_000_000
-                os.utime(self.index, ns=(later, later))
-            return value
+            info = self.index.stat()
+            later = info.st_mtime_ns + 1_000_000
+            os.utime(self.index, ns=(later, later))
 
-        return mock.patch.object(search, "_descriptor_stamp", stamp), seen
+        if when == "open":
+            real = search._prepare
 
-    def test_a_file_that_changes_between_the_two_looks_is_busy(self) -> None:
+            def prepared(connection):
+                answer = real(connection)
+                touch()
+                return answer
+
+            return mock.patch.object(search, "_prepare", prepared), seen
+        real_rows = search._flagged
+
+        def flagged(connection, column):
+            answer = real_rows(connection, column)
+            touch()
+            return answer
+
+        return mock.patch.object(search, "_flagged", flagged), seen
+
+    def test_a_file_that_changes_while_it_is_opened_is_busy(self) -> None:
         self._locked()
-        patch, seen = self._touching(calls=set(range(1, 100)))
+        patch, seen = self._touching(when="open")
+        try:
+            with patch:
+                for call in (lambda: search.status(self.root), lambda: search.query(self.root, "trays", reader="till-bot")):
+                    with self.assertRaises(MemoryForestError) as refused:
+                        call()
+                    self.assertEqual(refused.exception.code, "index_busy")
+                    self.assertEqual(refused.exception.next_step, "retry")
+                    self.assertEqual(refused.exception.details["state"], "busy")
+                    self.assertIn("changed while it was opened", refused.exception.message)
+            self.assertGreaterEqual(seen["n"], 2)
+        finally:
+            os.chmod(self.folder, 0o700)
+
+    def test_a_file_that_changes_after_its_rows_were_read_is_busy_and_the_same_call_answers_later(self) -> None:
+        self._locked()
+        patch, seen = self._touching(when="read")
         try:
             with patch:
                 with self.assertRaises(MemoryForestError) as refused:
                     search.status(self.root)
             self.assertEqual(refused.exception.code, "index_busy")
             self.assertEqual(refused.exception.next_step, "retry")
-            self.assertEqual(seen["n"], 4, "two looks, each before and after")
-        finally:
-            os.chmod(self.folder, 0o700)
-
-    def test_a_file_that_changes_only_on_the_first_look_is_read_once_more_and_answers(self) -> None:
-        self._locked()
-        patch, seen = self._touching(calls={1})
-        try:
-            with patch:
-                state = search.status(self.root)
-                found = search.query(self.root, "trays", reader="till-bot")
+            self.assertGreaterEqual(seen["n"], 1)
+            state = search.status(self.root)
+            found = search.query(self.root, "trays", reader="till-bot")
             self.assertTrue(state["read_only"])
             self.assertEqual(state["state"], "sound")
             self.assertTrue(found["read_only"])
             self.assertIn("trays", json.dumps(found))
-            self.assertGreaterEqual(seen["n"], 4)
         finally:
             os.chmod(self.folder, 0o700)
 

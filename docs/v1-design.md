@@ -287,11 +287,15 @@ folder it cannot write, no command of this account cures anything: every state b
 can write would run (`forest index build`, or `forest index reset` and then `forest index build` for a
 damaged index or pointer). A `sound` index there can still be searched: the open is SQLite's immutable
 mode, the answer says `read_only: true`, and a build or a reset is `index_read_only` whose text says
-reading still answers. Nothing on disk changes in such a folder. The index file is opened first,
-without following a link and without blocking, and that descriptor's size, time and inode, and the
-absence of a write-ahead log, are compared after the read; if they changed, the read is done once
-more, and if they changed again the answer is `index_busy` with `retry`. A file that went away between
-two steps is `index_busy` too. Immutable mode is never used on a folder this process can write.
+reading still answers. Nothing on disk changes in such a folder. In every folder the index file is
+opened first, through the door, without following a link and without blocking, and checked to be a
+regular file. In immutable mode SQLite reads that same descriptor, through `/dev/fd/N` where the system
+names the open file there, and otherwise opens the path. After the read, in every mode, the device and
+inode the path names are compared with the descriptor's; in immutable mode the descriptor's size and
+time, and the absence of a write-ahead log, are compared too. If any of them changed, nothing read is
+answered: the answer is `index_busy` with `retry`. A file that went away or was replaced between the
+door's look and SQLite's open is `index_busy` too, and so is an open that does not finish within
+`OPEN_DEADLINE_SECONDS` (10). Immutable mode is never used on a folder this process can write.
 `memory_log` and `forest log` in a forest this account cannot write are `log_read_only`, next `report`:
 nothing is written, and the text names `forest log` for an account that can. Publishing a
 fresh copy by an atomic rename was the other model; it was not chosen because it copies the whole
@@ -629,9 +633,12 @@ that agent's own job.
 
 - The owner says one sentence to their agent. The agent runs `forest setup`, which is written to be driven
   by an agent: every output is one JSON object whose `next` is `ask_owner` (the question, the choices, and
-  why only the owner can answer), `run` (a command), `retry` (the same call again after `after_seconds`),
-  `report` (what to tell the owner), `fix` (the call itself is wrong: change what the message names and
-  call again) or `done`. On `retry`, add this answer's `waited_seconds` and the
+  why only the owner can answer), `done`, or one of the four moves of a refusal: `fix` (the call itself is
+  wrong, and a corrected call succeeds on the forest as it is: change what the message names and call
+  again), `retry` (the same call succeeds later without anyone doing anything: call again after
+  `after_seconds`), `run` (a command this caller may run now, which changes the state: the answer carries
+  it in `command`) or `report` (only the owner or another account can change what is wrong (a file, a
+  setting, an access right): tell the owner the message). On `retry`, add this answer's `waited_seconds` and the
   `after_seconds` it asks the caller to wait onto the time already spent, call again after `after_seconds`
   while that sum is below `stop_after_seconds`, and report the message once the sum would reach it.
 A protocol error is tried again only inside a query's reads and a write, and is an I/O refusal at

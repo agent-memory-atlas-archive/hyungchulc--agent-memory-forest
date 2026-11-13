@@ -19,6 +19,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Final
 
+from . import system
 from .config import CONFIG_FILENAME, DEFAULT_CONFIG, Config, render_config
 from .errors import MemoryForestError
 from .safety import prepare_new_root, safe_join, secure_create_file, secure_mkdir
@@ -207,16 +208,14 @@ def resolve(root: str | os.PathLike[str], relative: str, *, must_exist: bool = F
 def _mkdir_accepting_other(path: Path, relative: str) -> None:
     """Make ``path``. A directory another process just made is left as it is, mode included."""
     try:
-        path.mkdir(mode=0o700)
-    except FileExistsError:
-        if path.is_symlink() or not path.is_dir():
-            raise MemoryForestError(
-                "unsafe_existing_path",
-                "An expected directory exists as a symlink or non-directory.",
-                details={"path": relative},
-            )
-    else:
-        os.chmod(path, 0o700, follow_symlinks=False)
+        system.make_folder(path, mode=0o700)
+    except (system.Link, system.NotAFolder) as exc:
+        found = "a link" if isinstance(exc, system.Link) else "not a folder"
+        raise MemoryForestError(
+            "unsafe_existing_path",
+            f"An expected folder of the forest is {found}.",
+            details={"path": relative},
+        ) from exc
 
 
 def ensure_folder(root: str | os.PathLike[str], relative: str) -> Path:
@@ -244,12 +243,48 @@ def normalize(path: str) -> str:
     return text.rstrip("/") if text not in ("", "/") else text
 
 
+# The longest page path a caller may give, in characters (docs/tools.md, "Reading a page").
+MAX_CALLER_PATH: Final[int] = 1024
+_CALLER_CONTROL_RE: Final = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def caller_page_path(text: str) -> str:
+    """The one spelling of a page path a caller gave: the scope check and the read both use it.
+
+    Surrounding blanks, ``.`` parts and empty parts are dropped (``./a/b``, ``a//b``, ``a/./b`` and ``a/b/``
+    are ``a/b``), and the text is put in NFC. A parent step (``..``) or an absolute path is ``path_escape``;
+    a control character, a backslash, a path longer than :data:`MAX_CALLER_PATH`, or no part at all is
+    ``invalid_path``. Every one of these is the caller's to fix.
+    """
+    raw = str(text)
+    if len(raw) > MAX_CALLER_PATH:
+        raise MemoryForestError(
+            "invalid_path", f"A page path is at most {MAX_CALLER_PATH} characters.", next_step="fix"
+        )
+    if _CALLER_CONTROL_RE.search(raw) or "\\" in raw:
+        raise MemoryForestError(
+            "invalid_path", "A page path is forward-slash text without control characters.", next_step="fix"
+        )
+    stripped = unicodedata.normalize("NFC", raw.strip())
+    parts = [part for part in stripped.split("/") if part not in ("", ".")]
+    if stripped.startswith("/") or ".." in parts:
+        raise MemoryForestError(
+            "path_escape",
+            "A forest path is written relative to the forest root, without `..`. This one is not.",
+            details={"path": stripped[:200]},
+            next_step="fix",
+        )
+    if not parts:
+        raise MemoryForestError("invalid_path", "Name a page: the path has no part.", next_step="fix")
+    return "/".join(parts)
+
+
 def relative_to_root(root: str | os.PathLike[str], path: str | os.PathLike[str]) -> str:
     """``path`` (absolute under the root, or already relative) as forest-relative text."""
     candidate = Path(path)
     if not candidate.is_absolute():
         return normalize(PurePosixPath(*candidate.parts).as_posix())
-    base = Path(os.path.abspath(root))
+    base = system.absolute(root)
     try:
         return candidate.relative_to(base).as_posix()
     except ValueError:
@@ -439,35 +474,36 @@ def iter_pages(root: str | os.PathLike[str], layers: Iterable[str] = FOREST_LAYE
     pages: list[str] = []
     for layer in layers:
         top = resolve(root, layer)
-        if not top.exists():
+        if system.look_or_none(top) is None:
             continue
         stack = [top]
         while stack:
             folder = stack.pop()
-            with os.scandir(folder) as entries:
-                for entry in entries:
-                    if entry.is_symlink():
-                        raise MemoryForestError(
-                            "symlink_forbidden",
-                            "Symlinks are not allowed inside a Memory Forest.",
-                            details={"path": relative_to_root(root, entry.path)},
-                        )
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(Path(entry.path))
-                    elif entry.is_file(follow_symlinks=False) and entry.name.endswith(".md"):
-                        pages.append(relative_to_root(root, entry.path))
+            for entry in system.listing(folder):
+                if entry.kind == "link":
+                    raise MemoryForestError(
+                        "symlink_forbidden",
+                        "Symlinks are not allowed inside a Memory Forest.",
+                        details={"path": relative_to_root(root, entry.path)},
+                    )
+                if entry.kind == "folder":
+                    stack.append(entry.path)
+                elif entry.kind == "file" and entry.name.endswith(".md"):
+                    pages.append(relative_to_root(root, entry.path))
     return sorted(pages)
 
 
 def trees(root: str | os.PathLike[str]) -> list[str]:
     """The trees that have an index on disk, sorted."""
     folder = resolve(root, MTM)
-    if not folder.is_dir():
+    there = system.look_or_none(folder)
+    if there is None or there.kind != "folder":
         return []
     found = []
-    for entry in sorted(os.scandir(folder), key=lambda item: item.name):
-        if entry.is_dir(follow_symlinks=False) and not entry.is_symlink():
-            if (Path(entry.path) / f"{entry.name}_MTM.md").is_file():
+    for entry in system.listing(folder):
+        if entry.kind == "folder":
+            index = system.look_or_none(entry.path / f"{entry.name}_MTM.md")
+            if index is not None and index.kind == "file":
                 found.append(entry.name)
     return found
 
@@ -492,13 +528,12 @@ def initialize(target: str | os.PathLike[str], *, config: Config = DEFAULT_CONFI
     """
     root, existed = prepare_new_root(target)
     if existed:
-        with os.scandir(root) as entries:
-            if any(True for _ in entries):
-                raise MemoryForestError(
-                    "root_not_empty",
-                    "forest init needs a new or empty folder.",
-                    details={"path": str(root)},
-                )
+        if system.listing(root):
+            raise MemoryForestError(
+                "root_not_empty",
+                "forest init needs a new or empty folder.",
+                details={"path": str(root)},
+            )
     else:
         secure_mkdir(root)
     created: list[str] = []

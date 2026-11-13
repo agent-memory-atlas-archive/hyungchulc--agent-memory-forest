@@ -60,7 +60,7 @@ from functools import lru_cache
 from typing import Any, Final
 
 from . import archive as forest_archive
-from . import layout
+from . import layout, system
 from .config import Config, load_config
 from .errors import MemoryForestError
 from .locking import LockToken, atomic_write, writer_lock
@@ -966,14 +966,14 @@ def fix(
     with writer_lock(safe_root, token=lock, label="credentials fix") as held:
         for item in found:
             target = layout.resolve(safe_root, item.path, must_exist=True)
-            data = target.read_bytes()
+            data = system.read_bytes(target)
             text = data.decode("utf-8", "surrogateescape")
             new_text = mask(text, config=settings)
             if changed_lines(new_text, config=settings):
                 raise MemoryForestError("credentials_fix_incomplete", "A sign-in value would still stand; not written.",
                                         details={"path": item.path})
             entry = forest_archive.put(safe_root, item.path, reason=FIX_REASON, keep=True, lock=held)
-            if forest_archive.read_copy(safe_root, entry) != data or target.read_bytes() != data:
+            if forest_archive.read_copy(safe_root, entry) != data or system.read_bytes(target) != data:
                 raise MemoryForestError("credentials_archive_mismatch",
                                         "The archive copy does not hold the page as it was; not written.",
                                         details={"path": item.path})

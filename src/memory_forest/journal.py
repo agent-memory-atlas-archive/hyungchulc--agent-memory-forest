@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any, Final
 
-from . import layout
+from . import layout, system
 from .errors import MemoryForestError
 from .locking import _fsync_directory, atomic_write
 
@@ -48,9 +48,9 @@ def write(root: str | os.PathLike[str], *, label: str, before: dict[str, str | N
     """Write the journal durably; returns its id. ``appends`` gives the byte length before the commit of each
     other append-only state file the commit appends to (the judged ledger)."""
     folder = Path(root) / JOURNAL_DIR
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    system.make_folders(folder)
     _fsync_directory(folder.parent)
-    moves = layout.moves_path(root)
+    moves = system.look_or_none(layout.moves_path(root))
     data = {
         "schema": SCHEMA,
         "id": secrets.token_hex(8),
@@ -59,7 +59,7 @@ def write(root: str | os.PathLike[str], *, label: str, before: dict[str, str | N
         "pages": dict(sorted(before.items())),
         "made_dirs": list(made_dirs),
         "removed_dirs": list(removed_dirs),
-        "moves_bytes": moves.stat().st_size if moves.is_file() else 0,
+        "moves_bytes": moves.size if moves is not None and moves.kind == "file" else 0,
         "appends": dict(sorted((appends or {}).items())),
     }
     payload = json.dumps(data, ensure_ascii=True, sort_keys=True, indent=1).encode("ascii")
@@ -70,8 +70,8 @@ def write(root: str | os.PathLike[str], *, label: str, before: dict[str, str | N
 def read(root: str | os.PathLike[str]) -> dict[str, Any] | None:
     path = journal_path(root)
     try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
+        raw = system.read_bytes(path)
+    except system.Absent:
         return None
     try:
         data = json.loads(raw.decode("ascii"))
@@ -87,9 +87,7 @@ def read(root: str | os.PathLike[str]) -> dict[str, Any] | None:
 def remove(root: str | os.PathLike[str]) -> None:
     """Remove the journal durably (the commit then stands)."""
     path = journal_path(root)
-    try:
-        path.unlink()
-    except FileNotFoundError:
+    if not system.remove(path):
         return
     _fsync_directory(path.parent)
 
@@ -99,21 +97,18 @@ def _remove_empty(root: Path, folder: str) -> None:
         target = layout.resolve(root, folder)
     except MemoryForestError:
         return
-    if target.is_dir() and not target.is_symlink():
-        leftovers = [entry for entry in target.iterdir() if entry.name != ".DS_Store"]
-        if not leftovers:
-            for entry in target.iterdir():
-                entry.unlink()
-            target.rmdir()
+    there = system.look_or_none(target)
+    if there is not None and there.kind == "folder":
+        entries = system.listing(target)
+        if not [entry for entry in entries if entry.name != ".DS_Store"]:
+            for entry in entries:
+                system.remove(entry.path)
+            system.remove_folder(target)
 
 
 def _cut_back(path: Path, length: int) -> None:
     """An append-only file cut back to ``length`` bytes (what the unfinished commit appended goes)."""
-    if path.is_file() and path.stat().st_size > length:
-        with open(path, "r+b") as handle:
-            handle.truncate(length)
-            handle.flush()
-            os.fsync(handle.fileno())
+    system.cut_back(path, length)
 
 
 def roll_back(root: str | os.PathLike[str]) -> dict[str, Any] | None:
@@ -129,20 +124,20 @@ def roll_back(root: str | os.PathLike[str]) -> dict[str, Any] | None:
     pages: dict[str, str | None] = data.get("pages") or {}
     for path, text in sorted(pages.items()):
         target = layout.resolve(safe_root, path)
+        there = system.look_or_none(target)
         if text is None:
-            if target.is_file() and not target.is_symlink():
-                target.unlink()
+            if there is not None and there.kind == "file":
+                system.remove(target)
                 _fsync_directory(target.parent)
             continue
         payload = text.encode("utf-8", "surrogateescape")
-        if not target.parent.is_dir():
-            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not target.is_file() or target.read_bytes() != payload:
+        system.make_folders(target.parent)
+        if there is None or there.kind != "file" or system.read_bytes(target) != payload:
             atomic_write(target, payload)
     for folder in sorted(data.get("removed_dirs") or (), key=len):
         target = layout.resolve(safe_root, folder)
-        if not target.exists():
-            target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if system.look_or_none(target) is None:
+            system.make_folders(target)
     for folder in sorted(data.get("made_dirs") or (), key=len, reverse=True):
         _remove_empty(safe_root, folder)
     _cut_back(layout.moves_path(safe_root), int(data.get("moves_bytes") or 0))
@@ -160,7 +155,8 @@ def roll_back(root: str | os.PathLike[str]) -> dict[str, Any] | None:
 
 def recover_on_lock(root: str | os.PathLike[str]) -> None:
     """Called by the writer lock when it is taken: a standing journal is a dead writer's; roll it back."""
-    if not journal_path(root).is_file():
+    standing = system.look_or_none(journal_path(root))
+    if standing is None or standing.kind != "file":
         return
     done = roll_back(root)
     if done is not None:
@@ -172,7 +168,8 @@ def problems(root: str | os.PathLike[str]) -> list[Any]:
     """``forest check``'s ``commit_journal_standing``: a commit that did not finish (a reader takes no lock)."""
     from .registry import Problem
 
-    if not journal_path(root).is_file():
+    standing = system.look_or_none(journal_path(root))
+    if standing is None or standing.kind != "file":
         return []
     try:
         data = read(root) or {}

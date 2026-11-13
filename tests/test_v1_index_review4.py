@@ -67,7 +67,7 @@ class ReviewFourTests(ForestTestCase):
         self.assertEqual(locked.code, "index_failed")
         self.assertEqual(locked.next_step, "report")
 
-        def raise_locked(path: Path, busy_seconds: float = 0.0) -> sqlite3.Connection:
+        def raise_locked(path: Path, relative: str, busy_seconds: float = 0.0) -> sqlite3.Connection:
             raise search.index_error(_sqlite_error("database table is locked", 6, "SQLITE_LOCKED"), path=".forest/index.sqlite")
 
         pauses: list[float] = []
@@ -81,11 +81,11 @@ class ReviewFourTests(ForestTestCase):
         calls = {"n": 0}
         real = search._open_writer
 
-        def once(path: Path, busy_seconds: float = search.WRITER_TIMEOUT_SECONDS) -> sqlite3.Connection:
+        def once(path: Path, relative: str, busy_seconds: float = search.WRITER_TIMEOUT_SECONDS):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise search.index_error(_sqlite_error("locking protocol", 15, "SQLITE_PROTOCOL"), path=".forest/index.sqlite")
-            return real(path, busy_seconds)
+            return real(path, relative, busy_seconds)
 
         with mock.patch.object(search, "_open_writer", once), \
                 mock.patch.object(search, "_retry_pause", lambda seconds: pauses.append(seconds)):
@@ -95,7 +95,7 @@ class ReviewFourTests(ForestTestCase):
         self.assertEqual(len(pauses), 1)
         self.assertEqual(search.index_error(_sqlite_error("locking protocol", 15, "SQLITE_PROTOCOL"), path=".forest/index.sqlite").code, "index_protocol")
 
-        def always(path: Path, busy_seconds: float = 0.0) -> sqlite3.Connection:
+        def always(path: Path, relative: str, busy_seconds: float = 0.0) -> sqlite3.Connection:
             raise search.index_error(_sqlite_error("locking protocol", 15, "SQLITE_PROTOCOL"), path=".forest/index.sqlite")
 
         with mock.patch.object(search, "_open_writer", always):
@@ -132,7 +132,7 @@ class ReviewFourTests(ForestTestCase):
             def close(self) -> None:
                 return None
 
-        with mock.patch.object(search, "_checked_read", lambda root, fn, describe=False: fn(Connection())):
+        with mock.patch.object(search, "_checked_read", lambda root, fn: fn(Connection())):
             found = search.query(self.root, "trays", reader="till-bot")
             self.assertIsInstance(found["results"], list)
             mode["name"] = "busy"
@@ -193,14 +193,15 @@ class ReviewFourTests(ForestTestCase):
         )
         readonly = json.loads(reply["result"]["content"][0]["text"])
         self.assertFalse(readonly["indexed"])
-        self.assertEqual(readonly["reason"], "index_read_only")
+        # The folder can be written and the index file cannot: the door's answer, by its kind.
+        self.assertEqual(readonly["reason"], "access_denied")
 
     def test_the_document_table_lists_every_index_refusal(self) -> None:
         text = _DOCS.read_text(encoding="utf-8")
         rows: dict[str, str] = {}
         started = False
         for line in text.splitlines():
-            if line.startswith("What SQLite refuses"):
+            if line.endswith("What a state refuses with:"):
                 started = True
                 continue
             if not started:

@@ -21,7 +21,7 @@ from .core import (
     structured_forest_snapshot_sha256,
 )
 from .credentials import shown
-from .errors import MemoryForestError
+from .errors import MemoryForestError, with_rebuild
 from .index import (
     INDEX_SCHEMA_VERSION,
     _literal_fts_query,
@@ -256,6 +256,7 @@ def validate_query_plan(
     return QueryPlan(probes=tuple(probes))
 
 
+@with_rebuild
 def retrieve_index(
     root: str | os.PathLike[str],
     query: str,
@@ -427,6 +428,7 @@ def retrieve_index(
     }
 
 
+@with_rebuild
 def structured_context_index(
     root: str | os.PathLike[str],
     query: str,
@@ -491,7 +493,6 @@ def structured_context_index(
         raise MemoryForestError(
             "index_stale",
             "The local index no longer matches the canonical forest; rebuild the index.",
-            details={"action": "memory-forest index ROOT"},
         )
     paths.setdefault(root_node.route.path, root_node.as_metadata())
     if len(paths) > MAX_CONTEXT_DOCUMENTS:
@@ -571,7 +572,6 @@ def _load_structured_nodes(connection: sqlite3.Connection) -> dict[int, _Node]:
             raise MemoryForestError(
                 "index_corrupt",
                 "The local index contains an invalid structured route; rebuild it.",
-                details={"action": "memory-forest index ROOT"},
             ) from exc
         expected = (
             immediate_parent_path(route),
@@ -604,7 +604,6 @@ def _load_structured_nodes(connection: sqlite3.Connection) -> dict[int, _Node]:
             raise MemoryForestError(
                 "index_corrupt",
                 "The local index contains inconsistent route metadata; rebuild it.",
-                details={"action": "memory-forest index ROOT"},
             )
         nodes[row["id"]] = _Node(
             document_id=row["id"],
@@ -620,7 +619,6 @@ def _load_structured_nodes(connection: sqlite3.Connection) -> dict[int, _Node]:
         raise MemoryForestError(
             "index_corrupt",
             "The local index must contain exactly one XLTM root; rebuild it.",
-            details={"action": "memory-forest index ROOT"},
         )
     return nodes
 
@@ -810,7 +808,6 @@ def _raise_invalid_chain() -> NoReturn:
     raise MemoryForestError(
         "index_corrupt",
         "The local index contains an incomplete structured trail; rebuild it.",
-        details={"action": "memory-forest index ROOT"},
     )
 
 

@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import sqlite3
 import stat
 import tempfile
@@ -525,9 +526,11 @@ class MemoryForestCoreTests(unittest.TestCase):
         with self.assertRaises(MemoryForestError) as captured:
             route_index(self.root, "instrument")
         self.assertEqual(captured.exception.code, "index_schema_mismatch")
+        # The command that rebuilds the index of the forest the call named, not a template.
+        self.assertEqual(captured.exception.next_step, "run")
         self.assertEqual(
-            captured.exception.details["action"],
-            "memory-forest index ROOT",
+            captured.exception.command,
+            f"memory-forest index {shlex.quote(str(self.root))}",
         )
 
     def test_retrieve_rejects_a_corrupt_parent_edge(self):

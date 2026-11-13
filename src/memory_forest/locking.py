@@ -12,8 +12,6 @@ import os
 import re
 import secrets
 import socket
-import stat
-import tempfile
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -21,11 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - the package supports POSIX systems only
-    fcntl = None  # type: ignore[assignment]
-
+from . import system
 from .errors import MemoryForestError
 from .safety import require_real_root, safe_join
 
@@ -36,43 +30,43 @@ def maintenance_lock(
 ) -> Iterator[Path]:
     root_path = require_real_root(root)
     lock = Path(str(root_path) + ".maintenance.lock")
-    if Path(os.path.realpath(lock.parent)) != lock.parent:
+    if system.real_path(lock.parent) != lock.parent:
         raise MemoryForestError(
             "unsafe_lock_parent",
             "The maintenance lock parent must be a real directory.",
         )
     _reject_casefold_collision(lock.parent, lock.name)
     try:
-        lock.mkdir(mode=0o700)
-    except FileExistsError as exc:
+        made = system.make_folder(lock, mode=0o700)
+    except (system.Link, system.NotAFolder):
+        made = False
+    if not made:
         raise MemoryForestError(
             "maintenance_lock_busy",
             "The sibling maintenance lock is already held.",
             details={"path": lock.name},
-        ) from exc
-    os.chmod(lock, 0o700, follow_symlinks=False)
+            next_step="retry",
+        )
     _fsync_directory(lock.parent)
     try:
         yield root_path
     finally:
         try:
-            lock.rmdir()
+            system.remove_folder(lock)
             _fsync_directory(lock.parent)
-        except FileNotFoundError:
+        except system.Absent:
             pass
-        except OSError as exc:
+        except system.Outcome as exc:
             raise MemoryForestError(
                 "lock_release_failed",
                 "The maintenance lock could not be released safely.",
-                details={"reason": exc.__class__.__name__},
+                details={"reason": exc.kind},
             ) from exc
 
 
 def _reject_casefold_collision(parent: Path, name: str) -> None:
     folded = name.casefold()
-    with os.scandir(parent) as iterator:
-        entries = list(iterator)
-    for entry in entries:
+    for entry in system.listing(parent):
         if entry.name.casefold() == folded and entry.name != name:
             raise MemoryForestError(
                 "casefold_collision",
@@ -82,11 +76,7 @@ def _reject_casefold_collision(parent: Path, name: str) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    system.sync_folder(path)
 
 
 # ═══════════════════════════════ version 1 locks ═══════════════════════════════
@@ -107,6 +97,8 @@ WRITER_LOCK = "writer"
 LOCKS_RELATIVE = ".forest/locks"
 _LOCK_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 _POLL_SECONDS = 0.05
+# A lock's record is one short JSON line; a longer file is not read whole.
+_OWNER_BYTES = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,23 +126,23 @@ class LockStatus:
         return {"held": self.held, "name": self.name, "owner": self.owner, "path": self.path, "stale": self.stale}
 
 
-# Locks this process holds: lock file path -> (open handle, token).
-_HELD: dict[str, tuple[object, LockToken]] = {}
+# Locks this process holds: lock file path -> (open lock file, token).
+_HELD: dict[str, tuple[system.LockFile, LockToken]] = {}
 
 
 def _lock_file(root: str | os.PathLike[str], name: str) -> Path:
     if _LOCK_NAME_RE.fullmatch(name) is None:
         raise MemoryForestError("invalid_lock_name", "A lock name is a slug.", details={"name": name})
     # One step: the other process may have made the folder between the check and the make.
-    safe_join(root, ".forest").mkdir(mode=0o700, exist_ok=True)
-    safe_join(root, LOCKS_RELATIVE).mkdir(mode=0o700, exist_ok=True)
+    system.make_folder(safe_join(root, ".forest"), mode=0o700)
+    system.make_folder(safe_join(root, LOCKS_RELATIVE), mode=0o700)
     return safe_join(root, f"{LOCKS_RELATIVE}/{name}.lock")
 
 
 def _read_owner(path: Path) -> dict[str, object] | None:
     try:
-        text = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, UnicodeDecodeError):
+        text = system.read_text(path, limit=_OWNER_BYTES)
+    except (system.Absent, UnicodeDecodeError):
         return None
     try:
         owner = json.loads(text)
@@ -175,19 +167,7 @@ def _flock_free(path: Path) -> bool:
     """Whether nobody holds the lock file's flock (probed without keeping it)."""
     if str(path) in _HELD:
         return False
-    try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except FileNotFoundError:
-        return True
-    try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return False
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        return True
-    finally:
-        os.close(descriptor)
+    return system.lock_free(path)
 
 
 def lock_status(root: str | os.PathLike[str], name: str = WRITER_LOCK) -> LockStatus:
@@ -234,7 +214,7 @@ def hold_lock(
     hold and releases nothing. Without one, the lock is taken, waiting up to
     ``wait_seconds``; a lock held elsewhere raises ``lock_busy``.
     """
-    if fcntl is None:  # pragma: no cover
+    if not system.LOCKS:  # pragma: no cover
         raise MemoryForestError("lock_unsupported", "Forest locks need a POSIX system.")
     path = _lock_file(root, name)
     if token is not None:
@@ -253,29 +233,23 @@ def hold_lock(
             "This process already holds the lock; pass its token to re-enter it.",
             details={"lock": name},
         )
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
-    handle = os.fdopen(descriptor, "r+", encoding="utf-8")
+    handle = system.lock(path)
     deadline = time.monotonic() + max(0.0, wait_seconds)
     try:
-        while True:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    owner = _read_owner(path)
-                    raise MemoryForestError(
-                        "lock_busy",
-                        "Another writer holds the lock.",
-                        details={
-                            "lock": name,
-                            "owner": None
-                            if owner is None
-                            else {key: value for key, value in owner.items() if key != "token"},
-                        },
-                    ) from None
-                time.sleep(_POLL_SECONDS)
+        while not handle.take():
+            if time.monotonic() >= deadline:
+                owner = _read_owner(path)
+                raise MemoryForestError(
+                    "lock_busy",
+                    "Another writer holds the lock.",
+                    details={
+                        "lock": name,
+                        "owner": None
+                        if owner is None
+                        else {key: value for key, value in owner.items() if key != "token"},
+                    },
+                )
+            time.sleep(_POLL_SECONDS)
     except BaseException:
         handle.close()
         raise
@@ -288,11 +262,11 @@ def hold_lock(
         "since": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "token": token_value,
     }
-    handle.seek(0)
-    handle.truncate()
-    handle.write(json.dumps(record, sort_keys=True) + "\n")
-    handle.flush()
-    os.fsync(handle.fileno())
+    try:
+        handle.record(json.dumps(record, sort_keys=True) + "\n")
+    except BaseException:
+        handle.release()
+        raise
     _HELD[str(path)] = (handle, lock_token)
     try:
         if name == WRITER_LOCK:
@@ -303,13 +277,7 @@ def hold_lock(
         yield lock_token
     finally:
         _HELD.pop(str(path), None)
-        try:
-            handle.seek(0)
-            handle.truncate()
-            handle.flush()
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            handle.close()
+        handle.release()
 
 
 def writer_lock(
@@ -357,35 +325,14 @@ def atomic_write(
     gets ``mode`` (0600 by default) whatever the file it replaces had.
     """
     target = Path(path)
-    payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
-    folder = target.parent
     try:
-        info = target.lstat()
-    except FileNotFoundError:
-        info = None
-    if info is not None and (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)):
+        system.write_whole(target, data, mode=mode, keep_mode=keep_mode)
+    except (system.Link, system.NotAFile) as exc:
         raise MemoryForestError(
             "unsafe_existing_path",
-            "The file to replace is a symlink or not a regular file.",
+            "The file to replace is a link." if isinstance(exc, system.Link) else "The file to replace is not a regular file.",
             details={"path": target.name},
-        )
-    wanted = 0o600 if mode is None else mode
-    final_mode = stat.S_IMODE(info.st_mode) if info is not None and keep_mode else wanted
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=folder)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, final_mode)
-        os.replace(temporary, target)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
-    _fsync_directory(folder)
+        ) from exc
 
 
 def append_lines(path: str | os.PathLike[str], lines: Iterable[str]) -> None:
@@ -393,17 +340,4 @@ def append_lines(path: str | os.PathLike[str], lines: Iterable[str]) -> None:
     payload = "".join(line if line.endswith("\n") else line + "\n" for line in lines)
     if not payload:
         return
-    target = Path(path)
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(target, flags, 0o600)
-    try:
-        if fcntl is not None:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-        try:
-            os.write(descriptor, payload.encode("utf-8"))
-            os.fsync(descriptor)
-        finally:
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-    finally:
-        os.close(descriptor)
+    system.append(Path(path), payload.encode("utf-8"))

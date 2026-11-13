@@ -502,20 +502,24 @@ that arrived a moment earlier. A query whose masking changed while the index is 
 other build, trying a busy file again every tenth of a second, for up to 60 seconds, and then refuses
 with `index_busy` rather than answer from rows masked under the old rules.
 
-What SQLite refuses is sorted by its result code:
+Every command and tool reads the state of the derived folder the same way (design, section 10): the
+forest folder, `forest.toml`, `.forest/`, the pointer, the index it names, what lies beside it, SQLite's
+open and the metadata. What a state refuses with:
 
 | Code | When | Next move |
 | --- | --- | --- |
-| `index_unreadable` | the file or the pointer is damaged: the file is corrupt or is not a database, a table, an index or the rows of a table that held rows are missing, or the pointer does not name an index file | `run` `forest index reset` |
-| `index_busy` | the index lock is held, or the index file is in use | `retry` after `after_seconds`, stop at `stop_after_seconds` |
-| `index_read_only` | the index file cannot be written; or the folder the index lives in (`.forest/`, or the forest root while there is no `.forest/`) cannot be written, and the call would build or reset, or the index is missing, damaged, its pointer damaged, its masking changed since the build, or a `-wal` file stands beside it. The text says whether reading still answers and names what an account that can write would run | `report` |
+| `access_denied` | this account cannot enter or list the forest folder or `.forest/`, or cannot read `forest.toml`, or, in a `.forest/` it cannot write, cannot read the pointer or the index. The text names what, and the access the owner gives | `report` |
+| `filesystem_error` | the system answered an error for a step of the path (the text names the error), and nothing this account may run cures it | `report` |
+| `index_busy` | the index lock is held, or the index, its pointer or `forest.toml` was in use or changed while it was read, or SQLite's open met its deadline | `retry` after `after_seconds`, stop at `stop_after_seconds` |
+| `index_cannot_open` | `.forest/` is not a folder, the pointer is not a file, or SQLite cannot open the index | `report` |
 | `index_disk_full` | the disk is full | `report` |
+| `index_failed` | SQLite refused for a reason this package does not classify, a lock conflict inside this connection, or SQLite answered that the index cannot be written | `report` |
 | `index_io_error` | the disk returned an I/O error, or the locking protocol failed and this call's budget is spent | `report` |
-| `index_cannot_open` | the path cannot be opened or created (a folder in its place) | `report` |
 | `index_missing` | there is no index and none could be built yet | `run` `forest index build` |
-| `index_failed` | SQLite refused for a reason this package does not classify, or a lock conflict inside this connection | `report` |
-| `index_reset_refused` | the index pointer is not a file, so a reset cannot publish a new name | `report` |
-| `symlink_forbidden` | a symlink stands where the index or its pointer would be | `report` |
+| `index_read_only` | the folder the index lives in (`.forest/`, or the forest root while there is no `.forest/`) cannot be written, and the index is missing, built by another version, damaged, its pointer damaged, its masking changed since the build, or a write-ahead log or a journal stands beside it; or the call would build, update or reset. The text says whether reading still answers and names what an account that can write that folder would run | `report` |
+| `index_unreadable` | in a folder this account can write: the index is corrupt or not a database, a table, a column, an index or the rows of a table that held rows are missing, the pointer does not name an index file, the pointer or the index cannot be read, or a link, a folder or another thing stands where the index or a file SQLite keeps beside it would be | `run` `forest index reset` |
+| `settings_invalid` | `forest.toml` is a link, not a regular file, larger than any settings file needs to be, not UTF-8 or not valid settings | `report` |
+| `symlink_forbidden` | a link stands where `.forest/` or the pointer would be | `report` |
 
 A build that does not build is a refusal: `index_busy`, a non-zero exit, next move `retry`. The message
 says which cause it can tell apart, the index lock or the index file being in use. It does not
@@ -695,13 +699,20 @@ Every refusal of a tool is a result with `isError: true` whose text is one JSON 
  "message": "...", "next": "retry", "after_seconds": 2.0}
 ```
 
-`code`, `message`, `details` and `next` are always there. `next` is `run` with `command`, `retry` with
-`after_seconds`, `waited_seconds` and `stop_after_seconds` (call again after `after_seconds` while the
-sum of each answer's `waited_seconds` and `after_seconds` is below `stop_after_seconds`, and report the
-message once that sum would reach it), `report` (tell the owner the message; no command helps), or
-`fix` (the call itself is wrong: change what the message names, such as empty words to `search_empty`,
-and call again). Every code a tool or a command can send, with its next move, is in
-[refusals.md](refusals.md); a test proves that table and the codes the package raises are the same.
+`code`, `message`, `details` and `next` are always there. `next` is one of four moves:
+
+- `fix`: the call itself is wrong, and a corrected call succeeds on the forest as it is. Change what the
+  message names, such as empty words to `search_empty`, and call again.
+- `retry`: the same call succeeds later without anyone doing anything. The answer carries `after_seconds`,
+  `waited_seconds` and `stop_after_seconds`: call again after `after_seconds` while the sum of each
+  answer's `waited_seconds` and `after_seconds` is below `stop_after_seconds`, and report the message once
+  that sum would reach it.
+- `run`: a command this caller may run now, which changes the state. The answer carries it in `command`.
+- `report`: only the owner or another account can change what is wrong (a file, a setting, an access
+  right). Tell the owner the message.
+
+Every code a tool or a command can send, with its next move, is in [refusals.md](refusals.md); a test
+proves that table and the codes the package raises are the same.
 `tool_failed`, a tool that could not answer for a reason the package does not name, is `report`, and
 `out_of_scope`, a path outside the reader's trees and lane, is `fix`: read a path a search or a
 navigation showed. An argument that fails a tool's schema under 2025-11-25 is `arguments_invalid`

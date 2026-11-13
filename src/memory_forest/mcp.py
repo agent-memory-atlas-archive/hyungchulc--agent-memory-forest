@@ -67,7 +67,6 @@ import os
 import re
 import secrets
 import socket
-import stat
 import sys
 import urllib.parse
 from collections.abc import Mapping
@@ -75,9 +74,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from . import __version__, groups, intake, layout, search, timeline
+from . import __version__, groups, intake, layout, search, system, timeline
 from .config import load_config
-from .errors import MemoryForestError
+from .errors import MOVE_DEFINITIONS, MemoryForestError, door_refusal
 from .locking import atomic_write
 from .safety import require_real_root
 
@@ -109,7 +108,17 @@ INSTRUCTIONS = (
     "memory_navigate: you do not yet know where to look. Start with no path and walk down from the root index, "
     "one level at a time.\n"
     "memory_log: this session has no transcript hook and a turn should be kept. Send the text only. "
-    "The server sets who spoke and where the turn came from."
+    "The server sets who spoke and where the turn came from.\n"
+    "A refusal's next is one of four moves:\n"
+    + "\n".join(
+        f"{move}: {MOVE_DEFINITIONS[move]}; {action}."
+        for move, action in (
+            ("fix", "correct the call as the message says and call again"),
+            ("retry", "call again after after_seconds"),
+            ("run", "run the command the refusal names, then call again"),
+            ("report", "tell the owner what the message says and do not call again"),
+        )
+    )
 )
 GROUP_INSTRUCTIONS = (
     INSTRUCTIONS
@@ -412,38 +421,32 @@ def ensure_token(root: str | os.PathLike[str]) -> bytes:
     """The token bytes. The first start writes ``.forest/mcp/token`` in mode 0600 and does not print it."""
     safe = require_real_root(root)
     path = layout.resolve(safe, TOKEN_FILE)
-    if path.exists() or path.is_symlink():
+    if system.look_or_none(path) is not None:
         return read_token(safe)
     layout.ensure_folder(safe, f"{layout.STATE_DIR}/mcp")
     token = secrets.token_hex(32).encode("ascii")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags, 0o600)
-    except FileExistsError:
+    if not system.create_new(path, token + b"\n", mode=0o600):
         return read_token(safe)
-    try:
-        os.write(descriptor, token + b"\n")
-    finally:
-        os.close(descriptor)
-    os.chmod(path, 0o600)
     return token
 
 
 def read_token(root: str | os.PathLike[str]) -> bytes:
     """The token file as bytes. The value is for comparison and must not be printed."""
     path = layout.resolve(root, TOKEN_FILE)
-    if path.is_symlink() or not path.is_file():
+    try:
+        handle = system.open_file(path)
+    except (system.Absent, system.Link, system.NotAFile) as exc:
         raise MemoryForestError(
             "mcp_token_missing",
             "The MCP server needs .forest/mcp/token, a regular file in mode 0600.",
-        )
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode != 0o600:
-        raise MemoryForestError(
-            "mcp_token_mode",
-            "The MCP token file must be mode 0600. Its contents were not shown.",
-        )
-    raw = path.read_bytes()
+        ) from exc
+    with handle:
+        if handle.look.mode != 0o600:
+            raise MemoryForestError(
+                "mcp_token_mode",
+                "The MCP token file must be mode 0600. Its contents were not shown.",
+            )
+        raw = handle.read()
     if raw.endswith(b"\r\n"):
         raw = raw[:-2]
     elif raw.endswith(b"\n"):
@@ -572,14 +575,39 @@ def _call(
         raise
     except MemoryForestError as exc:
         return _tool_error(exc, root)
+    except OSError as exc:
+        # What the door answered and no code decided on: a refusal by its kind, never a fault of this code.
+        return _tool_error(search.edge_refusal(exc, root), root)
+    except Exception:
+        return _tool_error(MemoryForestError("tool_failed", "The tool could not answer."), root)
+    try:
+        # The answer is masked with the forest's settings and ledger, read now: a fault there is a refusal,
+        # except for a turn already written, which is never told as unwritten.
+        text = _tool_text(payload, root, indent=2)
+    except (MemoryForestError, OSError) as exc:
+        if name != "memory_log":
+            refusal = exc if isinstance(exc, MemoryForestError) else search.edge_refusal(exc, root)
+            return _tool_error(refusal, root)
+        text = json.dumps(withheld(payload, exc), indent=2, sort_keys=True)
     except Exception:
         return _tool_error(MemoryForestError("tool_failed", "The tool could not answer."), root)
     try:
         _remember(root, reader, name, transport)
     except Exception:
         _log("forest mcp: the seen record could not be written")
-    text = _tool_text(payload, root, indent=2)
     return {"content": [{"type": "text", "text": text}], "isError": False}
+
+
+def withheld(body: Mapping[str, Any], exc: Exception) -> dict[str, Any]:
+    """A written turn's answer when the masking cannot be read: the words of a fixed vocabulary only.
+
+    ``wrote``, ``indexed`` and the reason stay, so the turn is never told as unwritten and never sent again;
+    the id and the path are withheld, with the code of what kept the masking from being read.
+    """
+    code = exc.code if isinstance(exc, MemoryForestError) else door_refusal(exc).code
+    kept = {key: body[key] for key in ("indexed", "reason", "wrote") if key in body}
+    kept["withheld"] = code
+    return kept
 
 
 def _check_arguments(name: str, arguments: Mapping[str, Any], tool: Mapping[str, Any]) -> None:
@@ -694,37 +722,34 @@ def record_turn(
     whose id the lane already holds is not written again. The first write of an
     agent makes that agent's tree, and no other subject's.
     """
-    if not search.derived_writable(root):
-        raise _log_read_only(agent)
+    refused = search.unwritable(root)
+    if refused is not None:
+        raise _log_read_only(agent) if refused.code == "index_read_only" else refused
+    # A denial inside the append is told by the door's edge as what was denied: the turn may already be in the
+    # lane, so it is never "not written" (the same turn sent again has the same id and is not written twice).
+    record = intake.append_owned(
+        root, agent, text, role="agent", origin=origin, session=session or "mcp", door=door, group=group
+    )
+    body = {"id": record["id"], "indexed": False, "path": record["path"], "wrote": bool(record["wrote"])}
+    # The turn is in the lane: from here a fault is told as the reason the index was not updated, never as a
+    # refusal, so the caller does not write the turn again.
     try:
-        record = intake.append_owned(
-            root, agent, text, role="agent", origin=origin, session=session or "mcp", door=door, group=group
-        )
-    except PermissionError as exc:
-        raise _log_read_only(agent) from exc
-    page = layout.resolve(root, layout.tree_page(agent))
-    if record.get("wrote") or not page.is_file():
-        if not page.is_file():
+        page = layout.resolve(root, layout.tree_page(agent))
+        if system.kind(page) != "file":
             from . import levels
 
             levels.ensure_agent(root, agent)
-    indexed = False
-    reason = ""
-    try:
         outcome = search.update_files(root, [record["path"]], wait_seconds=0)
-        indexed = bool(outcome.get("indexed"))
-        if not indexed:
-            reason = str(outcome.get("reason") or "index_busy")
+        body["indexed"] = bool(outcome.get("indexed"))
+        if not body["indexed"]:
+            body["reason"] = str(outcome.get("reason") or "index_busy")
     except MemoryForestError as exc:
-        reason = exc.code
-        indexed = False
+        body["reason"] = exc.code
+    except OSError as exc:
+        body["reason"] = door_refusal(exc).code
     except Exception:
         _log("forest: the turn was written and the index was not updated")
-        reason = "index_failed"
-        indexed = False
-    body = {"id": record["id"], "indexed": indexed, "path": record["path"], "wrote": bool(record["wrote"])}
-    if not indexed:
-        body["reason"] = reason
+        body["reason"] = "index_failed"
     return body
 
 
@@ -751,11 +776,9 @@ def _seen_fresh(last: str, now: str) -> bool:
 
 
 def _load_seen(path: Any) -> dict[str, Any]:
-    if not path.is_file() or path.is_symlink():
-        return {}
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        loaded = json.loads(system.read_text(path))
+    except (system.Absent, system.Link, system.NotAFile, UnicodeError, json.JSONDecodeError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
@@ -768,7 +791,10 @@ def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: s
     safe = require_real_root(root)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     path = layout.resolve(safe, SEEN_FILE)
-    current = _load_seen(path)
+    try:
+        current = _load_seen(path)
+    except system.Outcome:
+        return
     entry = current.get(reader)
     if isinstance(entry, dict) and _seen_fresh(str(entry.get("last") or entry.get("at") or ""), now):
         return
@@ -787,12 +813,10 @@ def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: s
                 entry.setdefault("tool", tool)
                 entry.setdefault("transport", transport)
             atomic_write(path, json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-            os.chmod(path, 0o600)
-    except MemoryForestError as exc:
-        if exc.code in {"lock_busy", "lock_already_held"}:
-            return
+            system.set_mode(path, 0o600)
+    except MemoryForestError:
         return
-    except OSError:
+    except system.Outcome:
         return
 
 
@@ -1169,9 +1193,12 @@ def _fold_prefix(text: str, prefix: str, *, alone: str, followed: str) -> str:
 
 def _identity_roots(root: str | os.PathLike[str]) -> list[str]:
     """The forest root as it was given and as it resolves, longer first."""
-    given = os.fspath(root)
-    expanded = os.path.abspath(os.path.expanduser(given))
-    resolved = os.path.realpath(expanded)
+    given = str(root)
+    expanded = str(system.absolute(given))
+    try:
+        resolved = str(system.real_path(expanded))
+    except system.Outcome:
+        resolved = expanded
     found: list[str] = []
     for item in (given, expanded, resolved):
         cleaned = item.rstrip("/")
@@ -1182,7 +1209,7 @@ def _identity_roots(root: str | os.PathLike[str]) -> list[str]:
 
 
 def _home_folder() -> str:
-    home = os.path.expanduser("~")
+    home = system.home_folder()
     if not home or home == "~" or home == "/":
         return ""
     return home.rstrip("/")
@@ -1257,8 +1284,11 @@ def _tool_text(
     except Exception:
         if not drop_details or not isinstance(body, dict):
             raise
+        # The masking could not be read (an unreadable ledger or settings): the details' values are dropped,
+        # but the words a program acts on stay, each from a fixed vocabulary.
         masked = dict(body)
-        masked["details"] = {}
+        details = body.get("details") if isinstance(body.get("details"), dict) else {}
+        masked["details"] = {key: details[key] for key in _KEPT_DETAILS if key in details}
     if refusal:
         masked = _fold_refusal(masked, root)
     return json.dumps(masked, ensure_ascii=False, indent=indent, sort_keys=True)
@@ -1272,6 +1302,10 @@ def agent_refusal(refusal: MemoryForestError, root: str | os.PathLike[str]) -> d
     when the settings cannot be read for that, the details go.
     """
     return json.loads(_tool_text(_tool_body(refusal), root, drop_details=True, refusal=True))
+
+
+# The details a refusal keeps when its values cannot be masked: words of a fixed vocabulary, never a value.
+_KEPT_DETAILS = ("access", "kind", "state")
 
 
 def _tool_error(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dict[str, Any]:

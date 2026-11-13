@@ -27,7 +27,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
-from . import layout, numbers, registry
+from . import layout, numbers, registry, system
 from .errors import MemoryForestError
 from .locking import LockToken
 from .model import (
@@ -1515,8 +1515,10 @@ def run_operations(plan: Plan, operations: Iterable[Mapping[str, Any]]) -> list[
 def read_plan_file(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
     """A plan file: a JSON list of operations, or an object with ``operations``."""
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        data = json.loads(system.read_text(path))
+    except system.Outcome as exc:
+        refuse("plan_file_invalid", "The plan file cannot be read.", reason=exc.kind)
+    except ValueError as exc:
         refuse("plan_file_invalid", "The plan file is not readable JSON.", reason=exc.__class__.__name__)
     if isinstance(data, Mapping):
         data = data.get("operations")

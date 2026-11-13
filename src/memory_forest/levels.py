@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Final
 
-from . import agents, collections, layout, move, registry
+from . import agents, collections, layout, move, registry, system
 from .config import load_config
 from .errors import MemoryForestError
 from .locking import LockToken, writer_lock
@@ -353,7 +353,7 @@ def ensure_agent(root: str | os.PathLike[str], agent_id: str) -> bool:
     safe = require_real_root(root)
     if not agents.file_id_ok(agent_id):
         return False
-    if layout.resolve(safe, layout.tree_page(agent_id)).is_file():
+    if system.kind(layout.resolve(safe, layout.tree_page(agent_id))) == "file":
         return False
     config = load_config(safe)
     if config.agents.declared(agent_id) is None and not config.agents.auto_create:

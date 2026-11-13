@@ -101,7 +101,7 @@ class LaneMaskingTests(IntakeTestCase):
         search.build(root)
         with mock.patch.object(credentials, "MASKING_VERSION", "2"):
             old = credentials.fingerprint(load_config(root))
-        database = sqlite3.connect(search._index_path(root))
+        database = sqlite3.connect(root / search.index_relative(root))
         database.execute("UPDATE metadata SET value = ? WHERE key = 'masking'", (old,))
         database.commit()
         database.close()

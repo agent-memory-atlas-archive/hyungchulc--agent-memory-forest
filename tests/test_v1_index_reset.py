@@ -5,6 +5,7 @@ The bakery and the bots are invented. Nothing here is a real person, shop or tra
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -13,7 +14,7 @@ import sys
 from pathlib import Path
 from unittest import mock
 
-from memory_forest import search
+from memory_forest import search, system
 from memory_forest.errors import MemoryForestError
 
 from test_v1_find import FILES
@@ -61,14 +62,14 @@ class IndexResetTests(ForestTestCase):
 
     def test_a_removal_that_fails_after_the_pointer_moved_names_the_orphan(self) -> None:
         search.build(self.root)
-        original = Path.unlink
+        original = system.os.unlink
 
-        def fail(path: Path, *args: object, **kwargs: object) -> None:
-            if path.name == "index.sqlite":
-                raise OSError("busy")
+        def fail(path: object, *args: object, **kwargs: object) -> None:
+            if Path(path).name == "index.sqlite":
+                raise OSError(errno.EBUSY, "busy", str(path))
             original(path, *args, **kwargs)
 
-        with mock.patch.object(Path, "unlink", fail):
+        with mock.patch.object(system.os, "unlink", fail):
             result = search.reset(self.root)
         self.assertTrue(result["ok"])
         self.assertFalse(result["dry_run"])
@@ -89,11 +90,11 @@ class IndexResetTests(ForestTestCase):
             self.assertGreater(checked.execute("SELECT COUNT(*) FROM units").fetchone()[0], 0)
         finally:
             checked.close()
-        self.assertEqual(search._index_path(self.root), opened)
+        self.assertEqual(self.root / search.index_relative(self.root), opened)
 
     def test_a_reader_keeps_the_old_file_and_the_new_file_is_whole(self) -> None:
         search.build(self.root)
-        old_path = search._index_path(self.root)
+        old_path = self.root / search.index_relative(self.root)
         reader = sqlite3.connect(old_path)
         reader.execute("PRAGMA query_only = ON")
         before = reader.execute("SELECT text FROM units WHERE text LIKE '%trays%'").fetchone()
@@ -103,7 +104,7 @@ class IndexResetTests(ForestTestCase):
         with (self.root / TILL).open("a", encoding="utf-8") as handle:
             handle.write(_turn("till counted the quorn at the counter"))
         search.build(self.root)
-        new_path = search._index_path(self.root)
+        new_path = self.root / search.index_relative(self.root)
         self.assertNotEqual(new_path, old_path)
         self.assertEqual(
             reader.execute("SELECT text FROM units WHERE text LIKE '%trays%'").fetchone()[0], before[0]
@@ -146,7 +147,8 @@ class IndexResetTests(ForestTestCase):
         self.pointer.mkdir()
         with self.assertRaises(MemoryForestError) as refused:
             search.reset(self.root)
-        self.assertEqual(refused.exception.code, "index_reset_refused")
+        self.assertEqual(refused.exception.code, "index_cannot_open")
+        self.assertEqual(refused.exception.details["state"], "pointer_unusable")
         self.assertEqual(refused.exception.next_step, "report")
         self.assertEqual(self.index.read_bytes(), kept)
         self.pointer.rmdir()

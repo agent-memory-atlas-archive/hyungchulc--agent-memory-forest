@@ -13,6 +13,32 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- The disk is reached through one module, `system` (the door). Every call that looks, lists, opens,
+  reads, writes or locks answers one of eight outcomes (absent, denied, not a file, not a folder, link,
+  changed, busy, other), and the code decides on outcomes, not on the system's raw errors. The derived
+  folder's state is read as facts in one walk (`derived.read_facts`), decided by one pure function
+  (`derived.decide`) into one of 18 states, and told in claims kept as data; a test walks all 2,500
+  combinations of the facts and checks every claim of every decision. A forest folder that can be listed
+  but not entered, a `.forest` folder that cannot be entered or listed, a pointer this account cannot
+  read and an error the system did not name each have their own state and true sentences, the same from
+  every command, public function and MCP tool. An outcome no code decided on leaves as a refusal by its
+  kind (design, section 15.4), never as a traceback. In a folder this account cannot write, SQLite reads
+  the descriptor the door checked, through `/dev/fd/N` where the system names it; an index file that is
+  replaced or goes away between the door's look and SQLite's open, or while it is read, is `index_busy`
+  with `retry` in every folder, and so is an open that does not finish within 10 seconds.
+- The walk over the refusal codes follows a class derived from the refusal type at any depth (the
+  archive's two codes are in the table, with `report`), a method, a callback and a partial application,
+  and fails on a place it cannot follow; a next move is a literal or a listed set. `fix` and `run` are
+  proven by doing. A fault in a file of the owner's (a `forest.toml` that does not parse or is not a file,
+  a damaged phrase table, a damaged registry) is a `report` code of its own, apart from the code for the
+  caller's own wrong argument. `no_forest` is `fix` and names no folder; the four codes of the older
+  index carry `memory-forest index` with the forest the call named, and `not_initialized` is `report`.
+  One function reads a page path a caller gives, for the scope check and the read alike, so
+  `04 stm/bakery/./ovens//floor.md` is the reader's own page. The "When" column of `docs/refusals.md` is
+  generated from the code: every message a code's places can give, and the claims a state's code can
+  carry. The MCP server's instructions state the four moves, and the help of every command an agent runs
+  names `docs/refusals.md`. A time window that reaches past the year 9999 or before the year 1 is
+  `time_phrase_unknown` with `fix`, not `internal_error`.
 - The agent is its name. A group does not refuse a name for being near another, or for already being an
   agent somewhere else: the same name is the same agent, one lane and one tree, and where the turn came
   from stays on the turn. An open group admits every new name. A closed group lists its members and the
@@ -49,8 +75,9 @@ the version 1 commands replace it.
   word index, a read of each table for the columns the code selects), every object of the schema is
   there, and every table that held rows at the last commit still holds one. The schema is now 4.
 - An internal protocol code never leaves a public function. The index file, the pointer, a page and a
-  lane file are opened first, without following a link and without blocking, and then checked; a
-  file that goes away between two steps is `index_busy`.
+  lane file are opened first, without following a link and without blocking, and then checked; an
+  index file that goes away or is replaced between the door's look and SQLite's open is `index_busy`
+  with `retry`, in a folder this account can write and in one it cannot.
 - Two processes that take their first lock at once both get the lock folder.
 - A test no longer stops a real process with an environment variable. A child that must stand at
   a point is started from a launcher under `tests/` that replaces the function, and every wait on a

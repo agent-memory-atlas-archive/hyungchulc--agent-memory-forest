@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import system
 from .errors import MemoryForestError
 
 
@@ -468,7 +469,7 @@ def _error(key: str, message: str, source: str | None) -> MemoryForestError:
     details: dict[str, Any] = {"key": key}
     if source:
         details["source"] = source
-    return MemoryForestError("config_invalid", f"{key}: {message}", details=details)
+    return MemoryForestError("settings_invalid", f"forest.toml: {key}: {message}", details=details, next_step="report")
 
 
 def _string(key: str, value: Any, source: str | None) -> str:
@@ -774,9 +775,10 @@ def parse_config(text: str, *, source: str | None = None) -> Config:
         raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise MemoryForestError(
-            "config_invalid",
+            "settings_invalid",
             f"forest.toml is not valid TOML: {exc}",
             details={"source": source} if source else None,
+            next_step="report",
         ) from exc
     sections: dict[str, Any] = {}
     for name, value in raw.items():
@@ -791,32 +793,61 @@ def config_path(root: str | os.PathLike[str]) -> Path:
 
 
 def load_config(root: str | os.PathLike[str]) -> Config:
-    """The settings of the forest at ``root``; the defaults when it has no ``forest.toml``."""
+    """The settings of the forest at ``root``; the defaults when it has no ``forest.toml``.
+
+    A ``forest.toml`` that is a link, not a regular file, larger than any settings file needs to be, not
+    UTF-8 or not valid settings is ``settings_invalid``: the owner's file, so the next move is ``report``.
+    Any other answer of the door is raised as it is.
+    """
     path = config_path(root)
     try:
-        info = path.lstat()
-    except FileNotFoundError:
+        data = system.read_bytes(path, limit=MAX_CONFIG_BYTES + 1)
+    except system.Absent:
         return DEFAULT_CONFIG
-    if not path.is_file() or path.is_symlink():
+    except system.Link as exc:
         raise MemoryForestError(
-            "config_invalid",
-            "forest.toml must be a regular file, never a symlink.",
-            details={"source": str(path)},
-        )
-    if info.st_size > MAX_CONFIG_BYTES:
+            "settings_invalid",
+            "forest.toml is a link; the forest's settings are a regular file, never a link.",
+            details={"source": CONFIG_FILENAME},
+            next_step="report",
+        ) from exc
+    except system.NotAFile as exc:
         raise MemoryForestError(
-            "config_invalid",
+            "settings_invalid",
+            f"forest.toml is a {exc.found}, not a regular file." if exc.found else "forest.toml is not a regular file.",
+            details={"source": CONFIG_FILENAME},
+            next_step="report",
+        ) from exc
+    return settings_from_bytes(data, source=str(path))  # the ledger is found beside the settings it came from
+
+
+def settings_from_bytes(data: bytes, *, source: str) -> Config:
+    """The settings a ``forest.toml`` holds. Too large, not UTF-8 or not valid settings is ``settings_invalid``."""
+    if len(data) > MAX_CONFIG_BYTES:
+        raise MemoryForestError(
+            "settings_invalid",
             "forest.toml is larger than any settings file needs to be.",
-            details={"source": str(path), "size": info.st_size},
+            details={"source": source},
+            next_step="report",
         )
-    return parse_config(path.read_text(encoding="utf-8"), source=str(path))
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MemoryForestError(
+            "settings_invalid",
+            "forest.toml is not UTF-8 text.",
+            details={"source": source},
+            next_step="report",
+        ) from exc
+    return parse_config(text, source=source)
 
 
 def find_root(start: str | os.PathLike[str]) -> Path | None:
-    """The nearest folder at or above ``start`` that holds a ``forest.toml``."""
-    current = Path(os.path.abspath(start))
+    """The nearest folder at or above ``start`` that holds a ``forest.toml`` (a file, not a link)."""
+    current = system.absolute(start)
     for folder in (current, *current.parents):
-        if (folder / CONFIG_FILENAME).is_file():
+        found = system.look_or_none(folder / CONFIG_FILENAME)
+        if found is not None and found.kind == "file":
             return folder
     return None
 

@@ -907,6 +907,16 @@ class ReviewPathTests(ForestTestCase):
             )
         self.assertEqual(code, 2)
         self.assertIn("time_phrase_unknown", out.getvalue())
+        # A window past the calendar's ends is the caller's phrase to correct, not a fault of the code.
+        for phrase in ("9999-12-31", "2051-03-01..9999-12-31", "the last 1000000 days", "the last 999999999 days"):
+            out = StringIO()
+            with redirect_stdout(out), redirect_stderr(error):
+                code = forest_main(["timeline", "query", phrase, "--as", "front-desk", "--root", str(self.root), "--json"])
+            with self.subTest(phrase=phrase):
+                self.assertEqual(code, 2)
+                answer = json.loads(out.getvalue())["error"]
+                self.assertEqual((answer["code"], answer["next"]), ("time_phrase_unknown", "fix"), answer)
+                self.assertIn("past the year 9999", answer["message"])
         with _stdio(self.root) as proc:
             _rpc(proc, _initialize("2025-11-25"))
             for phrase in ("2051-02-30", "2051-03-01T25:00"):

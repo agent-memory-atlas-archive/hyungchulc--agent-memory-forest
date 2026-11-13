@@ -114,8 +114,10 @@ number, the setting that holds it is given with its default.
     causal episodes per request or run, keeping every failure and every change and closing routine
     repeats with exact pointers into `06 istm`. The only changes it makes to quoted text are removing
     secrets, leaving out binary data and making control characters safe.
-  - The lanes are not forest. They create no derived state: no search index, no embeddings, no audit. A
-    lane has its own retention, outside this contract.
+  - The lanes are not forest. The search index holds their turns beside the forest's pages, with their
+    vectors when an embedding provider is registered, so a search or a timeline read reaches the hours not
+    yet filed. Nothing else is derived from a lane: no audit, no state of its own. A lane has its own
+    retention, outside this contract.
 - Material moves up from the bottom, `06 istm → 05 daily → 04 stm → 03 mtm → 02 ltm → 01 xltm`, and is
   placed from the top, `01 xltm → 02 ltm → 03 mtm → 04 stm`: the root index says which tree a subject
   belongs to, the tree's index says which branch, and the branch says which leaf.
@@ -1217,3 +1219,7 @@ words and the date.
   lines; what goes up; the update record with its trim and archive; the move log; the lint with codes and
   baselines; notices, episodes, open points, "do not record" and number masking; and agent trees with
   two filing policies, reader scopes and a single writer.
+- **1.0.0 (unreleased), the lanes in the index.** The sentence on the lanes said they create no derived
+  state: no search index, no embeddings, no audit. The search index holds their turns, and their vectors
+  when an embedding provider is registered, so a search or a timeline read reaches the hours not yet
+  filed. The sentence now says so.

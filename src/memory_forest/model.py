@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Final
 
+from . import system
 from .errors import MemoryForestError
 
 
@@ -639,8 +640,7 @@ def parse_page(text: str) -> Page:
 
 
 def read_page(path: str | Path) -> Page:
-    with open(path, "r", encoding="utf-8", newline="") as handle:
-        return parse_page(handle.read())
+    return parse_page(system.read_text(path))
 
 
 # ─────────────────────────────── spans and links ───────────────────────────────

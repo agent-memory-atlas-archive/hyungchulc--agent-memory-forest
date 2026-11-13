@@ -48,7 +48,7 @@ from itertools import combinations
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
-from . import layout
+from . import layout, system
 from .locking import LockToken
 from .model import CODE_SPAN_RE, RECORD_SECTION, Page, ReferenceLine, parse_page, split_line_ending
 from .plan import LINKS_SECTION, Plan, refuse, run
@@ -111,8 +111,8 @@ def ledger_path(root: str | os.PathLike[str]) -> Path:
 def judged(root: str | os.PathLike[str]) -> set[tuple[str, str]]:
     """(subject, line digest) of every judged line; a row that cannot be read judges nothing."""
     try:
-        text = ledger_path(root).read_text(encoding="utf-8")
-    except FileNotFoundError:
+        text = system.read_text(ledger_path(root))
+    except system.Absent:
         return set()
     found = set()
     for raw in text.splitlines():
@@ -286,8 +286,10 @@ def read_decisions(path: str | os.PathLike[str] | None) -> list[Decision]:
     if path is None:
         return []
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        data = json.loads(system.read_text(path))
+    except system.Outcome as exc:
+        refuse("decisions_invalid", "The decisions file cannot be read.", reason=exc.kind)
+    except ValueError as exc:
         refuse("decisions_invalid", "The decisions file is not readable JSON.", reason=exc.__class__.__name__)
     if isinstance(data, Mapping):
         data = data.get("decisions")

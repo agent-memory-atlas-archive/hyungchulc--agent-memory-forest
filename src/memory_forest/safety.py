@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import os
 import re
-import stat
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from . import system
 from .errors import MemoryForestError
 
 
@@ -71,11 +71,11 @@ class ScanResult:
 
 
 def _absolute_lexical(path: str | os.PathLike[str]) -> Path:
-    return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
+    return system.absolute(path)
 
 
 def _assert_real(path: Path, *, code: str = "symlink_forbidden") -> None:
-    real = Path(os.path.realpath(path))
+    real = system.real_path(path)
     if real != path:
         raise MemoryForestError(
             code,
@@ -86,16 +86,9 @@ def _assert_real(path: Path, *, code: str = "symlink_forbidden") -> None:
 
 def prepare_new_root(path: str | os.PathLike[str]) -> tuple[Path, bool]:
     candidate = _absolute_lexical(path)
-    if os.path.lexists(candidate):
-        try:
-            info = candidate.lstat()
-        except FileNotFoundError as exc:
-            raise MemoryForestError(
-                "unsafe_root",
-                "The forest root changed while it was being inspected.",
-                details={"path": str(candidate)},
-            ) from exc
-        if stat.S_ISLNK(info.st_mode):
+    info = system.look_or_none(candidate)
+    if info is not None:
+        if info.kind == "link":
             raise MemoryForestError(
                 "symlink_forbidden",
                 "The selected forest root may not be a symlink.",
@@ -103,7 +96,10 @@ def prepare_new_root(path: str | os.PathLike[str]) -> tuple[Path, bool]:
             )
         return require_real_root(candidate), True
     parent = candidate.parent
-    if not parent.exists() or not parent.is_dir():
+    parent_info = system.look_or_none(parent)
+    if parent_info is not None and parent_info.kind == "link":
+        parent_info = system.look_or_none(system.real_path(parent))
+    if parent_info is None or parent_info.kind != "folder":
         raise MemoryForestError(
             "missing_parent",
             "The forest root requires an existing real parent directory.",
@@ -116,27 +112,28 @@ def prepare_new_root(path: str | os.PathLike[str]) -> tuple[Path, bool]:
 def require_real_root(path: str | os.PathLike[str]) -> Path:
     root = _absolute_lexical(path)
     try:
-        info = root.lstat()
-    except FileNotFoundError as exc:
+        info = system.look(root)
+    except system.Absent as exc:
         raise MemoryForestError(
             "root_not_found",
             "The selected forest root does not exist.",
             details={"path": str(root)},
         ) from exc
-    if stat.S_ISLNK(info.st_mode):
+    if info.kind == "link":
         raise MemoryForestError(
             "symlink_forbidden",
             "The selected forest root may not be a symlink.",
             details={"path": str(root)},
         )
-    if not stat.S_ISDIR(info.st_mode):
+    if info.kind != "folder":
         raise MemoryForestError(
             "root_not_directory",
             "The selected forest root is not a directory.",
             details={"path": str(root)},
         )
     _assert_real(root)
-    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+    account = system.account_id()
+    if account is not None and info.uid != account:
         raise MemoryForestError(
             "root_not_owned",
             "The selected forest root must be owned by the current user.",
@@ -158,14 +155,14 @@ def ensure_inside(root: Path, path: Path, *, must_exist: bool = True) -> Path:
         ) from exc
     if must_exist:
         try:
-            info = candidate.lstat()
-        except FileNotFoundError as exc:
+            info = system.look(candidate)
+        except system.Absent as exc:
             raise MemoryForestError(
                 "path_not_found",
                 "The requested path does not exist.",
                 details={"path": str(candidate)},
             ) from exc
-        if stat.S_ISLNK(info.st_mode):
+        if info.kind == "link":
             raise MemoryForestError(
                 "symlink_forbidden",
                 "Symlinks are not allowed inside a Memory Forest.",
@@ -213,9 +210,8 @@ def safe_join(
     current = safe_root
     for position, part in enumerate(parts):
         current = current / part
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
+        info = system.look_or_none(current)
+        if info is None:
             if must_exist:
                 raise MemoryForestError(
                     "path_not_found",
@@ -223,20 +219,20 @@ def safe_join(
                     details={"path": text},
                 ) from None
             return safe_root.joinpath(*parts)
-        if stat.S_ISLNK(info.st_mode):
+        if info.kind == "link":
             raise MemoryForestError(
                 "symlink_forbidden",
                 "Symlinks are not allowed inside a Memory Forest.",
                 details={"path": "/".join(parts[: position + 1])},
             )
         last = position == len(parts) - 1
-        if not last and not stat.S_ISDIR(info.st_mode):
+        if not last and info.kind != "folder":
             raise MemoryForestError(
                 "invalid_path",
                 "A forest path runs through something that is not a directory.",
                 details={"path": "/".join(parts[: position + 1])},
             )
-        if last and not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+        if last and info.kind not in ("folder", "file"):
             raise MemoryForestError(
                 "non_regular_file",
                 "Only regular files and directories are allowed in a forest.",
@@ -252,48 +248,30 @@ def secure_mkdir(path: Path, *, mode: int = 0o700) -> bool:
     that must leave an existing mode alone uses ``layout.ensure_folder``.
     """
     try:
-        path.mkdir(mode=mode)
-    except FileExistsError:
-        info = path.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise MemoryForestError(
-                "unsafe_existing_path",
-                "An expected directory exists as a symlink or non-directory.",
-                details={"path": str(path)},
-            )
-        os.chmod(path, mode, follow_symlinks=False)
-        return False
-    os.chmod(path, mode, follow_symlinks=False)
-    return True
+        made = system.make_folder(path, mode=mode)
+    except (system.Link, system.NotAFolder) as exc:
+        found = "a link" if isinstance(exc, system.Link) else "not a folder"
+        raise MemoryForestError(
+            "unsafe_existing_path",
+            f"An expected folder is {found}.",
+            details={"path": str(path)},
+        ) from exc
+    if not made:
+        system.set_mode(path, mode)
+    return made
 
 
 def secure_create_file(path: Path, data: bytes, *, mode: int = 0o600) -> bool:
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow
-    try:
-        descriptor = os.open(path, flags, mode)
-    except FileExistsError:
-        info = path.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            raise MemoryForestError(
-                "unsafe_existing_path",
-                "An expected file exists as a symlink or non-file.",
-                details={"path": str(path)},
-            )
-        return False
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except Exception:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-    os.chmod(path, mode, follow_symlinks=False)
-    return True
+    if system.create_new(path, data, mode=mode):
+        return True
+    info = system.look(path)
+    if info.kind != "file":
+        raise MemoryForestError(
+            "unsafe_existing_path",
+            "An expected file is a link." if info.kind == "link" else f"An expected file is a {info.kind}.",
+            details={"path": str(path)},
+        )
+    return False
 
 
 def scan_forest(
@@ -308,42 +286,39 @@ def scan_forest(
 
     def visit(directory: Path, *, depth: int) -> None:
         nonlocal total_bytes
+        entry_limit = (
+            limits.max_files
+            - len(files)
+            + limits.max_directories
+            - len(directories)
+            + (1 if directory == safe_root else 0)
+        )
         try:
-            entries: list[os.DirEntry[str]] = []
-            entry_limit = (
-                limits.max_files
-                - len(files)
-                + limits.max_directories
-                - len(directories)
-                + (1 if directory == safe_root else 0)
-            )
-            with os.scandir(directory) as iterator:
-                for entry in iterator:
-                    entries.append(entry)
-                    if len(entries) > entry_limit:
-                        raise MemoryForestError(
-                            "directory_entry_count_exceeded",
-                            "A forest directory exceeds the remaining traversal budget.",
-                            details={"limit": entry_limit},
-                        )
-            entries.sort(key=lambda item: item.name)
-        except OSError as exc:
+            entries = system.listing(directory, looks=True)
+        except system.Outcome as exc:
             raise MemoryForestError(
                 "scan_failed",
                 "A forest directory could not be scanned.",
-                details={"path": str(directory), "reason": exc.__class__.__name__},
+                details={"path": str(directory), "reason": exc.kind},
             ) from exc
+        if len(entries) > entry_limit:
+            raise MemoryForestError(
+                "directory_entry_count_exceeded",
+                "A forest directory exceeds the remaining traversal budget.",
+                details={"limit": entry_limit},
+            )
         for entry in entries:
-            path = Path(entry.path)
+            path = entry.path
             relative = path.relative_to(safe_root).as_posix()
-            info = entry.stat(follow_symlinks=False)
-            if stat.S_ISLNK(info.st_mode):
+            info = entry.look
+            assert info is not None
+            if info.kind == "link":
                 raise MemoryForestError(
                     "symlink_forbidden",
                     "Symlinks are not allowed inside a Memory Forest.",
                     details={"path": relative},
                 )
-            if stat.S_ISDIR(info.st_mode):
+            if info.kind == "folder":
                 if path.parent == safe_root and entry.name == STATE_DIRECTORY:
                     _validate_state_directory(path)
                     continue
@@ -362,7 +337,7 @@ def scan_forest(
                     ScannedDirectory(
                         path=path,
                         relative=relative,
-                        mode=stat.S_IMODE(info.st_mode),
+                        mode=info.mode,
                     )
                 )
                 if len(directories) > limits.max_directories:
@@ -376,32 +351,32 @@ def scan_forest(
                     )
                 visit(path, depth=child_depth)
                 continue
-            if not stat.S_ISREG(info.st_mode):
+            if info.kind != "file":
                 raise MemoryForestError(
                     "non_regular_file",
                     "Only regular files and directories are allowed in a forest.",
                     details={"path": relative},
                 )
-            if info.st_size > limits.max_file_bytes:
+            if info.size > limits.max_file_bytes:
                 raise MemoryForestError(
                     "file_too_large",
                     "A forest file exceeds the configured per-file byte limit.",
                     details={
                         "limit": limits.max_file_bytes,
                         "path": relative,
-                        "size": info.st_size,
+                        "size": info.size,
                     },
                 )
             files.append(
                 ScannedFile(
                     path=path,
                     relative=relative,
-                    mode=stat.S_IMODE(info.st_mode),
-                    size=info.st_size,
-                    mtime_ns=info.st_mtime_ns,
+                    mode=info.mode,
+                    size=info.size,
+                    mtime_ns=info.mtime_ns,
                 )
             )
-            total_bytes += info.st_size
+            total_bytes += info.size
             if len(files) > limits.max_files:
                 raise MemoryForestError(
                     "file_count_exceeded",
@@ -425,8 +400,8 @@ def scan_forest(
 
 
 def _validate_state_directory(state: Path) -> None:
-    info = state.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+    info = system.look(state)
+    if info.kind != "folder":
         raise MemoryForestError(
             "unsafe_state_directory",
             "The derived-state path must be a real directory.",
@@ -434,17 +409,12 @@ def _validate_state_directory(state: Path) -> None:
         )
     _assert_real(state)
     allowed = {"forest.json", "index.sqlite3", RECEIPTS_DIRECTORY}
-    with os.scandir(state) as iterator:
-        entries = list(iterator)
-    for entry in entries:
-        child = Path(entry.path)
-        child_info = entry.stat(follow_symlinks=False)
+    for entry in system.listing(state):
+        child = entry.path
         if entry.name == RECEIPTS_DIRECTORY:
             _validate_receipts_directory(child)
             continue
-        if entry.name not in allowed or stat.S_ISLNK(child_info.st_mode) or not stat.S_ISREG(
-            child_info.st_mode
-        ):
+        if entry.name not in allowed or entry.kind != "file":
             raise MemoryForestError(
                 "unsafe_state_entry",
                 "Derived state may contain only known files and receipts.",
@@ -453,12 +423,8 @@ def _validate_state_directory(state: Path) -> None:
 
 
 def _validate_receipts_directory(receipts: Path) -> None:
-    info = receipts.lstat()
-    if (
-        stat.S_ISLNK(info.st_mode)
-        or not stat.S_ISDIR(info.st_mode)
-        or stat.S_IMODE(info.st_mode) != 0o700
-    ):
+    info = system.look(receipts)
+    if info.kind != "folder" or info.mode != 0o700:
         raise MemoryForestError(
             "unsafe_receipts_directory",
             "The receipts directory must be a real private directory.",
@@ -466,9 +432,7 @@ def _validate_receipts_directory(receipts: Path) -> None:
         )
     _assert_real(receipts)
     count = 0
-    with os.scandir(receipts) as iterator:
-        entries = list(iterator)
-    for entry in entries:
+    for entry in system.listing(receipts, looks=True):
         count += 1
         if count > MAX_RECEIPTS:
             raise MemoryForestError(
@@ -476,14 +440,14 @@ def _validate_receipts_directory(receipts: Path) -> None:
                 "The receipts directory exceeds the supported entry limit.",
                 details={"limit": MAX_RECEIPTS},
             )
-        child = Path(entry.path)
-        child_info = entry.stat(follow_symlinks=False)
+        child = entry.path
+        child_info = entry.look
+        assert child_info is not None
         if (
             RECEIPT_NAME_RE.fullmatch(entry.name) is None
-            or stat.S_ISLNK(child_info.st_mode)
-            or not stat.S_ISREG(child_info.st_mode)
-            or stat.S_IMODE(child_info.st_mode) != 0o600
-            or child_info.st_size > MAX_RECEIPT_BYTES
+            or child_info.kind != "file"
+            or child_info.mode != 0o600
+            or child_info.size > MAX_RECEIPT_BYTES
         ):
             raise MemoryForestError(
                 "unsafe_receipt_entry",
@@ -496,8 +460,10 @@ def secure_state_directory(root: str | os.PathLike[str]) -> Path:
     safe_root = require_real_root(root)
     state = safe_root / STATE_DIRECTORY
     try:
-        state.mkdir(mode=0o700)
-    except FileExistsError:
+        made = system.make_folder(state, mode=0o700)
+    except (system.Link, system.NotAFolder):
+        made = False
+    if not made:
         _validate_state_directory(state)
-    os.chmod(state, 0o700, follow_symlinks=False)
+    system.set_mode(state, 0o700)
     return state

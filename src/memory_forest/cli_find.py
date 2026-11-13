@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from typing import Any
 
-from .cli import ForestCommand, _print_json, _print_lines, arg, forest_root
+from .cli import ForestCommand, _print_json, _print_lines, _shown, arg, forest_root
 from .config import load_config
 from . import groups, intake, mcp, search, timeline
 from .errors import MemoryForestError
@@ -263,17 +264,18 @@ def cmd_log(arguments: Any) -> int:
         door="cli",
         group=getattr(arguments, "group", None) or "",
     )
+    # The turn is written: an answer that cannot be masked keeps its fixed words, never a refusal.
+    try:
+        shown = _shown(body)
+    except (MemoryForestError, OSError) as exc:
+        shown = mcp.withheld(body, exc)
     if arguments.json:
-        _print_json(body)
+        sys.stdout.write(json.dumps(shown, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
         return 0
-    lines = [
-        f"path: {body['path']}",
-        f"wrote: {str(body['wrote']).lower()}",
-        f"indexed: {str(body['indexed']).lower()}",
-    ]
-    if body.get("reason"):
-        lines.append(f"reason: {body['reason']}")
-    _print_lines(lines)
+    lines = [f"path: {shown['path']}"] if "path" in shown else []
+    lines += [f"wrote: {str(shown['wrote']).lower()}", f"indexed: {str(shown['indexed']).lower()}"]
+    lines += [f"{key}: {shown[key]}" for key in ("reason", "withheld") if shown.get(key)]
+    sys.stdout.write("\n".join(lines) + "\n")
     return 0
 
 
@@ -360,6 +362,11 @@ _CALLER = arg("--agent", dest="caller", default=None, help="the caller's own nam
 _NAMED = arg("--named", action="append", default=None, help="an agent this task names; refused on an agent's door")
 _SOURCE = arg("--source", default=None, help="one group or tool of this agent's turns")
 _LIMIT = arg("--limit", type=int, default=10, help="how many pages to return")
+# The help of every command an agent runs names the table of refusals and their next moves.
+_REFUSALS = (
+    "A refusal names its next move in next: fix, retry, run or report. docs/refusals.md lists every code, "
+    "its move and when it is given."
+)
 
 COMMANDS: list[ForestCommand] = [
     ForestCommand(
@@ -392,6 +399,7 @@ COMMANDS: list[ForestCommand] = [
         cmd_search,
         "Find pages: registry names and aliases first, then words, then vectors when a provider is registered.",
         (arg("words", help="the words to look for"), _READER, _GROUP, _CALLER, _NAMED, _SOURCE, _LIMIT),
+        epilog=_REFUSALS,
     ),
     ForestCommand(
         ("read",),
@@ -406,6 +414,7 @@ COMMANDS: list[ForestCommand] = [
             _NAMED,
             _SOURCE,
         ),
+        epilog=_REFUSALS,
     ),
     ForestCommand(
         ("timeline", "query"),
@@ -420,6 +429,7 @@ COMMANDS: list[ForestCommand] = [
             _SOURCE,
             arg("--limit", type=int, default=50, help="how many pages to return"),
         ),
+        epilog=_REFUSALS,
     ),
     ForestCommand(
         ("timeline", "subject"),
@@ -434,6 +444,7 @@ COMMANDS: list[ForestCommand] = [
             _SOURCE,
             arg("--limit", type=int, default=50, help="how many pages to return"),
         ),
+        epilog=_REFUSALS,
     ),
     ForestCommand(
         ("navigate",),
@@ -445,6 +456,7 @@ COMMANDS: list[ForestCommand] = [
             _GROUP,
             _CALLER,
         ),
+        epilog=_REFUSALS,
     ),
     ForestCommand(
         ("log",),
@@ -465,6 +477,7 @@ COMMANDS: list[ForestCommand] = [
             _GROUP,
             _CALLER,
         ),
+        epilog=_REFUSALS,
     ),
     ForestCommand(
         ("agents",),
@@ -482,5 +495,6 @@ COMMANDS: list[ForestCommand] = [
             arg("--as-group", dest="group", default=None, help="one connection shared by the agents of this group"),
             arg("--http", default=None, help="PORT, or HOST:PORT. PORT alone binds to loopback"),
         ),
+        epilog=_REFUSALS,
     ),
 ]

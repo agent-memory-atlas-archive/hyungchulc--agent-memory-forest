@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import re
 import subprocess
 import sys
@@ -253,9 +254,12 @@ class ForestRootTests(ForestTestCase):
         result = forest("registry", "build", "--root", str(folder), cwd=folder)
         self.assertNotEqual(result.returncode, 0)
         text = result.stderr.decode()
-        self.assertIn("No forest.toml", text)
-        self.assertIn(f"forest init {folder}", text)
-        self.assertIn("--root", text)
+        self.assertIn(f"No forest.toml in {shlex.quote(str(folder))}.", text)
+        # Only the caller knows which folder holds its forest: the refusal names the flag, never a command
+        # with a folder filled in.
+        self.assertIn("Name the forest's folder with `--root <folder>`", text)
+        self.assertIn("`forest init <folder>` makes a new forest in an empty folder", text)
+        self.assertNotIn(f"forest init {folder}", text)
         self.assertEqual(list(folder.iterdir()), [])
         as_json = forest("registry", "build", "--root", str(folder), "--json", cwd=folder)
         self.assertNotEqual(as_json.returncode, 0)

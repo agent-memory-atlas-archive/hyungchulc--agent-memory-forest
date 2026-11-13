@@ -14,7 +14,7 @@ from datetime import date
 from functools import cached_property
 from pathlib import Path
 
-from . import layout
+from . import layout, system
 from . import registry as forest_registry
 from .config import Config, load_config
 from .errors import MemoryForestError
@@ -70,8 +70,7 @@ def section_start(page: Page, name: str) -> int | None:
 
 def read_text(path: Path) -> str:
     """A page's text; a byte that is not UTF-8 is kept as a surrogate, so it is written back unchanged."""
-    with open(path, "rb") as handle:
-        return handle.read().decode("utf-8", "surrogateescape")
+    return system.read_text(path, errors="surrogateescape")
 
 
 def updated_date(page: Page) -> date | None:
@@ -112,7 +111,7 @@ class ForestView:
 
     def exists(self, path: str) -> bool:
         try:
-            return layout.resolve(self.root, path).exists()
+            return system.look_or_none(layout.resolve(self.root, path)) is not None
         except MemoryForestError:  # an escape or a symlink names nothing in the forest
             return False
 
@@ -158,7 +157,7 @@ class ForestView:
         if not layout.is_forest_path(page_path) or not page_path.endswith(".md") or not self.exists(page_path):
             there = False
         else:
-            there = layout.resolve(self.root, page_path).is_file()
+            there = system.kind(layout.resolve(self.root, page_path)) == "file"
         page_date = updated_date(self.page(page_path)) if there else None
         if not mark or not entry_id or layout.page_role(page_path) is not layout.PageRole.COLLECTION_PAGE:
             return ("page", page_date) if there else ("gone", None)

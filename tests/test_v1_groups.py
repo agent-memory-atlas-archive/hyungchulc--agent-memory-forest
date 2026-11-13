@@ -163,7 +163,7 @@ class GroupResolutionTests(ForestTestCase):
             sorted((row["id"], row["name"]) for row in listed),
             [("kiln-bot", "Kiln Bot"), ("ledger-bot", "Ledger Bot")],
         )
-        self.assertEqual(stranger.exception.next_step, "retry")
+        self.assertEqual(stranger.exception.next_step, "fix")
         self.assertNotIn("Pass agent", stranger.exception.message)
         self.assertEqual((root / "forest.toml").read_bytes(), before)
 
@@ -394,7 +394,7 @@ class GroupConnectionTests(ForestTestCase):
         self.assertTrue(stranger["result"]["isError"])
         body = _tool_body(stranger)
         self.assertEqual(body["code"], "agent_not_in_group")
-        self.assertEqual(body["next"], "retry")
+        self.assertEqual(body["next"], "fix")
         self.assertIn("till-bot", json.dumps(body["details"]))
         self.assertIn("Till Bot", json.dumps(body["details"]))
 

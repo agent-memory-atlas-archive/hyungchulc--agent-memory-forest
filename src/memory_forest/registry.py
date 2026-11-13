@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
-from . import layout
+from . import layout, system
 from .config import Config, load_config
 from .errors import MemoryForestError
 from .locking import atomic_write
@@ -152,9 +152,7 @@ def about_state(value: str | list[str] | None) -> str:
 
 
 def _read(root: Path, relative: str) -> str:
-    path = layout.resolve(root, relative)
-    with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
-        return handle.read()
+    return system.read_text(layout.resolve(root, relative), errors="replace")
 
 
 def _numbered_items(page: Page, section_name: str) -> list[tuple[int, str]]:
@@ -418,7 +416,7 @@ def build(root: str | os.PathLike[str], *, config: Config | None = None) -> Regi
         reason = home_problem(subject)
         if reason is not None:
             problems.append(Problem("registry_line_invalid", index, number, reason))
-        elif not layout.resolve(safe_root, line.home).is_file():
+        elif system.kind(layout.resolve(safe_root, line.home)) != "file":
             problems.append(Problem("registry_home_missing", index, number, f"the home `{line.home}` is not there"))
         entities[line.id] = subject
         reason = masked_name_problem((line.id, line.name, *line.aliases), settings)
@@ -579,8 +577,7 @@ def _board_pointers(root: Path, subject: Mapping[str, Any]) -> list[str]:
         return []
     pointers: list[str] = []
     for board in boards:
-        path = layout.resolve(root, board)
-        if not path.is_file():
+        if system.kind(layout.resolve(root, board)) != "file":
             continue
         page = parse_page(_read(root, board))
         for _number, line in _numbered_items(page, POINTERS_SECTION):
@@ -588,7 +585,10 @@ def _board_pointers(root: Path, subject: Mapping[str, Any]) -> list[str]:
             if found is None:
                 continue
             target = found["text"].strip()
-            if target not in pointers and layout.is_forest_path(target) and layout.resolve(root, target).is_file():
+            if (
+                target not in pointers and layout.is_forest_path(target)
+                and system.kind(layout.resolve(root, target)) == "file"
+            ):
                 pointers.append(target)
     return pointers
 
@@ -837,12 +837,20 @@ def load(root: str | os.PathLike[str], *, build_if_missing: bool = True) -> Regi
     """The registry of ``.forest/registry.json``; compiled from the pages when there is none yet."""
     safe_root = require_real_root(root)
     path = layout.registry_path(safe_root)
-    if not path.is_file():
+    try:
+        text = system.read_text(path)
+    except system.Absent:
         if build_if_missing:
             return build(safe_root)
         raise MemoryForestError("registry_missing", "The forest has no compiled registry; run `forest registry build`.")
+    except (system.Link, system.NotAFile) as exc:
+        raise MemoryForestError(
+            "registry_unreadable",
+            "The registry file is not a regular file; the owner removes what stands in its place.",
+            details={"found": exc.found or exc.kind}, next_step="report",
+        ) from exc
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(text)
     except ValueError as exc:
         raise MemoryForestError("registry_invalid", "The registry file is not JSON; rebuild it.") from exc
     if not isinstance(data, dict):

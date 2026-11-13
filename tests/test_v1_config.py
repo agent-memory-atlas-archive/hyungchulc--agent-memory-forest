@@ -67,7 +67,7 @@ class ConfigTests(ForestTestCase):
             with self.subTest(key=key):
                 with self.assertRaises(MemoryForestError) as caught:
                     parse_config(text)
-                self.assertEqual(caught.exception.code, "config_invalid")
+                self.assertEqual(caught.exception.code, "settings_invalid")
                 self.assertEqual(caught.exception.details["key"], key)
                 self.assertIn(key, caught.exception.message)
 

@@ -6,7 +6,10 @@ Nothing here names a person or a forest.
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -15,7 +18,10 @@ import unittest
 from pathlib import Path
 
 import memory_forest
-from memory_forest import errors, search
+from memory_forest import cli, derived, errors, mcp, search
+
+import codes_walk
+from test_v1_door import agent_commands
 
 
 PACKAGE = Path(memory_forest.__file__).resolve().parent
@@ -69,206 +75,289 @@ class PackageRuleTests(unittest.TestCase):
 
 # ─────────────────────────── the codes that can leave ───────────────────────────
 
-# A raise whose code is not a literal and is not a parameter or a local the walk can follow. Each entry
-# says the set of values the code can take there.
-NON_LITERAL = {
-    ("search.py", "index_error"): lambda: {code for code, _message in search._PERSON_MESSAGES.values()},
-    ("search.py", "_open_regular"): lambda: {code for code, _message in search._PERSON_MESSAGES.values()},
-}
+
+def _trees(**sources: str) -> dict[str, ast.Module]:
+    """Made-up modules for the walk: ``{"name.py": source}``, with the refusal type defined in errors.py."""
+    base = {"errors.py": "class MemoryForestError(Exception):\n    pass\n"}
+    return {name: ast.parse(text) for name, text in {**base, **sources}.items()}
 
 
-class _Unresolved(Exception):
-    pass
-
-
-class _Package:
-    """Every module's syntax tree, each node's function, and the imports that bring a name in."""
-
-    def __init__(self) -> None:
-        self.trees = dict(modules())
-        self.owner: dict[tuple[str, int], ast.AST] = {}
-        self.functions: dict[str, list[tuple[str, ast.FunctionDef]]] = {}
-        self.imported: dict[str, set[tuple[str, str]]] = {}
-        for name, tree in self.trees.items():
-            imports: set[tuple[str, str]] = set()
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    self.functions.setdefault(node.name, []).append((name, node))
-                    for child in ast.walk(node):
-                        self.owner[(name, id_of(child))] = node
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    for alias in node.names:
-                        imports.add((node.module.split(".")[-1], alias.asname or alias.name))
-            self.imported[name] = imports
-
-    def enclosing(self, module: str, node: ast.AST) -> ast.FunctionDef | None:
-        return self.owner.get((module, id_of(node)))  # type: ignore[return-value]
-
-    def values(self, module: str, node: ast.expr, depth: int = 0) -> set[str]:
-        if depth > 5:
-            raise _Unresolved("too deep")
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return {node.value}
-        if isinstance(node, ast.IfExp):
-            return self.values(module, node.body, depth + 1) | self.values(module, node.orelse, depth + 1)
-        if isinstance(node, ast.Name):
-            function = self.enclosing(module, node)
-            if function is None:
-                raise _Unresolved(node.id)
-            parameters = [*function.args.posonlyargs, *function.args.args]
-            names = [item.arg for item in parameters]
-            keyword_only = [item.arg for item in function.args.kwonlyargs]
-            if node.id in names or node.id in keyword_only:
-                return self._from_callers(module, function, node.id, depth)
-            found: set[str] = set()
-            assigned = False
-            for child in ast.walk(function):
-                if isinstance(child, ast.Assign) and any(
-                    isinstance(target, ast.Name) and target.id == node.id for target in child.targets
-                ):
-                    found |= self.values(module, child.value, depth + 1)
-                    assigned = True
-                elif isinstance(child, ast.Assign) and any(
-                    isinstance(target, ast.Tuple) and any(isinstance(e, ast.Name) and e.id == node.id for e in target.elts)
-                    for target in child.targets
-                ):
-                    raise _Unresolved(node.id)
-            if not assigned:
-                raise _Unresolved(node.id)
-            return found
-        raise _Unresolved(ast.unparse(node))
-
-    def _from_callers(self, module: str, function: ast.FunctionDef, parameter: str, depth: int) -> set[str]:
-        parameters = [item.arg for item in [*function.args.posonlyargs, *function.args.args]]
-        found: set[str] = set()
-        defaults = dict(zip(parameters[len(parameters) - len(function.args.defaults):], function.args.defaults))
-        defaults.update(
-            {item.arg: value for item, value in zip(function.args.kwonlyargs, function.args.kw_defaults) if value}
-        )
-        if parameter in defaults:
-            found |= self.values(module, defaults[parameter], depth + 1)
-        stem = module.rsplit("/", 1)[-1].removesuffix(".py")
-        for caller_module, tree in self.trees.items():
-            for call in ast.walk(tree):
-                if not isinstance(call, ast.Call):
-                    continue
-                func = call.func
-                same = isinstance(func, ast.Name) and func.id == function.name and (
-                    caller_module == module or (stem, function.name) in self.imported[caller_module]
-                )
-                attribute = (
-                    isinstance(func, ast.Attribute)
-                    and func.attr == function.name
-                    and isinstance(func.value, ast.Name)
-                    and func.value.id == stem
-                )
-                if not (same or attribute):
-                    continue
-                argument = next((k.value for k in call.keywords if k.arg == parameter), None)
-                if argument is None and parameter in parameters:
-                    index = parameters.index(parameter)
-                    if index < len(call.args):
-                        argument = call.args[index]
-                if argument is None:
-                    continue
-                found |= self.values(caller_module, argument, depth + 1)
-        return found
-
-
-def id_of(node: ast.AST) -> tuple[int, int, int, int]:
-    """A node by where it stands, so no table is keyed by an object's address."""
-    return (
-        getattr(node, "lineno", -1), getattr(node, "col_offset", -1),
-        getattr(node, "end_lineno", -1), getattr(node, "end_col_offset", -1),
-    )
-
-
-def raised_codes() -> tuple[dict[str, set[str]], dict[str, set[str]], list[str]]:
-    """Every code a ``MemoryForestError`` can be made with, where, and every literal next move of a site."""
-    package = _Package()
-    codes: dict[str, set[str]] = {}
-    nexts: dict[str, set[str]] = {}
-    refused: list[str] = []
-    for module, tree in package.trees.items():
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if getattr(func, "id", getattr(func, "attr", None)) != "MemoryForestError":
-                continue
-            argument = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == "code"), None)
-            where = f"{module}:{node.lineno}"
-            try:
-                values = package.values(module, argument) if argument is not None else set()
-            except _Unresolved:
-                function = package.enclosing(module, node)
-                key = (module, getattr(function, "name", ""))
-                if key not in NON_LITERAL:
-                    refused.append(where)
-                    continue
-                values = NON_LITERAL[key]()
-            for value in values:
-                codes.setdefault(value, set()).add(where)
-            step = next((k.value for k in node.keywords if k.arg == "next_step"), None)
-            if isinstance(step, ast.Constant) and step.value is not None:
-                for value in values:
-                    nexts.setdefault(value, set()).add(str(step.value))
-    return codes, nexts, refused
-
-
-def document_rows() -> dict[str, tuple[str, str]]:
-    """``docs/refusals.md``: code, next move and command of each row."""
-    rows: dict[str, tuple[str, str]] = {}
+def document_rows() -> dict[str, tuple[str, str, str]]:
+    """``docs/refusals.md``: code, next move, command and the "When" cell of each row."""
+    rows: dict[str, tuple[str, str, str]] = {}
     text = (PACKAGE.parents[1] / "docs" / "refusals.md").read_text(encoding="utf-8")
     for line in text.splitlines():
         if not line.startswith("| `"):
             continue
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        rows[cells[0].strip("`")] = (cells[1].strip("`"), cells[2].strip("`"))
+        cells = [cell.strip() for cell in line.strip().strip("|").split(" | ")]
+        rows[cells[0].strip("`")] = (cells[1].strip("`"), cells[2].strip("`"), cells[3])
     return rows
 
 
 class RefusalCodeTests(unittest.TestCase):
-    """The codes that can leave are one closed set: the code, the table in the code and the document agree."""
+    """The codes that can leave are one closed set: the walk (``codes_walk``), the table and the document agree."""
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.codes, cls.nexts, cls.refused = raised_codes()
+        cls.walk = codes_walk.walk()
+        cls.codes = cls.walk.codes()
 
-    def test_no_raise_has_a_code_the_walk_cannot_name(self) -> None:
-        self.assertEqual(self.refused, [], "a non-literal code: make it literal, or list it with its values")
+    def test_the_walk_sees_every_class_of_refusal_at_any_depth(self) -> None:
+        self.assertIn("ArchiveProofError", self.walk.classes)
+        trees = _trees(**{"deep.py": (
+            "from .errors import MemoryForestError\n"
+            "class First(MemoryForestError):\n    pass\n"
+            "class Second(First):\n    pass\n"
+            "def refuse():\n    raise Second('second_kind', 'A refusal two classes down.', next_step='report')\n"
+        )})
+        result = codes_walk.walk(trees, listed={})
+        self.assertEqual(result.classes, {"MemoryForestError", "First", "Second"})
+        self.assertEqual(set(result.codes()), {"second_kind"})
 
-    def test_the_codes_raised_and_the_table_are_the_same_set(self) -> None:
-        raised = set(self.codes) - set(search.INTERNAL_CODES)
-        self.assertEqual(sorted(raised - set(errors.REFUSALS)), [], "raised but not in errors.REFUSALS")
-        self.assertEqual(sorted(set(errors.REFUSALS) - raised), [], "in errors.REFUSALS but never raised")
+    def test_a_code_from_a_parameter_is_followed_to_every_caller_or_refused(self) -> None:
+        followed = _trees(**{"follow.py": (
+            "import functools\n"
+            "from .errors import MemoryForestError\n"
+            "def helper(code):\n    return MemoryForestError(code, 'made by a helper')\n"
+            "class Shop:\n    def refuse(self, code):\n        raise MemoryForestError(code, 'made by a method')\n"
+            "def callers(shop):\n"
+            "    helper('by_name')\n"
+            "    shop.refuse('by_method')\n"
+            "    functools.partial(helper, 'by_partial')()\n"
+            "def each():\n"
+            "    for code in ('first_kind', 'second_kind'):\n"
+            "        raise MemoryForestError(code, 'one of two')\n"
+        )})
+        result = codes_walk.walk(followed, listed={})
+        self.assertEqual(result.unresolved, [])
+        self.assertEqual(set(result.codes()), {"by_name", "by_method", "by_partial", "first_kind", "second_kind"})
+        # Each case the walk cannot follow, with the reason it gives; no site is kept for it.
+        refused = {
+            "a parameter no caller fills": ("def helper(code):\n    return MemoryForestError(code, 'x')\n",
+                                            "no caller fills helper's code"),
+            "a callback": (
+                "def helper(code):\n    return MemoryForestError(code, 'x')\n"
+                "def later(callback):\n    return callback('from_a_callback')\n"
+                "def caller():\n    helper('by_name')\n    later(helper)\n",
+                "helper is used as a value",
+            ),
+            "a partial filled later": (
+                "import functools\n"
+                "def helper(words, code):\n    return MemoryForestError(code, words)\n"
+                "def caller():\n    functools.partial(helper, 'the words')('filled_later')\n",
+                "helper's code is filled after a partial application",
+            ),
+            "a code read from a table": (
+                "TABLE = {'a': 'from_a_table'}\n"
+                "def refuse(key):\n    raise MemoryForestError(TABLE[key], 'x')\n",
+                "TABLE[key]",
+            ),
+            "a move that is not a literal": (
+                "def refuse(command):\n"
+                "    raise MemoryForestError('one_code', 'x', next_step='run' if command else 'report')\n",
+                "the next move is not a literal",
+            ),
+            "a refusal made with no code": ("def refuse():\n    raise MemoryForestError()\n", "the code: nothing"),
+            "a code named outside a function": ("CODE = 'at_the_top'\nREFUSAL = MemoryForestError(CODE, 'x')\n",
+                                                "the code: CODE"),
+            "a code passed round a loop of calls": (
+                "def helper(code, again=False):\n"
+                "    if again:\n        helper(code)\n"
+                "    raise MemoryForestError(code, 'x')\n"
+                "def caller():\n    helper('once')\n",
+                "too deep",
+            ),
+            "a code unpacked from a pair": (
+                "def refuse(pair):\n    code, words = pair\n    raise MemoryForestError(code, words)\n",
+                "code unpacked",
+            ),
+            "a code from a loop over a name": (
+                "def refuse(codes):\n    for code in codes:\n        raise MemoryForestError(code, 'x')\n",
+                "code from a loop",
+            ),
+        }
+        for label, (source, reason) in refused.items():
+            with self.subTest(case=label):
+                text = "from .errors import MemoryForestError\n" + source
+                result = codes_walk.walk(_trees(**{"case.py": text}), listed={})
+                self.assertEqual(len(result.unresolved), 1, result.unresolved)
+                self.assertIn(reason, result.unresolved[0])
+                self.assertEqual(result.sites, [])
 
-    def test_the_document_is_the_table(self) -> None:
-        rows = document_rows()
-        self.assertEqual(sorted(set(rows) - set(errors.REFUSALS)), [])
-        self.assertEqual(sorted(set(errors.REFUSALS) - set(rows)), [])
-        for code, (nxt, command) in errors.REFUSALS.items():
-            self.assertEqual(rows[code], (nxt, command), code)
+    def test_a_call_from_another_module_is_followed_however_it_was_imported(self) -> None:
+        trees = _trees(**{
+            "shop.py": (
+                "from .errors import MemoryForestError\n"
+                "def helper(code):\n    return MemoryForestError(code, 'made by a helper')\n"
+            ),
+            "counter.py": (
+                "from . import shop\n"
+                "from . import shop as kept\n"
+                "from .shop import helper\n"
+                "from .shop import helper as made\n"
+                "from memory_forest import shop as rooted\n"
+                "def callers():\n"
+                "    shop.helper('through_the_module')\n"
+                "    kept.helper('through_an_alias')\n"
+                "    helper('by_its_name')\n"
+                "    made('by_another_name')\n"
+                "    rooted.helper('through_the_package')\n"
+            ),
+        })
+        result = codes_walk.walk(trees, listed={})
+        self.assertEqual(result.unresolved, [])
+        self.assertEqual(set(result.codes()), {"through_the_module", "through_an_alias", "by_its_name",
+                                               "by_another_name", "through_the_package"})
+
+    def test_a_method_and_a_function_of_one_name_are_told_apart(self) -> None:
+        # The variable has the module's name: only an import makes a name a module.
+        trees = _trees(**{"shop.py": (
+            "from .errors import MemoryForestError\n"
+            "def refuse(code):\n    raise MemoryForestError(code, 'made by the function')\n"
+            "class Shop:\n    def refuse(self, code):\n        raise MemoryForestError(code, 'made by the method')\n"
+            "def callers(shop):\n    refuse('by_the_function')\n    shop.refuse('by_the_method')\n"
+        )})
+        result = codes_walk.walk(trees, listed={})
+        self.assertEqual(result.unresolved, [])
+        self.assertEqual({message: site.codes for site in result.sites for message in site.messages},
+                         {"made by the function": {"by_the_function"}, "made by the method": {"by_the_method"}})
+
+    def test_a_message_is_read_in_every_form_the_walk_knows(self) -> None:
+        trees = _trees(**{"words.py": (
+            "from .errors import MemoryForestError\n"
+            "WORD = 'tray'\n"
+            "AT_THE_TOP = MemoryForestError('at_the_top', f'the {WORD} is gone')\n"
+            "def no_words():\n    raise MemoryForestError('no_words')\n"
+            "def branch(heavy):\n"
+            "    raise MemoryForestError('branched', f\"the tray is {'full' if heavy else 'empty'}\")\n"
+            "def cycle():\n"
+            "    word = 'first'\n    other = word\n    word = other\n"
+            "    raise MemoryForestError('cycled', f'the word is {word}')\n"
+            "def helper(words, again=False):\n"
+            "    if again:\n        helper(words)\n"
+            "    raise MemoryForestError('looped', words)\n"
+            "def caller():\n    helper('said once')\n"
+            "SHELVES: dict[str, str] = {'up': 'the upper shelf', 'down': 'the lower shelf'}\n"
+            "def shelved(key):\n    raise MemoryForestError('shelved', f'on {SHELVES[key]}')\n"
+            "def named():\n    raise MemoryForestError(code='by_keyword', message='a keyword message', next_step=None)\n"
+        )})
+        result = codes_walk.walk(trees, listed={})
+        self.assertEqual(result.unresolved, [])
+        self.assertEqual({code: site.messages for site in result.sites for code in site.codes}, {
+            "at_the_top": {"the … is gone"},  # a name outside a function is not followed
+            "shelved": {"on the upper shelf", "on the lower shelf"},  # a table written in the module
+            "by_keyword": {"a keyword message"},
+            "no_words": set(),
+            "branched": {"the tray is full", "the tray is empty"},
+            "cycled": {"the word is …"},  # names assigned round a loop end at the depth
+            "looped": {"said once", "…"},  # a message passed round a loop of calls ends at the depth
+        })
+        self.assertEqual({code: site.moves for site in result.sites for code in site.codes}["by_keyword"], {None})
+
+    def test_no_site_has_a_code_or_a_move_the_walk_cannot_name(self) -> None:
+        self.assertEqual(self.walk.unresolved, [], "resolve it, or list it in codes_walk with its values")
+        self.assertEqual(self.walk.unused_listings, [], "a listing no site uses")
+
+    def test_the_codes_made_and_the_table_are_the_same_set(self) -> None:
+        made = set(self.codes) - set(search.INTERNAL_CODES)
+        self.assertEqual(sorted(made - set(errors.REFUSALS)), [], "made but not in errors.REFUSALS")
+        self.assertEqual(sorted(set(errors.REFUSALS) - made), [], "in errors.REFUSALS but never made")
 
     def test_every_code_has_a_next_move_and_a_site_never_says_another(self) -> None:
-        for code, (nxt, command) in errors.REFUSALS.items():
+        for code, (nxt, _command) in errors.REFUSALS.items():
             self.assertIn(nxt, errors.NEXT_MOVES, code)
-            self.assertEqual(bool(command), nxt == "run", code)
-        for code, said in self.nexts.items():
-            if code in search.INTERNAL_CODES:
-                continue
-            self.assertEqual(said, {errors.REFUSALS[code][0]}, code)
+        for site in self.walk.sites:
+            for code, move in site.pairs:
+                if code in search.INTERNAL_CODES or move is None:
+                    continue
+                self.assertEqual(move, errors.REFUSALS[code][0], f"{site.module}:{site.line} {code}")
         for code in errors.REFUSALS:
             made = errors.MemoryForestError(code, "x")
             self.assertEqual(made.as_dict()["next"], errors.REFUSALS[code][0], code)
+
+    def test_a_command_of_the_table_parses_and_names_no_folder(self) -> None:
+        """A default command names nothing the caller did not give: only command words and options."""
+        words_of = {word for command in cli.FOREST_COMMANDS for word in command.words}
+        for code, (nxt, command) in errors.REFUSALS.items():
+            if not command:
+                continue
+            with self.subTest(code=code):
+                self.assertEqual(nxt, "run")
+                words = shlex.split(command)
+                self.assertEqual(words[0], "forest")
+                cli.build_forest_parser().parse_args(words[1:])
+                self.assertTrue(set(words[1:]) <= words_of, f"{command} names something the caller did not give")
+
+    def test_a_run_code_with_no_command_in_the_table_gets_one_where_its_root_is_known(self) -> None:
+        empty = {code for code, (nxt, command) in errors.REFUSALS.items() if nxt == "run" and not command}
+        self.assertEqual(empty, set(errors.REBUILD_CODES))
+
+        @errors.with_rebuild
+        def refuse(root: str) -> None:
+            raise errors.MemoryForestError("index_stale", "The local index no longer matches the forest.")
+
+        with self.assertRaises(errors.MemoryForestError) as caught:
+            refuse("/forests/the corner bakery")
+        self.assertEqual(caught.exception.command, "memory-forest index '/forests/the corner bakery'")
+        self.assertEqual(caught.exception.next_step, "run")
 
     def test_an_internal_code_is_not_in_the_table(self) -> None:
         self.assertIn("index_protocol", self.codes)
         self.assertTrue(set(search.INTERNAL_CODES).isdisjoint(errors.REFUSALS))
 
+    def test_the_document_is_the_generated_table(self) -> None:
+        text = (PACKAGE.parents[1] / "docs" / "refusals.md").read_text(encoding="utf-8")
+        _before, written, _after = codes_walk.split_document(text)
+        self.assertEqual(written, codes_walk.table(self.walk), "regenerate it: python3 scripts/refusals_table.py")
+        # Every code a decision of the state gives carries its claims, and nothing else does.
+        self.assertEqual(set(codes_walk.claims_by_code()), set(derived.CODES))
+        rows = document_rows()
+        self.assertEqual(set(rows), set(errors.REFUSALS))
+        for code, (nxt, command, said) in rows.items():
+            self.assertEqual((nxt, command), errors.REFUSALS[code], code)
+            self.assertTrue(said, f"{code}: a row with no When")
+
+    def test_every_place_that_states_the_four_moves_uses_the_words_of_the_definitions(self) -> None:
+        docs = PACKAGE.parents[1] / "docs"
+        places = {
+            name: " ".join((docs / name).read_text(encoding="utf-8").split())
+            for name in ("refusals.md", "tools.md", "v1-design.md")
+        }
+        for name, text in places.items():
+            for move, words in errors.MOVE_DEFINITIONS.items():
+                with self.subTest(place=name, move=move):
+                    self.assertTrue(f"`{move}`: {words}" in text or f"`{move}` ({words}" in text, words)
+        # The MCP server's instructions: one line, one sentence, per move, in the order an agent meets them.
+        lines = [line for line in mcp.INSTRUCTIONS.splitlines() if line.split(":")[0] in errors.MOVE_DEFINITIONS]
+        self.assertEqual([line.split(":")[0] for line in lines], ["fix", "retry", "run", "report"])
+        for line in lines:
+            move = line.split(":")[0]
+            with self.subTest(place="mcp.INSTRUCTIONS", move=move):
+                self.assertTrue(line.startswith(f"{move}: {errors.MOVE_DEFINITIONS[move]}; "), line)
+                self.assertEqual(line.count(". "), 0, line)
+                self.assertTrue(line.endswith("."), line)
+        self.assertLessEqual(len(mcp.GROUP_INSTRUCTIONS), 2048)
+
+    def test_the_help_of_every_command_an_agent_runs_names_the_table(self) -> None:
+        for words in [*agent_commands(), ("mcp",)]:
+            out = io.StringIO()
+            with self.subTest(command=" ".join(words)), contextlib.redirect_stdout(out):
+                with self.assertRaises(SystemExit) as stopped:
+                    cli.forest_main([*words, "--help"])
+                self.assertEqual(stopped.exception.code, 0)
+                self.assertIn("docs/refusals.md", " ".join(out.getvalue().split()))
+
     def test_the_index_table_of_the_tools_document_agrees(self) -> None:
         for code, nxt, command in search.INDEX_REFUSALS:
             self.assertEqual(errors.REFUSALS[code], (nxt, command), code)
+        text = (PACKAGE.parents[1] / "docs" / "tools.md").read_text(encoding="utf-8")
+        table = text[text.index("What a state refuses with:"):].split("\n\n")[1]
+        shown = []
+        for line in table.splitlines()[2:]:
+            cells = [cell.strip() for cell in line.strip().strip("|").split(" | ")]
+            words = cells[2].split("`")
+            shown.append((cells[0].strip("`"), words[1], words[3] if words[1] == "run" else ""))
+        self.assertEqual(shown, list(search.INDEX_REFUSALS))
 
 
 class WaitChildTests(unittest.TestCase):

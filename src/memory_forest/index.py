@@ -12,7 +12,7 @@ from typing import Final, NoReturn
 from .config import load_config
 from .core import _read_utf8_file, inspect_forest
 from .credentials import shown
-from .errors import MemoryForestError
+from .errors import MemoryForestError, with_rebuild
 from .locking import maintenance_lock
 from .model import SCHEMA_VERSION, immediate_parent_path
 from .safety import (
@@ -232,6 +232,7 @@ def _index_forest_unlocked(
     }
 
 
+@with_rebuild
 def route_index(
     root: str | os.PathLike[str],
     query: str,
@@ -250,6 +251,7 @@ def route_index(
     )
 
 
+@with_rebuild
 def search_index(
     root: str | os.PathLike[str],
     query: str,
@@ -420,7 +422,6 @@ def _verify_schema(connection: sqlite3.Connection) -> None:
         raise MemoryForestError(
             "index_schema_mismatch",
             "The local index schema is unsupported; rebuild the index.",
-            details={"action": "memory-forest index ROOT"},
         )
 
 
@@ -428,7 +429,6 @@ def _raise_stale_index() -> NoReturn:
     raise MemoryForestError(
         "index_stale",
         "The local index no longer matches the canonical forest; rebuild the index.",
-        details={"action": "memory-forest index ROOT"},
     )
 
 
@@ -476,7 +476,6 @@ def _read_current_indexed_body(
             raise MemoryForestError(
                 "index_stale",
                 "The indexed canonical file could not be reopened safely; rebuild the index.",
-                details={"action": "memory-forest index ROOT"},
             ) from exc
         if match is None:
             _raise_stale_index()
@@ -488,7 +487,6 @@ def _read_current_indexed_body(
         raise MemoryForestError(
             "index_stale",
             "The indexed canonical file could not be reopened safely; rebuild the index.",
-            details={"action": "memory-forest index ROOT"},
         ) from exc
     current_sha256 = hashlib.sha256(current_body.encode("utf-8")).hexdigest()
     if current_sha256 != indexed_sha256:

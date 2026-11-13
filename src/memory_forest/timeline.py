@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import layout
+from . import layout, system
 from .config import Config, load_config
 from .errors import MemoryForestError
 from .model import TimelineLine
@@ -36,7 +36,7 @@ from . import registry as registry_mod
 from . import search
 
 
-_PHRASE_DIR = Path(__file__).resolve().parent / "phrases"
+_PHRASE_DIR = Path(__file__).parent / "phrases"
 _RANGE_RE = re.compile(
     r"^(?P<a>\d{4}-\d{2}-\d{2})(?:[T ](?P<a_time>\d{2}:\d{2}))?"
     r"(?:\.\.(?P<b>\d{4}-\d{2}-\d{2})(?:[T ](?P<b_time>\d{2}:\d{2}))?)?$"
@@ -108,6 +108,7 @@ class When:
     daypart: tuple[int, int] | None = None
 
 
+@search._public
 def languages(root: str | os.PathLike[str] | None = None) -> list[str]:
     """Language tags from the package, plus any table in the forest's ``.forest/phrases``."""
     return [str(table["language"]) for table in _tables(root)]
@@ -156,46 +157,38 @@ def subject(
     scope = for_reader(config, built, reader, named=named, root=safe)
     def read(connection: sqlite3.Connection | None) -> dict[str, Any]:
         if connection is None:
-            raise MemoryForestError(
-                "index_missing",
-                "The forest has no search index. Run `forest index build`.",
-                details={"path": search.index_relative(safe)},
-                next_step="run",
-                command="forest index build",
+            raise search.no_index_yet(safe)
+        earliest = {
+            int(row[0]): row[1]
+            for row in connection.execute("SELECT unit_id, MIN(start_utc) FROM times GROUP BY unit_id")
+        }
+        pages: dict[str, dict[str, Any]] = {}
+        page_stamp: dict[str, str] = {}
+        for row in connection.execute("SELECT * FROM units"):
+            unit = search._row_dict(row)
+            if subject_id not in unit["subjects"] or not search._visible(scope, unit["path"]):
+                continue
+            stamp = earliest.get(int(row["id"])) or "9999"
+            current = page_stamp.get(unit["path"])
+            if current is None or stamp < current:
+                page_stamp[unit["path"]] = stamp
+            search._add_row(
+                pages, unit, f"subject: {subject_id}", tier=0, score=0, scope=scope,
             )
-        try:
-            earliest = {
-                int(row[0]): row[1]
-                for row in connection.execute("SELECT unit_id, MIN(start_utc) FROM times GROUP BY unit_id")
-            }
-            pages: dict[str, dict[str, Any]] = {}
-            page_stamp: dict[str, str] = {}
-            for row in connection.execute("SELECT * FROM units"):
-                unit = search._row_dict(row)
-                if subject_id not in unit["subjects"] or not search._visible(scope, unit["path"]):
-                    continue
-                stamp = earliest.get(int(row["id"])) or "9999"
-                current = page_stamp.get(unit["path"])
-                if current is None or stamp < current:
-                    page_stamp[unit["path"]] = stamp
-                search._add_row(
-                    pages, unit, f"subject: {subject_id}", tier=0, score=0, scope=scope,
-                )
-            ranked = sorted(pages.values(), key=lambda item: (page_stamp.get(item["path"], "9999"), item["path"]))
-            payload = search._envelope(scope, ranked[:limit])
-            payload["subject"] = subject_id
-            if stale:
-                payload["stale"] = stale
-            if search.is_read_only(connection):
-                payload["read_only"] = True
-            return payload
-        except sqlite3.Error as exc:
-            raise search.finish_read(exc, path=search.index_relative(safe)) from exc
+        ranked = sorted(pages.values(), key=lambda item: (page_stamp.get(item["path"], "9999"), item["path"]))
+        payload = search._envelope(scope, ranked[:limit])
+        payload["subject"] = subject_id
+        if stale:
+            payload["stale"] = stale
+        if search.is_read_only(connection):
+            payload["read_only"] = True
+        return payload
 
     payload = search._checked_read(safe, read)
     return search.restrict_source(safe, payload, source) if source else payload
 
 
+@search._public
 def resolve(
     phrase: str,
     config: Config,
@@ -250,46 +243,37 @@ def _collect(
     scope = for_reader(config, built, reader, named=named, root=root)
     def read(connection: sqlite3.Connection | None) -> dict[str, Any]:
         if connection is None:
-            raise MemoryForestError(
-                "index_missing",
-                "The forest has no search index. Run `forest index build`.",
-                details={"path": search.index_relative(root)},
-                next_step="run",
-                command="forest index build",
-            )
-        try:
-            pages: dict[str, dict[str, Any]] = {}
-            stamps: dict[str, str] = {}
-            rows = connection.execute(
-                "SELECT units.*, times.start_utc, times.end_utc, times.zone AS time_zone "
-                "FROM times JOIN units ON units.id = times.unit_id"
-            ).fetchall()
-            for row in rows:
-                start = search._parse_stamp(row["start_utc"])
-                end = search._parse_stamp(row["end_utc"])
-                if not _in_when(start, end, row["time_zone"] or "UTC", when, config.zone):
-                    continue
-                unit = search._row_dict(row)
-                if not search._visible(scope, unit["path"]):
-                    continue
-                page_zone = _page_zone(row["page_zone"] if "page_zone" in row.keys() else "", config)
-                matched_lines = _matching_lines(unit["text"], when, config, page_zone)
-                if matched_lines:
-                    unit = {**unit, "text": "\n".join(matched_lines)}
-                why = f"time: {row['start_utc']} falls in {phrase}"
-                search._add_row(pages, unit, why, tier=0, score=0, scope=scope)
-                stamps.setdefault(unit["path"], row["start_utc"])
-                if row["start_utc"] < stamps[unit["path"]]:
-                    stamps[unit["path"]] = row["start_utc"]
-            ordered = sorted(pages.values(), key=lambda item: stamps.get(item["path"], ""))[:limit]
-            payload = search._envelope(scope, ordered)
-            payload["phrase"] = phrase
-            payload["when"] = _when_dict(when)
-            if search.is_read_only(connection):
-                payload["read_only"] = True
-            return payload
-        except sqlite3.Error as exc:
-            raise search.finish_read(exc, path=search.index_relative(root)) from exc
+            raise search.no_index_yet(root)
+        pages: dict[str, dict[str, Any]] = {}
+        stamps: dict[str, str] = {}
+        rows = connection.execute(
+            "SELECT units.*, times.start_utc, times.end_utc, times.zone AS time_zone "
+            "FROM times JOIN units ON units.id = times.unit_id"
+        ).fetchall()
+        for row in rows:
+            start = search._parse_stamp(row["start_utc"])
+            end = search._parse_stamp(row["end_utc"])
+            if not _in_when(start, end, row["time_zone"] or "UTC", when, config.zone):
+                continue
+            unit = search._row_dict(row)
+            if not search._visible(scope, unit["path"]):
+                continue
+            page_zone = _page_zone(row["page_zone"] if "page_zone" in row.keys() else "", config)
+            matched_lines = _matching_lines(unit["text"], when, config, page_zone)
+            if matched_lines:
+                unit = {**unit, "text": "\n".join(matched_lines)}
+            why = f"time: {row['start_utc']} falls in {phrase}"
+            search._add_row(pages, unit, why, tier=0, score=0, scope=scope)
+            stamps.setdefault(unit["path"], row["start_utc"])
+            if row["start_utc"] < stamps[unit["path"]]:
+                stamps[unit["path"]] = row["start_utc"]
+        ordered = sorted(pages.values(), key=lambda item: stamps.get(item["path"], ""))[:limit]
+        payload = search._envelope(scope, ordered)
+        payload["phrase"] = phrase
+        payload["when"] = _when_dict(when)
+        if search.is_read_only(connection):
+            payload["read_only"] = True
+        return payload
 
     return search._checked_read(root, read)
 
@@ -353,7 +337,10 @@ def _from_row(
     if use == "back":
         number = _number(matched.group("n"), table) if "n" in matched.groupdict() and matched.group("n") else 1
         seconds = number * int(table["units"][_key(matched.group("unit"), table["units"])])
-        return When("absolute", label, now - timedelta(seconds=seconds), now)
+        try:
+            return When("absolute", label, now - timedelta(seconds=seconds), now)
+        except OverflowError as exc:
+            raise MemoryForestError("time_phrase_unknown", _PAST_THE_CALENDAR) from exc
     if use == "dates":
         groups = matched.groupdict()
         first = groups.get("date1") or ""
@@ -385,6 +372,10 @@ def _range_when(matched: re.Match[str], zone: ZoneInfo, label: str) -> When:
     return When("absolute", label, start, stop)
 
 
+# A window that would begin before the year 1 or end after the year 9999 is a phrase the caller corrects.
+_PAST_THE_CALENDAR = "That stretch of time reaches before the year 1 or past the year 9999."
+
+
 def _forest_day(day: str, zone: ZoneInfo, clock: str | None, *, end: bool) -> datetime:
     year, month, date = (int(part) for part in day.split("-"))
     try:
@@ -397,7 +388,10 @@ def _forest_day(day: str, zone: ZoneInfo, clock: str | None, *, end: bool) -> da
         start = datetime(year, month, date, tzinfo=zone)
     except ValueError as exc:
         raise MemoryForestError("time_phrase_unknown", "That date or time does not exist.") from exc
-    return start + timedelta(days=1) if end else start
+    try:
+        return start + timedelta(days=1) if end else start
+    except OverflowError as exc:
+        raise MemoryForestError("time_phrase_unknown", _PAST_THE_CALENDAR) from exc
 
 
 def _number(text: str, table: dict[str, Any]) -> int:
@@ -475,40 +469,52 @@ def _forest_files(root: str | os.PathLike[str]) -> list[dict[str, Any]]:
         folder = layout.resolve(root, f"{layout.STATE_DIR}/phrases")
     except MemoryForestError:
         return []
-    if folder.is_symlink() or not folder.is_dir():
+    there = system.kind(folder)
+    if there is None:
         return []
+    if there != "folder":
+        raise _damaged_table("phrases", f"the phrases folder is a {there}")
     found = []
-    for path in sorted(folder.glob("*.json")):
-        if path.is_symlink() or not path.is_file():
+    for entry in system.listing(folder):
+        if not entry.name.endswith(".json"):
             continue
+        if entry.kind != "file":
+            raise _damaged_table(entry.name, f"it is a {entry.kind}, not a file")
         try:
-            raw = path.read_text(encoding="utf-8")
-            value = json.loads(raw)
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise MemoryForestError(
-                "time_phrase_unknown",
-                f"{path.name} is not a time-phrase table.",
-            ) from exc
+            value = json.loads(system.read_text(entry.path))
+        except (system.Link, system.NotAFile) as exc:
+            raise _damaged_table(entry.name, f"it is a {exc.found or exc.kind}, not a file") from exc
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise _damaged_table(entry.name, "it is not JSON") from exc
         if not isinstance(value, dict) or not isinstance(value.get("language"), str) or not isinstance(value.get("phrases"), list):
-            raise MemoryForestError(
-                "time_phrase_unknown",
-                f"{path.name} is not a time-phrase table.",
-            )
+            raise _damaged_table(entry.name, "it holds no language and phrases")
         found.append(value)
     return found
 
 
+def _damaged_table(name: str, why: str) -> MemoryForestError:
+    """A phrase table of the forest's own (or of the package) that cannot be used: the owner's file to mend."""
+    return MemoryForestError(
+        "time_phrase_table_invalid",
+        f"The time-phrase table {name} cannot be used: {why}. The owner mends or removes it.",
+        details={"table": name},
+        next_step="report",
+    )
+
+
 def _files() -> list[dict[str, Any]]:
-    if not _PHRASE_DIR.is_dir():
+    if system.kind(_PHRASE_DIR) != "folder":
         return []
     found = []
-    for path in sorted(_PHRASE_DIR.glob("*.json")):
-        value = json.loads(path.read_text(encoding="utf-8"))
+    for entry in system.listing(_PHRASE_DIR):
+        if not entry.name.endswith(".json"):
+            continue
+        try:
+            value = json.loads(system.read_text(entry.path))
+        except (system.Link, system.NotAFile, UnicodeError, json.JSONDecodeError) as exc:
+            raise _damaged_table(entry.name, "it is not a JSON file") from exc
         if not isinstance(value, dict) or "language" not in value or "phrases" not in value:
-            raise MemoryForestError(
-                "time_phrase_unknown",
-                f"{path.name} is not a time-phrase table.",
-            )
+            raise _damaged_table(entry.name, "it holds no language and phrases")
         found.append(value)
     return found
 

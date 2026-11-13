@@ -23,10 +23,11 @@ import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from . import agents as agents_mod
-from . import layout, registry
+from . import layout, registry, system
 from .config import AGENT_TEXT_MAX, AgentGroup, Config, _toml_value, config_path, load_config, parse_config
 from .errors import MemoryForestError
 from .locking import atomic_write, hold_lock
@@ -75,7 +76,7 @@ def exclusive(
     pass it. The thread lock is taken first. A thread that does not get either
     lock within ``wait_seconds`` is ``lock_busy``.
     """
-    key = f"{os.path.abspath(root)}\0{name}"
+    key = f"{system.absolute(root)}\0{name}"
     with _THREAD_GUARD:
         thread_lock = _THREAD_LOCKS.setdefault(key, threading.Lock())
     if not thread_lock.acquire(timeout=wait_seconds):
@@ -214,11 +215,9 @@ def _row(root: str | os.PathLike[str], agent_id: str, name: str, lane: bool, see
 
 def _read_seen(root: str | os.PathLike[str]) -> dict[str, Any]:
     path = layout.resolve(root, SEEN_FILE)
-    if not path.is_file() or path.is_symlink():
-        return {}
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        loaded = json.loads(system.read_text(path))
+    except (system.Absent, system.Link, system.NotAFile, UnicodeError, json.JSONDecodeError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
@@ -226,20 +225,17 @@ def _read_seen(root: str | os.PathLike[str]) -> dict[str, Any]:
 def _written_sources(root: str | os.PathLike[str], agent_id: str) -> list[str]:
     """Groups and doors this agent has written a turn through, from its lane."""
     folder = layout.resolve(root, f"{layout.ISTM}/{agent_id}")
-    if not folder.is_dir() or folder.is_symlink():
+    if system.kind(folder) != "folder":
         return []
     found: set[str] = set()
-    try:
-        names = sorted(entry.name for entry in os.scandir(folder) if entry.is_file(follow_symlinks=False))
-    except OSError:
-        return []
+    names = [entry.name for entry in system.listing(folder) if entry.kind == "file"]
     for name in names:
         if not name.endswith(".jsonl"):
             continue
         path = folder / name
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
+            text = system.read_text(path)
+        except (system.Absent, system.Link, system.NotAFile, UnicodeError):
             continue
         for line in text.split("\n"):
             if line.endswith("\r"):
@@ -274,7 +270,7 @@ def _clean(given: str) -> str:
         raise MemoryForestError(
             "agent_name_invalid",
             "The agent is text: the caller's own name, short enough to be a file name.",
-            next_step="retry",
+            next_step="fix",
         )
     cleaned = " ".join(given.split())
     if not cleaned:
@@ -288,7 +284,7 @@ def _clean(given: str) -> str:
             "agent_name_invalid",
             f"That name cannot be an agent. Pass text of at most {AGENT_TEXT_MAX} characters that gives a slug.",
             details={"name": cleaned[:80]},
-            next_step="retry",
+            next_step="fix",
         )
     return cleaned
 
@@ -400,11 +396,8 @@ def _agent_rows(root: str | os.PathLike[str], config: Config) -> list[tuple[str,
     for tool in config.intake.tools:
         if tool.agent:
             add(tool.agent, _name_of(config, tool.agent))
-    try:
-        for lane in agents_mod.lanes(root):
-            add(lane, _name_of(config, lane))
-    except OSError:
-        pass
+    for lane in agents_mod.lanes(root):
+        add(lane, _name_of(config, lane))
     compiled = _compiled(root, config)
     if compiled is not None:
         for agent_id in compiled.agents:
@@ -439,7 +432,7 @@ def _not_in_group(group: AgentGroup, rows: list[tuple[str, str]], given: str) ->
         "agent_not_in_group",
         f"`{given}` is not a member of `{group.id}`. Call again under your own name, as it is listed.",
         details={"members": _member_rows(rows)},
-        next_step="retry",
+        next_step="fix",
     )
 
 
@@ -459,7 +452,7 @@ def _invalid_name(given: str) -> MemoryForestError:
         f"That name is not a slug of at most {AGENT_TEXT_MAX} characters, so it cannot become an agent. "
         "Pass a member's id, or a name that can be an agent.",
         details={"name": given[:80]},
-        next_step="retry",
+        next_step="fix",
     )
 
 
@@ -566,7 +559,7 @@ def _admit(
                     "agent_name_invalid",
                     "That name cannot be an agent.",
                     details={"name": given[:80]},
-                    next_step="retry",
+                    next_step="fix",
                 )
             if group.max_members is not None and decision.id not in group.members and len(group.members) >= group.max_members:
                 raise MemoryForestError(
@@ -580,8 +573,8 @@ def _admit(
             if _settings_unwritable(path):
                 raise _unwritable(group_id, decision.id, given)
             try:
-                original = path.read_text(encoding="utf-8")
-            except OSError as exc:
+                original = system.read_text(path)
+            except system.Outcome as exc:
                 raise _unwritable(group_id, decision.id, given) from exc
             known = config.agents.declared(decision.id)
             write_known = decision.create or known is None
@@ -591,8 +584,6 @@ def _admit(
                 parsed = parse_config(updated)
             except MemoryForestError:
                 raise
-            except OSError as exc:
-                raise _unwritable(group_id, decision.id, given) from exc
             admitted = require_group(parsed, group_id)
             declared = parsed.agents.declared(decision.id)
             if decision.id not in admitted.members or (write_known and (declared is None or declared.name != stored_name)):
@@ -601,21 +592,20 @@ def _admit(
                 return Resolved(decision.id, wrote=False)
             try:
                 atomic_write(path, updated)
-            except OSError as exc:
+            except system.Outcome as exc:
                 raise _unwritable(group_id, decision.id, given) from exc
             return Resolved(decision.id, wrote=True)
     except MemoryForestError:
         raise
-    except OSError as exc:
+    except system.Outcome as exc:
         raise _unwritable(group_id, admit.id, given) from exc
 
 
 def _settings_unwritable(path: os.PathLike[str]) -> bool:
-    target = os.fspath(path)
-    folder = os.path.dirname(target) or "."
-    if not os.access(folder, os.W_OK | os.X_OK):
+    target = Path(path)
+    if not system.may(target.parent, "write"):
         return True
-    return os.path.exists(target) and not os.access(target, os.W_OK)
+    return system.look_or_none(target) is not None and not system.may(target, "change")
 
 
 def hand_lines(group_id: str, member_id: str, name: str) -> str:

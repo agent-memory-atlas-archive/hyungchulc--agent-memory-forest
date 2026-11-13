@@ -26,13 +26,12 @@ import json
 import os
 import re
 import secrets
-import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from . import layout
+from . import layout, system
 from .config import Config, load_config
 from .errors import MemoryForestError
 from .locking import LockToken, append_lines, writer_lock
@@ -142,20 +141,23 @@ class Ledger:
 
 
 def _private_file(path: Path) -> bytes:
-    info = path.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+    """The key's bytes, read from the descriptor whose mode was checked."""
+    try:
+        handle = system.open_file(path)
+    except (system.Link, system.NotAFile) as exc:
         raise MemoryForestError("credential_ledger_unsafe", "A ledger file must be a regular file, never a link.",
-                                details={"file": path.name})
-    if info.st_mode & 0o077:
-        raise MemoryForestError("credential_key_exposed", "The ledger key must be readable by its owner only "
-                                "(mode 0600).", details={"file": path.name})
-    return path.read_bytes()
+                                details={"file": path.name}) from exc
+    with handle:
+        if handle.look.mode & 0o077:
+            raise MemoryForestError("credential_key_exposed", "The ledger key must be readable by its owner only "
+                                    "(mode 0600).", details={"file": path.name})
+        return handle.read()
 
 
 def _digests(path: Path) -> frozenset[str]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
+        lines = system.read_text(path).splitlines()
+    except system.Absent:
         return frozenset()
     found = set()
     for line in lines:
@@ -174,11 +176,8 @@ _CACHE: dict[str, tuple[tuple[Any, ...], Ledger | None]] = {}
 def _stamp(*paths: Path) -> tuple[Any, ...]:
     stamp = []
     for path in paths:
-        try:
-            info = path.stat()
-            stamp.append((info.st_mtime_ns, info.st_size, info.st_mode, info.st_ino))
-        except FileNotFoundError:
-            stamp.append(None)
+        info = system.look_or_none(path)
+        stamp.append(None if info is None else (info.mtime_ns, info.size, info.mode, info.ino, info.kind))
     return tuple(stamp)
 
 
@@ -211,7 +210,7 @@ def for_config(config: Config) -> Ledger | None:
     if not config.source:
         return None
     root = Path(config.source).parent
-    if not (root / layout.STATE_DIR).is_dir():
+    if system.kind(root / layout.STATE_DIR) != "folder":
         return None
     return load(root)
 
@@ -236,16 +235,7 @@ def mask_known(text: str, ledger: Ledger | None, *, guarded: bool = True) -> str
 
 def _make_key(path: Path) -> None:
     """Make the key. Another process having made it already leaves that key in place."""
-    try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    except FileExistsError:
-        return
-    try:
-        os.write(descriptor, secrets.token_bytes(KEY_BYTES))
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    os.chmod(path, 0o600)
+    system.create_new(path, secrets.token_bytes(KEY_BYTES), mode=0o600)
 
 
 # ─────────────────────────────── candidates of a forest ───────────────────────────────
@@ -320,10 +310,11 @@ def judge(
     values = [_candidate_value(safe_root, name, settings) for name in chosen]
     with writer_lock(safe_root, token=lock, label="credentials judge"):
         folder = layout.ensure_folder(safe_root, FOLDER)
-        os.chmod(folder, 0o700)
+        system.set_mode(folder, 0o700)
         key_path = layout.state_path(safe_root, KEY_FILE)
-        if not key_path.exists():
-            if layout.state_path(safe_root, SIGN_IN_FILE).exists() or layout.state_path(safe_root, JUDGED_FILE).exists():
+        if system.look_or_none(key_path) is None:
+            if any(system.look_or_none(layout.state_path(safe_root, name)) is not None
+                   for name in (SIGN_IN_FILE, JUDGED_FILE)):
                 load(safe_root)  # raises: judgements without their key
             _make_key(key_path)
         ledger = load(safe_root)

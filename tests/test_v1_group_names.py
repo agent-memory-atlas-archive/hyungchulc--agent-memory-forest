@@ -46,18 +46,18 @@ class NameRuleTests(ForestTestCase):
         search.build(root)
         return root
 
-    def test_a_bad_agent_argument_is_retried_and_forty_names_are_admitted(self) -> None:
+    def test_a_bad_agent_argument_is_the_callers_to_fix_and_forty_names_are_admitted(self) -> None:
         root = self._studio()
         before = (root / "forest.toml").read_bytes()
         with self.assertRaises(MemoryForestError) as caught:
             groups.resolve_caller(root, "night-kiln", "y" * (AGENT_TEXT_MAX + 1))
         self.assertEqual(caught.exception.code, "agent_name_invalid")
-        self.assertEqual(caught.exception.next_step, "retry")
+        self.assertEqual(caught.exception.next_step, "fix")
         self.assertEqual((root / "forest.toml").read_bytes(), before)
         with self.assertRaises(MemoryForestError) as empty:
             groups.resolve_caller(root, "night-kiln", "!!!")
         self.assertEqual(empty.exception.code, "agent_name_invalid")
-        self.assertEqual(empty.exception.next_step, "retry")
+        self.assertEqual(empty.exception.next_step, "fix")
         for number in range(40):
             resolved = groups.resolve_caller(root, "night-kiln", f"Clerk {number}")
             self.assertEqual(resolved.id, f"clerk-{number}")
@@ -264,7 +264,7 @@ class NameRuleTests(ForestTestCase):
         with self.assertRaises(MemoryForestError) as caught:
             groups.resolve_caller(root, "crate-app", "Other Bot")
         self.assertEqual(caught.exception.code, "agent_not_in_group")
-        self.assertEqual(caught.exception.next_step, "retry")
+        self.assertEqual(caught.exception.next_step, "fix")
         hub = groups.resolve_caller(root, "crate-app", "front-desk")
         self.assertEqual((hub.id, hub.wrote), ("front-desk", False))
         self.assertNotIn("front-desk", load_config(root).agents.group("crate-app").members)

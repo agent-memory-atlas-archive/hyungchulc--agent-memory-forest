@@ -69,10 +69,16 @@ class RecordHistoryTests(CheckForestTestCase):
         self.assertEqual(root / result.archive_path, history)
 
     def torn_append(self, root: Path, keep: int) -> None:
-        """A trim killed inside its append: only the first ``keep`` bytes of the block reach the file."""
+        """A trim killed inside its append: only the first ``keep`` bytes of the block reach the file.
+
+        ``os.write`` is the process's own: the lock's record and the manifest are written through it too, so
+        only the write of a block (it starts with the block's opening) is cut.
+        """
         original = archive.os.write
 
         def cut(descriptor, data):
+            if not bytes(data).startswith(b"<!-- record lines moved "):
+                return original(descriptor, data)
             original(descriptor, data[:keep])
             raise KeyboardInterrupt
 

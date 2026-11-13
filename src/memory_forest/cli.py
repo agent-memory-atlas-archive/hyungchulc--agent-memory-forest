@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shlex
+import sqlite3
 import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from . import __version__
 from . import archive as forest_archive
 from . import layout as forest_layout
 from . import credentials as forest_credentials
+from . import system
 from . import movelog as forest_movelog
 from . import registry as forest_registry
 from .config import CONFIG_FILENAME, DEFAULT_CONFIG, Config, find_root, load_config
@@ -202,7 +204,7 @@ def run_command(arguments: argparse.Namespace) -> tuple[dict[str, object], int]:
         )
     elif command == "retrieve":
         query_plan = (
-            read_query_plan_source(arguments.query_plan, stdin=sys.stdin.buffer)
+            read_query_plan_source(arguments.query_plan, stdin=_binary_stdin())
             if arguments.query_plan is not None
             else None
         )
@@ -219,13 +221,13 @@ def run_command(arguments: argparse.Namespace) -> tuple[dict[str, object], int]:
             limit=arguments.limit,
         )
     elif command == "apply-daily":
-        plan = read_plan_source(arguments.plan, stdin=sys.stdin.buffer)
+        plan = read_plan_source(arguments.plan, stdin=_binary_stdin())
         result = apply_daily(arguments.root, plan)
     elif command == "promote":
-        plan = read_plan_source(arguments.plan, stdin=sys.stdin.buffer)
+        plan = read_plan_source(arguments.plan, stdin=_binary_stdin())
         result = promote(arguments.root, plan)
     elif command == "apply-structured":
-        plan = read_plan_source(arguments.plan, stdin=sys.stdin.buffer)
+        plan = read_plan_source(arguments.plan, stdin=_binary_stdin())
         result = apply_structured_sweep(arguments.root, plan)
     else:
         raise MemoryForestError(
@@ -262,6 +264,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OSError as exc:
         result = {"error": _filesystem_error(exc).as_dict(), "ok": False, "schema_version": SCHEMA_VERSION}
         exit_code = 2
+    except sqlite3.Error as exc:
+        result = {"error": _filesystem_error(exc).as_dict(), "ok": False, "schema_version": SCHEMA_VERSION}
+        exit_code = 2
     except Exception:
         result = {"error": _internal_error().as_dict(), "ok": False, "schema_version": SCHEMA_VERSION}
         exit_code = 2
@@ -277,16 +282,27 @@ def _fold_root(arguments: argparse.Namespace) -> str:
     """The forest the refusal is about: the one found, else the folder named, else the working folder."""
     try:
         return str(forest_root(arguments))
-    except (MemoryForestError, OSError):
+    except (MemoryForestError, system.Outcome):
         chosen = getattr(arguments, "root", None)
-        return os.path.abspath(chosen) if chosen else os.getcwd()
+        try:
+            return str(system.absolute(chosen) if chosen else system.working_folder())
+        except system.Outcome:
+            return str(chosen or ".")
 
 
-def _filesystem_error(exc: OSError) -> MemoryForestError:
+def _binary_stdin() -> Any:
+    """Standard input as bytes, or None for a process started with it closed (a plan read from ``-`` then
+    says so, and a plan read from a file never needs it)."""
+    return getattr(sys.stdin, "buffer", None) if sys.stdin is not None else None
+
+
+def _filesystem_error(exc: Exception) -> MemoryForestError:
+    """The 0.3 command line's refusal for an error of the disk or of SQLite: its class, never a path."""
     return MemoryForestError(
         "filesystem_error",
         "A local filesystem operation failed safely.",
         details={"reason": exc.__class__.__name__},
+        next_step="report",
     )
 
 
@@ -341,21 +357,18 @@ class ForestCommand:
     help: str
     arguments: tuple[Argument, ...] = ()
     uses_root: bool = True
+    epilog: str | None = None  # shown after the arguments in --help
 
 
 def _no_forest(root: str | None) -> MemoryForestError:
-    """What is missing, and the ``forest init`` or ``--root`` line that supplies it."""
-    if root is None:
-        message = (
-            "No forest.toml in this folder or any folder above it. "
-            "Create one with `forest init my-forest`, or name one with `forest --root my-forest`."
-        )
-    else:
-        message = (
-            f"No forest.toml in {root}. "
-            f"Create one with `forest init {root}`, or name a forest with `forest --root <folder>`."
-        )
-    return MemoryForestError("no_forest", message)
+    """No forest where the call looked: the call names one (``fix``). No command is given: only the caller knows
+    which folder holds its forest, and ``forest init`` makes a new one only in an empty folder."""
+    where = "this folder or any folder above it" if root is None else root
+    return MemoryForestError(
+        "no_forest",
+        f"No forest.toml in {where}. Name the forest's folder with `--root <folder>`; "
+        "`forest init <folder>` makes a new forest in an empty folder.",
+    )
 
 
 def forest_root(arguments: argparse.Namespace) -> Path:
@@ -367,10 +380,18 @@ def forest_root(arguments: argparse.Namespace) -> Path:
     chosen = getattr(arguments, "root", None)
     if chosen:
         root = require_real_root(chosen)
-        if not (root / CONFIG_FILENAME).is_file():
+        settings = system.kind(root / CONFIG_FILENAME)
+        if settings is None:
             raise _no_forest(shlex.quote(str(root)))
+        if settings != "file":
+            raise MemoryForestError(
+                "settings_invalid",
+                f"forest.toml is a {settings}, not a regular file.",
+                details={"source": CONFIG_FILENAME},
+                next_step="report",
+            )
         return root
-    found = find_root(os.getcwd())
+    found = find_root(system.working_folder())
     if found is None:
         raise _no_forest(None)
     return require_real_root(found)
@@ -390,8 +411,8 @@ def _print_json(value: Any) -> None:
 
 
 def _print_lines(lines: Iterable[str]) -> None:
-    for line in lines:
-        sys.stdout.write(_shown(line) + "\n")
+    # One ledger for every line: the forest's judged values are read once per answer, not once per line.
+    sys.stdout.write("".join(f"{line}\n" for line in _shown(list(lines))))
 
 
 def cmd_init(arguments: argparse.Namespace) -> int:
@@ -636,6 +657,7 @@ def build_forest_parser(commands: Sequence[ForestCommand] | None = None) -> argp
             command.words[-1],
             help=command.help,
             description=command.help,
+            epilog=command.epilog,
             parents=[rooted if command.uses_root else common],
         )
         for argument in command.arguments:
@@ -677,10 +699,16 @@ def _root_for_hook_log(argv: Sequence[str]):
         index = argv.index("--root")
         if index + 1 < len(argv):
             candidate = Path(argv[index + 1])
-            if (candidate / "forest.toml").is_file():
-                return candidate
+            try:
+                if system.kind(candidate / "forest.toml") == "file":
+                    return candidate
+            except system.Outcome:
+                return None
         return None
-    return find_root(Path.cwd())
+    try:
+        return find_root(system.working_folder())
+    except system.Outcome:
+        return None
 
 
 def _silent_hook_failure(argv: Sequence[str], class_name: str) -> int:
@@ -730,7 +758,17 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
     except OSError as exc:
         if hook:
             return _silent_hook_failure(raw, exc.__class__.__name__)
-        _show_refusal(arguments, _filesystem_error(exc))
+        from . import search
+
+        # What the door answered and no code decided on: the state's refusal, else one by its kind (section 15.4).
+        _show_refusal(arguments, search.edge_refusal(exc, _fold_root(arguments)))
+        return 2
+    except sqlite3.Error as exc:
+        if hook:
+            return _silent_hook_failure(raw, exc.__class__.__name__)
+        from . import search
+
+        _show_refusal(arguments, search._leaked_sqlite(_fold_root(arguments), exc))
         return 2
     except KeyboardInterrupt:
         if hook:
@@ -759,12 +797,10 @@ def _show_refusal(arguments: argparse.Namespace, exc: MemoryForestError) -> None
     if getattr(arguments, "json", False):
         _print_json({"error": body, "ok": False})
         return
-    sys.stderr.write(_shown(f"forest: {body['code']}: {body['message']}\n"))
-    for key, value in sorted(body["details"].items()):
-        sys.stderr.write(_shown(f"  {key}: {value}\n"))
-    for key in ("next", "command"):
-        if body.get(key):
-            sys.stderr.write(_shown(f"  {key}: {body[key]}\n"))
+    told = [f"forest: {body['code']}: {body['message']}\n"]
+    told += [f"  {key}: {value}\n" for key, value in sorted(body["details"].items())]
+    told += [f"  {key}: {body[key]}\n" for key in ("next", "command") if body.get(key)]
+    sys.stderr.write("".join(_shown(told)))
     for key in ("after_seconds", "waited_seconds", "stop_after_seconds"):
         if body.get(key) is not None:
             sys.stderr.write(f"  {key}: {body[key]:g}\n")

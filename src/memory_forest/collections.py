@@ -35,7 +35,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any, Final
 
-from . import layout, registry
+from . import layout, registry, system
 from .locking import LockToken
 from .model import (
     RECORD_SECTION,
@@ -985,7 +985,7 @@ def cite_entries(
     with writer_lock(view.root, token=lock, label="collections cite-entries") as held:
         for path in sorted(edits):
             target = layout.resolve(view.root, path, must_exist=True)
-            data = target.read_bytes()
+            data = system.read_bytes(target)
             if data.decode("utf-8", "surrogateescape") != view.text(path):
                 refuse("page_changed_meanwhile", "A page changed while the pass read it; nothing of it written.",
                        path=path)
@@ -996,7 +996,7 @@ def cite_entries(
                     refuse("cite_line_moved", "A current-state line is not where the pass read it.", path=path)
                 lines[number - 1] = new + ending
             entry = forest_archive.put(view.root, path, reason=CITE_REASON, keep=True, lock=held)
-            if forest_archive.read_copy(view.root, entry) != data or target.read_bytes() != data:
+            if forest_archive.read_copy(view.root, entry) != data or system.read_bytes(target) != data:
                 refuse("archive_copy_mismatch", "The archive copy does not hold the page; not written.", path=path)
             atomic_write(target, "".join(lines).encode("utf-8", "surrogateescape"))
             report["archived"].append(entry.archive_path)

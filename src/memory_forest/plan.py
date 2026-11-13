@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Final, NoReturn
 
-from . import archive, layout, movelog, registry
+from . import archive, layout, movelog, registry, system
 from .config import Config, load_config
 from .errors import MemoryForestError
 from .locking import LockToken, atomic_write, writer_lock
@@ -544,6 +544,9 @@ class Plan:
     removed_dirs: list[str] = field(default_factory=list)
     appends: dict[str, list[str]] = field(default_factory=dict)
     moved: dict[str, str] = field(default_factory=dict)
+    # Each page a later operation of the plan moved or folded, and where its lines went: an earlier
+    # operation's expectation follows its targets through them (a plan of several operations).
+    successors: dict[str, str] = field(default_factory=dict)
     archived_paths: set[str] = field(default_factory=set)
     rewritten: Counter[str] = field(default_factory=Counter)
     _pending_mapping: dict[str, str] = field(default_factory=dict)
@@ -578,8 +581,7 @@ class Plan:
         if path not in self._on_disk():
             return None
         if path not in self._disk:
-            with open(layout.resolve(self.root, path), "r", encoding="utf-8", errors="surrogateescape", newline="") as handle:
-                self._disk[path] = handle.read()
+            self._disk[path] = system.read_text(layout.resolve(self.root, path), errors="surrogateescape")
         return self._disk[path]
 
     def exists(self, path: str) -> bool:
@@ -615,7 +617,8 @@ class Plan:
     def folder_exists(self, folder: str) -> bool:
         if self.under(folder):
             return True
-        return layout.resolve(self.root, folder).is_dir() and folder not in self.removed_dirs
+        there = system.look_or_none(layout.resolve(self.root, folder))
+        return there is not None and there.kind == "folder" and folder not in self.removed_dirs
 
     def trees(self) -> list[str]:
         """The trees that have an index in the planned forest."""
@@ -721,6 +724,7 @@ class Plan:
         self.write(new, text)
         self.delete(old)
         self.map(old, new)
+        self.successors[old] = new
         origin = next((first for first, last in self.moved.items() if last == old), old)
         self.moved[origin] = new
         if old in self.records:
@@ -750,6 +754,7 @@ class Plan:
         self.archives.append(ArchiveItem(path, encode(text), reason, successor))
         self.delete(path)
         self.map(path, successor)
+        self.successors[path] = successor
         self.log(operation, path, successor, subject=subject, why=reason)
         self.touch(layout.classify(path).tree)
 
@@ -1021,7 +1026,8 @@ class Plan:
                         problems.append(f"reference_stale: {path}: `{target}` names a page or folder this plan removes")
         for expectation in self.expectations:
             held: Counter[str] = Counter()
-            for target in expectation.targets:
+            targets = {self.followed(target) for target in expectation.targets}
+            for target in sorted(targets):
                 if self.exists(target):
                     held.update(masked(line) for line in body_lines(self.read(target)))
             wanted = Counter(masked(line) for line in expectation.lines)
@@ -1032,9 +1038,19 @@ class Plan:
             if missing:
                 problems.append(
                     f"lines_lost: {expectation.what}: {len(missing)} line(s) are not on "
-                    f"{', '.join(expectation.targets)}, e.g. {missing[0][:120]!r}"
+                    f"{', '.join(sorted(targets))}, e.g. {missing[0][:120]!r}"
                 )
         return problems
+
+    def followed(self, path: str) -> str:
+        """Where the lines of ``path`` are at the end of the plan: through every later move or fold of it."""
+        seen = {path}
+        while not self.exists(path) and path in self.successors:
+            path = self.successors[path]
+            if path in seen:
+                break
+            seen.add(path)
+        return path
 
     def verify(self) -> None:
         problems = self.check()
@@ -1096,7 +1112,7 @@ class Plan:
             for item in self.archives:
                 archive.store(self.root, item.path, item.data, reason=item.reason, successor=item.successor, lock=held)
             new_folders = self._folders_to_make(changed)
-            standing = [folder for folder in self.removed_dirs if layout.resolve(self.root, folder).is_dir()]
+            standing = [folder for folder in self.removed_dirs if _is_folder(layout.resolve(self.root, folder))]
             appends_before = {relative: _file_size(layout.state_path(self.root, relative))
                               for relative, lines in self.appends.items() if lines}
             journal.write(self.root, label=" ; ".join(self.operations) or "forest move",
@@ -1119,14 +1135,13 @@ class Plan:
                     if text is None:
                         target = layout.resolve(self.root, path)
                         written.append(path)
-                        if target.exists():
-                            target.unlink()
+                        system.remove(target)
                 for path, text in changed.items():
                     target = layout.resolve(self.root, path)
                     if text is None:
-                        if target.exists():
+                        if system.look_or_none(target) is not None:
                             refuse("write_readback_failed", "A removed page is still there.", path=path)
-                    elif target.read_bytes() != encode(text):
+                    elif system.read_bytes(target) != encode(text):
                         refuse("write_readback_failed", "A page did not read back as written.", path=path)
                 for folder in sorted(self.removed_dirs, key=len, reverse=True):
                     _remove_empty_folder(self.root, folder)
@@ -1146,7 +1161,7 @@ class Plan:
             try:
                 built = registry.build_and_write(self.root, config=self.config)
                 report["registry_problems"] = len(built.problems)
-            except (MemoryForestError, OSError) as exc:
+            except (MemoryForestError, system.Outcome) as exc:
                 report["registry_problems"] = None
                 self.note(f"registry_not_rebuilt: {exc.__class__.__name__}; `forest registry build` repairs it")
                 report["notes"] = list(self.notes)
@@ -1161,7 +1176,7 @@ class Plan:
             parts = layout.normalize(folder).split("/")
             for depth in range(1, len(parts) + 1):
                 relative = "/".join(parts[:depth])
-                if relative not in wanted and not layout.resolve(self.root, relative).exists():
+                if relative not in wanted and system.look_or_none(layout.resolve(self.root, relative)) is None:
                     wanted.append(relative)
         return wanted
 
@@ -1170,51 +1185,49 @@ class Plan:
             target = layout.resolve(self.root, path)
         except MemoryForestError:
             return None
-        if not target.is_file():
+        if not _is_file(target):
             return None
-        with open(target, "r", encoding="utf-8", errors="surrogateescape", newline="") as handle:
-            return handle.read()
+        return system.read_text(target, errors="surrogateescape")
 
     def _roll_back(self, written: list[str], made: list[Path]) -> None:
         for path in written:
             target = layout.resolve(self.root, path)
             before = self.before.get(path)
             if before is None:
-                if target.exists():
-                    target.unlink()
+                system.remove(target)
             else:
                 _make_folders(self.root, str(PurePosixPath(path).parent))
                 atomic_write(target, encode(before))
         for folder in reversed(made):
             try:
-                folder.rmdir()
-            except OSError:
+                system.remove_folder(folder)
+            except system.Outcome:
                 pass
 
 
+def _is_file(path: Path) -> bool:
+    there = system.look_or_none(path)
+    return there is not None and there.kind == "file"
+
+
+def _is_folder(path: Path) -> bool:
+    there = system.look_or_none(path)
+    return there is not None and there.kind == "folder"
+
+
 def _file_size(path: Path) -> int:
-    return path.stat().st_size if path.is_file() else 0
+    there = system.look_or_none(path)
+    return there.size if there is not None and there.kind == "file" else 0
 
 
 def _append_lines(path: Path, lines: Iterable[str]) -> None:
     """Lines appended durably to an append-only state file (made private when it is new)."""
-    data = "".join(f"{line}\n" for line in lines).encode("utf-8")
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        os.write(descriptor, data)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    system.append(path, "".join(f"{line}\n" for line in lines).encode("utf-8"))
 
 
 def _cut_file(path: Path, length: int) -> None:
     """An append-only file cut back to ``length`` bytes (what a failed commit appended goes)."""
-    if path.is_file() and path.stat().st_size > length:
-        with open(path, "r+b") as handle:
-            handle.truncate(length)
-            handle.flush()
-            os.fsync(handle.fileno())
+    system.cut_back(path, length)
 
 
 def _make_folders(root: Path, folder: str) -> list[Path]:
@@ -1225,25 +1238,25 @@ def _make_folders(root: Path, folder: str) -> list[Path]:
         relative = "/".join(parts[:depth])
         target = layout.resolve(root, relative)
         try:
-            target.mkdir(mode=0o700)
-        except FileExistsError:
-            if target.is_symlink() or not target.is_dir():
-                refuse("unsafe_existing_path", "An expected folder is a symlink or a file.", path=relative)
-        else:
-            made.append(target)
+            if system.make_folder(target, mode=0o700):
+                made.append(target)
+        except system.Link:
+            refuse("unsafe_existing_path", "An expected folder is a link.", path=relative)
+        except system.NotAFolder:
+            refuse("unsafe_existing_path", "An expected folder is not a folder.", path=relative)
     return made
 
 
 def _remove_empty_folder(root: Path, folder: str) -> None:
     target = layout.resolve(root, folder)
-    if not target.is_dir():
+    if not _is_folder(target):
         return
-    leftovers = [entry for entry in target.iterdir() if entry.name != ".DS_Store"]
-    if leftovers:
+    entries = system.listing(target)
+    if [entry for entry in entries if entry.name != ".DS_Store"]:
         return
-    for entry in target.iterdir():
-        entry.unlink()
-    target.rmdir()
+    for entry in entries:
+        system.remove(entry.path)
+    system.remove_folder(target)
 
 
 def run(

@@ -12,7 +12,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from . import layout
+from . import layout, system
 from .agents import readable_trees
 from .config import Config
 from .layout import PageRole, PathInfo
@@ -78,5 +78,4 @@ def _is_agent(config: Config, registry: Registry, reader: str, root: str | os.Pa
         return True
     if root is None:
         return False
-    folder = layout.resolve(root, f"{layout.ISTM}/{reader}")
-    return folder.is_dir() and not folder.is_symlink()
+    return system.kind(layout.resolve(root, f"{layout.ISTM}/{reader}")) == "folder"

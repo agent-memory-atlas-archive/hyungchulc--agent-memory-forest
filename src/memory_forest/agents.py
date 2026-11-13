@@ -26,8 +26,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from . import layout, registry
+from . import layout, registry, system
 from .config import AGENT_TEXT_MAX, Config, KnownAgent
+from .errors import MemoryForestError
 from .registry import Problem
 
 CONFIG_PATH: Final[str] = "forest.toml"
@@ -52,21 +53,20 @@ class Candidate:
 def lanes(root: str | os.PathLike[str]) -> list[str]:
     """The folders of ``06 istm/`` that hold at least one file (hidden names aside), sorted."""
     top = Path(root) / layout.ISTM
-    if not top.is_dir() or top.is_symlink():
+    if system.kind(top) != "folder":
         return []
-    found = []
-    for entry in sorted(os.scandir(top), key=lambda item: item.name):
-        if entry.name.startswith(".") or entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
-            continue
-        if _holds_a_file(Path(entry.path)):
-            found.append(entry.name)
-    return found
+    return [
+        entry.name for entry in system.listing(top)
+        if not entry.name.startswith(".") and entry.kind == "folder" and _holds_a_file(entry.path)
+    ]
 
 
 def _holds_a_file(folder: Path) -> bool:
-    for current, folders, files in os.walk(folder, followlinks=False):
-        folders[:] = [name for name in folders if not name.startswith(".")]
-        if any(not name.startswith(".") and (Path(current) / name).is_file() for name in files):
+    """Whether ``folder`` or a folder under it holds a file (hidden names aside; nothing is followed)."""
+    for entry in system.listing(folder):
+        if entry.name.startswith("."):
+            continue
+        if entry.kind == "file" or (entry.kind == "folder" and _holds_a_file(entry.path)):
             return True
     return False
 
@@ -235,7 +235,7 @@ def free_id(slug: str, taken_map: Mapping[str, list[str]]) -> str:
 def _registry(root: str | os.PathLike[str], config: Config) -> registry.Registry | None:
     try:
         return registry.build(root, config=config)
-    except (MemoryForestError, OSError):
+    except MemoryForestError:
         return None
 
 

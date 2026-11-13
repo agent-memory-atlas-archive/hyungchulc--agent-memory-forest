@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Final
 
-from . import archive, layout
+from . import archive, layout, system
 from .errors import MemoryForestError
 from .locking import LockToken, append_lines, writer_lock
 from .safety import require_real_root
@@ -138,9 +138,8 @@ def read(root: str | os.PathLike[str], *, include_non_moving: bool = False) -> l
     safe_root = require_real_root(root)
     path = layout.moves_path(safe_root)
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
-    except FileNotFoundError:
+        lines = system.read_text(path).splitlines()
+    except system.Absent:
         return []
     records: list[MoveRecord] = []
     for line in lines:
@@ -213,14 +212,14 @@ def _exists(root: Any, path: str) -> bool:
     code span (a collection entry's line, a registry line)."""
     page, mark, anchor = path.partition("#")
     target = _page_file(root, page)
-    if target is None or not target.exists():
+    there = None if target is None else system.kind(target)
+    if there is None:
         return False
     if not mark or not anchor:
         return True
-    if not target.is_file():
+    if there != "file":
         return False
-    with open(target, "r", encoding="utf-8", errors="surrogateescape") as handle:
-        return f"`{anchor}`" in handle.read()
+    return f"`{anchor}`" in system.read_text(target, errors="surrogateescape")
 
 
 def _entry_in_folder(root: Any, address: str) -> str | None:
@@ -231,12 +230,12 @@ def _entry_in_folder(root: Any, address: str) -> str | None:
         return None
     folder = page.rsplit("/", 1)[0]
     target = _page_file(root, folder)
-    if target is None or not target.is_dir():
+    if target is None or system.kind(target) != "folder":
         return None
     found = []
-    for item in sorted(target.iterdir()):
+    for item in system.listing(target):
         sibling = f"{folder}/{item.name}"
-        if item.is_file() and sibling != page and layout.page_role(sibling) is layout.PageRole.COLLECTION_PAGE:
+        if item.kind == "file" and sibling != page and layout.page_role(sibling) is layout.PageRole.COLLECTION_PAGE:
             if _exists(root, f"{sibling}#{anchor}"):
                 found.append(f"{sibling}#{anchor}")
     return found[0] if len(found) == 1 else None
