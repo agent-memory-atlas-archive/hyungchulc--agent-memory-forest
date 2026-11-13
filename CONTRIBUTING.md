@@ -60,6 +60,22 @@ git diff --check
 
 For a CLI behavior change, also perform a clean initialization in a temporary directory, run `doctor`, `validate`, `audit`, `index`, `route`, `retrieve`, and metadata-only `search`, then verify that no existing target is overwritten.
 
+### Checking that the tests notice a guard
+
+`scripts/mutate_guards.py` turns each guard of the functions you name round, one at a time, in a private
+copy of the repository: a condition, a comparison, an early return, a `return True` or `return False`, a
+raise, a loop, a `continue` or a `break`. It runs the tests you name for each function and prints which
+changes they notice (`killed`) and which they do not (`survived`). It is not part of `make check`. Run it
+niced, one process at a time; Ctrl-C stops it, and the same command goes on from its state file,
+`.mutate-guards.json`.
+
+```sh
+nice -n 15 python3 scripts/mutate_guards.py --target src/memory_forest/search.py:_probe \
+    --tests test_v1_index_state.CatalogueTests
+```
+
+A survivor gets a test that kills it, or a sentence that says why the changed copy is the same program.
+
 ## Pull requests
 
 A useful pull request explains the problem, the chosen boundary, the verification performed, and any remaining limitation. Keep unrelated changes separate.

@@ -8,6 +8,8 @@ __pycache__/
 *.py[cod]
 build/
 dist/
+.mutate-guards.json
+.mutate-guards.json.*.tmp
 
 # A real forest is private runtime data, not repository content.
 .memory-forest/
