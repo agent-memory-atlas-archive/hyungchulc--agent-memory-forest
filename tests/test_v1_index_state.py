@@ -303,8 +303,7 @@ class BoundaryTests(unittest.TestCase):
         return [
             ("status", lambda: search.status(root)),
             ("query", lambda: search.query(root, "trays", reader="till-bot")),
-            ("connect", lambda: search.connect(root)),
-            ("require_index", lambda: search.require_index(root)),
+            ("rows", lambda: search.rows(root, "SELECT 1")),
             ("index_state", lambda: search.index_state(root)),
             ("refresh_lanes_and_daily", lambda: search.refresh_lanes_and_daily(root)),
             ("timeline.query", lambda: timeline.query(root, "2051-03-02", reader="till-bot")),

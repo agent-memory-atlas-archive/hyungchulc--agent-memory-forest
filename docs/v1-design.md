@@ -264,8 +264,10 @@ changed. That catches a restore that kept the size and the time.
 
 **One way of writing the file.** The published file is only ever written in place, in WAL mode: a build,
 an update after an append and a `memory_log` each change it inside one transaction. A reader reads the
-last committed snapshot and never waits for a writer; a connection opened before a build keeps its
-snapshot and sees the new one after the commit. A build that must index everything again (a new schema,
+last committed snapshot and never waits for a writer. The read opens the index, runs what it was given,
+compares the file's identity and closes the connection before it returns, so no connection or cursor
+leaves that function. A query asked while a build has not committed answers from the last committed
+snapshot, or refuses when there is nothing committed yet. A build that must index everything again (a new schema,
 tokenizer or masking) empties the tables and fills them inside that same transaction. A build, an update
 and a `memory_log` never replace, rename or unlink the database or its `-wal` and `-shm` files: SQLite's
 notes on how to corrupt a database (sections 1.3 and 2.5) warn that a process holding the old file can
@@ -320,7 +322,9 @@ regular file. In immutable mode SQLite reads that same descriptor, through `/dev
 names the open file there, and otherwise opens the path. After the read, in every mode, the device and
 inode the path names are compared with the descriptor's; in immutable mode the descriptor's size and
 time, and the absence of a write-ahead log, are compared too. If any of them changed, nothing read is
-answered: the answer is `index_busy` with `retry`. A file that went away or was replaced between the
+answered: the answer is `index_busy` with `retry`. That compare is inside the one read, after the last
+statement and before the answer is given. A failed read compares again before its refusal is chosen.
+No public function returns the connection or a cursor. A file that went away or was replaced between the
 door's look and SQLite's open is `index_busy` too, and so is an open that does not finish within
 `OPEN_DEADLINE_SECONDS` (10). Immutable mode is never used on a folder this process can write.
 `memory_log` and `forest log` in a forest this account cannot write are `log_read_only`, next `report`:

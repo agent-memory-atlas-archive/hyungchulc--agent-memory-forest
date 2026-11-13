@@ -53,11 +53,8 @@ class IndexResetTests(ForestTestCase):
         search.build(self.root)
         self.assertFalse(self.pointer.exists())
         self.assertEqual(search.index_relative(self.root), ".forest/index.sqlite")
-        connection = search.connect(self.root)
-        self.assertIsNotNone(connection)
-        assert connection is not None
-        self.assertGreater(connection.execute("SELECT COUNT(*) FROM units").fetchone()[0], 0)
-        connection.close()
+        counted = search.rows(self.root, "SELECT COUNT(*) FROM units")
+        self.assertGreater(counted[0][0], 0)
         self.assertIn(TILL, [page["path"] for page in search.query(self.root, "trays", reader="till-bot")["results"]])
 
     def test_a_removal_that_fails_after_the_pointer_moved_names_the_orphan(self) -> None:
@@ -165,7 +162,7 @@ class IndexResetTests(ForestTestCase):
         search.build(self.root)
         self.pointer.write_text("../outside.sqlite\n", encoding="utf-8")
         with self.assertRaises(MemoryForestError) as refused:
-            search.connect(self.root)
+            search.rows(self.root, "SELECT 1")
         self.assertEqual(refused.exception.code, "index_unreadable")
         self.assertEqual(refused.exception.command, "forest index reset")
         result = search.reset(self.root)

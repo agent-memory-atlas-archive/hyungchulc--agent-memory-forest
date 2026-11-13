@@ -126,8 +126,10 @@ class MaskingFingerprintTests(ForestTestCase):
 
     def test_a_new_label_word_hides_the_value_from_search_through_the_cli_and_mcp(self) -> None:
         self.assertIn(LOCKER, _search_paths(self, "zebra99"))
-        reader = search.connect(self.root)
-        assert reader is not None
+        # The package does not hand out a connection. A connection the caller opens on the published file
+        # keeps the snapshot it started, including across a later rebuild.
+        reader = sqlite3.connect(self.root / search.index_relative(self.root))
+        reader.execute("PRAGMA query_only = ON")
         self._settings('\n[credentials]\nlabel_words = ["password", "combo"]\n')
         shown = _cli(self, ["read", LOCKER, "--as", "till-bot", "--json"])
         self.assertIn("[REDACTED]", shown[1])
@@ -345,8 +347,8 @@ class PublishingTests(ForestTestCase):
 
     def test_a_reader_opened_before_a_build_answers_after_it_and_a_query_during_it_never_raises(self) -> None:
         inode = self.index.stat().st_ino
-        reader = search.connect(self.root)
-        assert reader is not None
+        reader = sqlite3.connect(self.index)
+        reader.execute("PRAGMA query_only = ON")
         cursor = reader.execute("SELECT text FROM units ORDER BY id")
         self.assertIsNotNone(cursor.fetchone())  # a read transaction is open across the build
         lane = self.root / TILL
@@ -503,7 +505,9 @@ class SqliteErrorClassTests(ForestTestCase):
         try:
             read_fifo(builder, str(held), what="the build to reach its transaction")
             self.assertTrue(self.index.is_file())
-            self.assertIsNone(search.connect(self.root))
+            with self.assertRaises(MemoryForestError) as uncommitted:
+                search.rows(self.root, "SELECT 1")
+            self.assertEqual(uncommitted.exception.code, "index_busy")
             state = search.status(self.root)
             self.assertEqual((state["available"], state["exists"]), (False, True))
             code, out, err = _cli(self, ["index", "status", "--json"])
@@ -681,7 +685,7 @@ class SqliteErrorClassTests(ForestTestCase):
 
     def test_every_tool_refusal_is_one_json_shape_with_or_without_a_next_move(self) -> None:
         with self.assertRaises(MemoryForestError) as missing:
-            search.require_index(self.root)
+            search.rows(self.root, "SELECT 1")
         self.assertEqual(missing.exception.as_dict()["next"], "run")
         self.assertEqual(missing.exception.as_dict()["command"], "forest index build")
         search.build(self.root)

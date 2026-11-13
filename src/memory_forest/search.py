@@ -5,8 +5,9 @@
 the file by hand is not the repair. One row is one page section, one collection entry, one
 marked block of a daily page, or one raw-lane turn. A build or update holds
 the ``index`` lock and writes the published file in place, in one transaction,
-in WAL mode: a reader keeps the snapshot it opened and never waits for a
-writer. A build or update never replaces or unlinks the file or its journal
+in WAL mode. The read opens the file, runs, compares the file's identity and
+closes before it returns, so no connection leaves; a query sees the last
+committed snapshot and never waits for a writer. A build or update never replaces or unlinks the file or its journal
 files. ``forest index reset`` publishes a new generation under
 ``.forest/index.current`` and only then removes the old file, for an index
 that is corrupt or is not a database (``index_error`` is the one place a
@@ -360,29 +361,22 @@ def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
     """
     safe = require_real_root(root)
     listing = _lane_daily_listing(safe)
-    reading = _facts(safe)
-    try:
-        decision = derived.decide(reading.facts, "read")
-        if decision.code is not None:
-            raise derived.refusal(decision, reading)
-        stored: dict[str, tuple[int, int]] | None = None
-        if not decision.build_first:
-            index = reading.index
-            assert index is not None
-            try:
-                stored = {
-                    row[0]: (row[1], row[2])
-                    for row in index.connection.execute(
-                        "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
-                        (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
-                    )
-                }
-            except sqlite3.Error as exc:
-                raise _failed_read(reading, exc) from exc
-            if not index.same():
-                raise _changed(reading)
-    finally:
-        reading.close()
+    found: dict[str, Any] = {}
+
+    def run(connection: sqlite3.Connection | None) -> dict[str, tuple[int, int]] | None:
+        if connection is None:
+            return None
+        return {
+            row[0]: (row[1], row[2])
+            for row in connection.execute(
+                "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
+                (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
+            )
+        }
+
+    stored = _checked_read(safe, run, into=found, retry_protocol=False)
+    reading = found["reading"]
+    decision = found["decision"]
     if decision.build_first:
         # A file on disk (another version's, or one whose first build has not committed) and a masking
         # change are waited for; with no file yet a busy build has no rows to answer from.
@@ -423,13 +417,12 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
     the index lock held, a build or a reset now would be refused, so ``next`` is ``retry``.
     """
     safe = require_real_root(root)
-    reading = _facts(safe, changes=lambda found: _stale_files(safe, found.index.connection), check_lock=True)
-    try:
-        decision = derived.decide(reading.facts, "status")
-        if decision.code is not None:
-            raise derived.refusal(decision, reading)
-        index = reading.index
-        if index is None:
+    found: dict[str, Any] = {}
+
+    def run(connection: sqlite3.Connection | None) -> dict[str, Any]:
+        reading = found["reading"]
+        decision = found["decision"]
+        if connection is None:
             payload: dict[str, Any] = {
                 "available": False,
                 "exists": reading.facts.generation == "file",
@@ -438,17 +431,8 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
                 "state": decision.state,
             }
         else:
-            connection = index.connection
-            try:
-                files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-                units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
-                undecodable = _flagged(connection, "undecodable")
-                torn = _flagged(connection, "torn")
-                verify_due = _verify_due(connection)
-            except sqlite3.Error as exc:
-                raise _failed_read(reading, exc) from exc
-            if not index.same():
-                raise _changed(reading)
+            files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
             meta = reading.meta or {}
             payload = {
                 "available": True,
@@ -462,12 +446,12 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
                 "stale": list(reading.changed),
                 "state": decision.state,
                 "tokenizer": meta.get("tokenizer", ""),
-                "torn": torn,
-                "undecodable": undecodable,
+                "torn": _flagged(connection, "torn"),
+                "undecodable": _flagged(connection, "undecodable"),
                 "units": units,
-                "verify_due": verify_due,
+                "verify_due": _verify_due(connection),
             }
-            if index.immutable:
+            if is_read_only(connection):
                 payload["read_only"] = True
         if decision.move is not None:
             payload["next"] = decision.move
@@ -477,8 +461,11 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
                 payload["after_seconds"] = RETRY_AFTER_SECONDS
             payload["message"] = derived.sentences(decision, reading.facts)
         return payload
-    finally:
-        reading.close()
+
+    return _checked_read(
+        safe, run, command="status", into=found, retry_protocol=False,
+        changes=lambda held: _stale_files(safe, held.index.connection), check_lock=True,
+    )
 
 
 # ─────────────────────── the state of the derived folder ───────────────────────
@@ -572,24 +559,25 @@ def _beside_now(reading: derived.Reading) -> MemoryForestError | None:
     return derived.refusal(derived.decide(facts, "read"), dataclasses.replace(reading, facts=facts))
 
 
-def _failed_read(reading: derived.Reading, exc: sqlite3.Error) -> MemoryForestError:
-    """An error SQLite raised while a read used the index: what that error is, decided as a fact.
+def _failed_read(reading: derived.Reading, exc: sqlite3.Error) -> tuple[MemoryForestError, str]:
+    """An error SQLite raised while a read used the index, and why that refusal was chosen.
 
-    A file that changed meanwhile is busy. Otherwise the names beside the index are looked at again, and
-    only then is the error's class the metadata step's value, so a damaged index in a folder this account
-    cannot write is told as that, never as a reset it cannot run.
+    The why is ``changed`` when the file's identity is no longer the one that was opened, ``beside`` when a
+    name beside the index is not a readable file, and ``sqlite`` when the error's own class decides.
+    The identity is compared here, before the class is chosen, so a file that changed is busy rather than
+    whatever the error would have been called.
     """
     if reading.index is not None and not reading.index.same():
-        return _changed(reading)
+        return _changed(reading), "changed"
     beside = _beside_now(reading)
     if beside is not None:
-        return beside
+        return beside, "beside"
     facts = dataclasses.replace(reading.facts, metadata=derived.sqlite_kind(exc), changes=derived.NR)
     error = derived.refusal(derived.decide(facts, "read"), dataclasses.replace(reading, facts=facts))
     name = str(getattr(exc, "sqlite_errorname", "") or "")
     if name:
         error.details["sqlite"] = name
-    return error
+    return error, "sqlite"
 
 
 @_public
@@ -620,30 +608,41 @@ def index_state(root: str | os.PathLike[str]) -> str:
     return derived.state_of(reading.facts)
 
 
-def _checked_read(root: Path, fn: Any) -> Any:
-    """Run ``fn`` on the open index and close it; what the path names is compared after the read.
+def _checked_read(
+    root: Path,
+    fn: Any,
+    *,
+    command: str = "read",
+    retry_protocol: bool = True,
+    into: dict[str, Any] | None = None,
+    **fact_kwargs: Any,
+) -> Any:
+    """The one read of the index: look, open, run ``fn``, compare, decide, and close.
 
-    ``fn`` gets the connection (None when there is no index yet and a build could not make one). A state a
-    read cannot answer from is its refusal first. An error SQLite raises while ``fn`` reads is decided as a
-    fact (``_failed_read``); a file that changed meanwhile is ``index_busy``.
+    ``fn`` is what to run. It is called with the connection and returns the rows, or whatever the caller
+    builds from them. The connection does not leave this function: it is closed before the return. A state
+    a read cannot answer from is its refusal first. After the last statement, what the path names is
+    compared with the file that was opened; a file that changed is ``index_busy`` and nothing read is
+    returned. An error SQLite raises is decided by ``_failed_read`` (the identity first, then the names
+    beside the index, then the error's class). A protocol error on a query's read is ``index_protocol`` so
+    the caller can try again; ``status`` and a refresh report it as it is.
     """
-    reading = _facts(root)
+    reading = _facts(root, **fact_kwargs)
     try:
-        decision = derived.decide(reading.facts, "read")
+        decision = derived.decide(reading.facts, command)
+        if into is not None:
+            into["reading"] = reading
+            into["decision"] = decision
         if decision.code is not None:
             raise derived.refusal(decision, reading)
         index = reading.index
         try:
             result = fn(index.connection if index is not None else None)
         except sqlite3.Error as exc:
-            if index is not None and not index.same():
-                raise _changed(reading) from exc
-            beside = _beside_now(reading)
-            if beside is not None:
-                raise beside from exc
-            if derived.sqlite_error_kind(exc) == "protocol":
+            failed, why = _failed_read(reading, exc)
+            if why == "sqlite" and retry_protocol and derived.sqlite_error_kind(exc) == "protocol":
                 raise index_error(exc, path=reading.path) from exc
-            raise _failed_read(reading, exc) from exc
+            raise failed from exc
         if index is not None and not index.same():
             raise _changed(reading)
         return result
@@ -676,36 +675,34 @@ def _no_schema_yet(exc: sqlite3.Error) -> bool:
 
 
 @_public
-def connect(root: str | os.PathLike[str]) -> sqlite3.Connection | None:
-    """Open the published index for reading, or None when there is no index yet. Writes are refused on it.
+def rows(
+    root: str | os.PathLike[str], statement: str, parameters: tuple[Any, ...] = ()
+) -> list[tuple[Any, ...]]:
+    """Run one statement on the index and return its rows.
 
-    The state decides (``derived.decide``): a state a read cannot answer from is its refusal. The index is
-    in WAL mode, so a reader does not wait for a writer: it reads the last committed snapshot. In a folder
-    this process cannot write, the connection is in SQLite's immutable mode (``is_read_only``).
+    This is the read: the facts are looked at, the index is opened, the statement runs, the file's identity
+    is compared, and the connection is closed before these rows leave. Nothing here returns a connection
+    or a cursor. A state a read cannot answer from is that state's refusal. A file that is not committed
+    yet is ``index_busy``. No index at all is ``index_missing``.
     """
-    reading = _facts(require_real_root(root))
-    decision = derived.decide(reading.facts, "read")
-    if decision.code is not None:
-        reading.close()
-        raise derived.refusal(decision, reading)
-    if reading.index is None:
-        return None
-    reading.index.release_descriptor()
-    return reading.index.connection
+    safe = require_real_root(root)
+    found: dict[str, Any] = {}
 
+    def run(connection: sqlite3.Connection | None) -> list[tuple[Any, ...]]:
+        if connection is None:
+            reading = found["reading"]
+            if reading.facts.metadata == "not_committed":
+                raise no_index_yet(safe)
+            raise MemoryForestError(
+                "index_missing",
+                "The forest has no search index. Run `forest index build`.",
+                details={"path": reading.path},
+                next_step="run",
+                command=_BUILD_COMMAND,
+            )
+        return [tuple(row) for row in connection.execute(statement, parameters)]
 
-@_public
-def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
-    connection = connect(root)
-    if connection is None:
-        raise MemoryForestError(
-            "index_missing",
-            "The forest has no search index. Run `forest index build`.",
-            details={"path": index_relative(root)},
-            next_step="run",
-            command=_BUILD_COMMAND,
-        )
-    return connection
+    return _checked_read(safe, run, into=found)
 
 
 # The index lock is a file lock, held once per process. Threads of one process (the HTTP server's) queue here

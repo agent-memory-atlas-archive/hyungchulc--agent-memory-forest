@@ -1320,13 +1320,13 @@ def _damaged_index(root: Path, base: Path) -> None:
 
 
 def _require_index(root: Path, base: Path) -> bool:
-    """``search.require_index``: the published index, opened for reading (and closed again here)."""
-    search.require_index(root).close()
+    """``search.rows``: one statement on the published index. No index is ``index_missing``."""
+    search.rows(root, "SELECT 1")
     return True
 
 
 _add(RUN_ROWS, {
-    "index_missing": Run("find", api("search.require_index(root)", _require_index)),
+    "index_missing": Run("find", api('search.rows(root, "SELECT 1")', _require_index)),
     "index_unreadable": Run("find-indexed", forest("search", "trays", "--as", "till-bot"), make=_damaged_index),
 })
 

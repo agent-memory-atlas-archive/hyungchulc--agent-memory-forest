@@ -199,6 +199,8 @@ class Watch:
     # Every call whose path is this path, or a path under it, answers that outcome from the first touch on.
     fail_under: tuple[tuple[str, str], ...] = ()
     calls: list[tuple[str, str]] = field(default_factory=list)
+    # Calls and statements in the order they happened, so a test can say what follows a statement.
+    events: list[tuple[str, str]] = field(default_factory=list)
     bytes_read: int = 0
     statements: int = 0
     statement_texts: list[str] = field(default_factory=list)
@@ -265,6 +267,7 @@ def _enter(name: str, path: str | os.PathLike[str], access: str) -> None:
     text = os.fspath(path)
     with watch.lock:
         watch.calls.append((name, text))
+        watch.events.append(("call", name))
         number = len(watch.calls)
         kind = watch.fail_calls.get(number)
         if kind is None:
@@ -303,6 +306,7 @@ def _statement(sql: str) -> None:
     with watch.lock:
         watch.statements += 1
         watch.statement_texts.append(" ".join(sql.split())[:80])
+        watch.events.append(("statement", "ran"))
         kind = watch.fail_statements.get(watch.statements)
         if kind is not None:
             watch.injected.append((watch.statements, "statement", kind))
