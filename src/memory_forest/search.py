@@ -374,7 +374,7 @@ def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
             )
         }
 
-    stored = _checked_read(safe, run, into=found, retry_protocol=False)
+    stored = _read_index(safe, run, into=found, retry_protocol=False)
     reading = found["reading"]
     decision = found["decision"]
     if decision.build_first:
@@ -462,7 +462,7 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
             payload["message"] = derived.sentences(decision, reading.facts)
         return payload
 
-    return _checked_read(
+    return _read_index(
         safe, run, command="status", into=found, retry_protocol=False,
         changes=lambda held: _stale_files(safe, held.index.connection), check_lock=True,
     )
@@ -608,7 +608,7 @@ def index_state(root: str | os.PathLike[str]) -> str:
     return derived.state_of(reading.facts)
 
 
-def _checked_read(
+def _read_index(
     root: Path,
     fn: Any,
     *,
@@ -648,6 +648,11 @@ def _checked_read(
         return result
     finally:
         reading.close()
+
+
+def _checked_read(root: Path, fn: Any, **kwargs: Any) -> Any:
+    """The name a query uses for :func:`_read_index`. A test may replace this one call."""
+    return _read_index(root, fn, **kwargs)
 
 
 @_public
@@ -702,7 +707,7 @@ def rows(
             )
         return [tuple(row) for row in connection.execute(statement, parameters)]
 
-    return _checked_read(safe, run, into=found)
+    return _read_index(safe, run, into=found)
 
 
 # The index lock is a file lock, held once per process. Threads of one process (the HTTP server's) queue here

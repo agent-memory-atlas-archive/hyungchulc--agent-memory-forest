@@ -132,7 +132,7 @@ class ReviewFourTests(ForestTestCase):
             def close(self) -> None:
                 return None
 
-        with mock.patch.object(search, "_checked_read", lambda root, fn: fn(Connection())):
+        with mock.patch.object(search, "_checked_read", lambda root, fn, **_kwargs: fn(Connection())):
             found = search.query(self.root, "trays", reader="till-bot")
             self.assertIsInstance(found["results"], list)
             mode["name"] = "busy"
