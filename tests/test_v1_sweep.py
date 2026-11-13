@@ -13,6 +13,7 @@ The bakery and the bots are invented. Nothing here is a real person, shop or tra
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import errno
 import inspect
@@ -490,6 +491,28 @@ class EdgeTests(unittest.TestCase):
         self.assertEqual(refused(raised=page).details["path"], "a path outside the forest")
         fault = refused()
         self.assertEqual((fault.code, fault.details), ("internal_error", {"reason": "ValueError"}))
+
+    def test_the_forest_a_command_line_refusal_is_about(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        forest = base / "forest"
+        for relative, text in SWEEP_FILES.items():
+            (forest / relative).parent.mkdir(parents=True, exist_ok=True)
+            (forest / relative).write_text(text, encoding="utf-8")
+        (base / "empty").mkdir()
+        self.assertEqual(cli._fold_root(argparse.Namespace(root=str(forest))), str(forest))
+        self.assertEqual(cli._fold_root(argparse.Namespace(root=str(base / "empty"))), str(base / "empty"))
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(base)
+        self.assertEqual(cli._fold_root(argparse.Namespace(root=None)), str(base))
+        gone = base / "gone"
+        gone.mkdir()
+        os.chdir(gone)
+        gone.rmdir()  # the working folder is gone: the refusal is about "."
+        self.assertEqual(cli._fold_root(argparse.Namespace(root=None)), ".")
+        os.chdir(here)
 
     def test_a_place_is_named_inside_the_forest_and_in_words_outside_it(self) -> None:
         root = "/forests/bakery"

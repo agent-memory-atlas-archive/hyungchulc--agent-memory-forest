@@ -10,11 +10,13 @@ import ast
 import builtins
 import contextlib
 import errno
+import fcntl
 import io
 import json
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import threading
 import time
@@ -512,6 +514,373 @@ class DoorClassifyTests(ForestTestCase):
         self.assertFalse(handle.same())
         index.unlink()
         self.assertFalse(handle.same())
+
+class DoorCallTests(ForestTestCase):
+    """Each call of the door on a real disk: its value, and the outcome for what stands in its way."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.folder = self.base / "shop"
+        self.folder.mkdir()
+        self.page = self.folder / "tray.md"
+        self.page.write_bytes(b"the rye trays\n")
+        self.link = self.folder / "tray-link.md"
+        self.link.symlink_to(self.page)
+        self.fifo = self.folder / "proof.fifo"
+        os.mkfifo(self.fifo)
+        self.inner = self.folder / "racks"
+        self.inner.mkdir()
+
+    def test_a_listing_names_what_stands_there_and_follows_nothing(self) -> None:
+        names = [("proof.fifo", "fifo"), ("racks", "folder"), ("tray-link.md", "link"), ("tray.md", "file")]
+        listed = system.listing(self.folder)
+        self.assertEqual([(entry.name, entry.kind) for entry in listed], names)
+        self.assertEqual((listed[3].path, listed[3].look), (self.page, None))
+        looked = system.listing(self.folder, looks=True)
+        self.assertEqual([(entry.name, entry.kind) for entry in looked], names)
+        self.assertEqual((looked[3].look.kind, looked[3].look.size), ("file", 14))
+        with self.assertRaises(system.NotAFolder) as file_there:
+            system.listing(self.page)
+        self.assertEqual(file_there.exception.found, "file")
+        (self.folder / "racks-link").symlink_to(self.inner)
+        with self.assertRaises(system.Link):
+            system.listing(self.folder / "racks-link")
+        with self.assertRaises(system.Absent):
+            system.listing(self.folder / "gone")
+
+    def test_a_read_takes_a_regular_file_only(self) -> None:
+        self.assertEqual(system.read_bytes(self.page), b"the rye trays\n")
+        self.assertEqual(system.read_bytes(self.page, limit=7), b"the rye")
+        self.assertEqual(system.read_bytes(self.page, limit=0), b"")
+        self.assertEqual(system.read_text(self.page), "the rye trays\n")
+        (self.folder / "odd.md").write_bytes(b"the \xff tray")
+        self.assertEqual(system.read_text(self.folder / "odd.md", errors="replace"), "the \ufffd tray")
+        with system.watching() as watch:
+            system.read_bytes(self.page)
+        self.assertEqual(watch.bytes_read, 14)
+        for path, kind, found in ((self.inner, system.NotAFile, "folder"), (self.fifo, system.NotAFile, "fifo"),
+                                  (self.link, system.Link, ""), (self.folder / "gone.md", system.Absent, "")):
+            with self.subTest(path=path.name), self.assertRaises(kind) as caught:
+                system.read_bytes(path)
+            self.assertEqual(caught.exception.found, found)
+
+    def test_a_file_is_read_in_pieces(self) -> None:
+        with system.open_file(self.page) as reader:
+            self.assertEqual((reader.look.kind, reader.look.size), ("file", 14))
+            self.assertEqual(reader.read(3), b"the")
+            self.assertEqual(reader.read(), b" rye trays\n")
+            reader.seek(4)
+            self.assertEqual(reader.read(-1), b"rye trays\n")
+            reader.seek(0)
+            self.assertEqual(reader.read(None), b"the rye trays\n")
+            self.assertGreaterEqual(reader.fileno(), 0)
+        self.assertEqual(reader.descriptor, -1)
+        reader.close()
+        with self.assertRaises(system.NotAFile):
+            system.open_file(self.fifo)
+
+    def test_a_folder_is_made_with_its_mode_or_found_made(self) -> None:
+        made = self.folder / "proofing"
+        self.assertTrue(system.make_folder(made, mode=0o770))
+        self.assertEqual(stat.S_IMODE(made.stat().st_mode), 0o770)
+        self.assertFalse(system.make_folder(made))
+        with self.assertRaises(system.NotAFolder) as file_there:
+            system.make_folder(self.page)
+        self.assertEqual(file_there.exception.found, "file")
+        with self.assertRaises(system.Link):
+            system.make_folder(self.link)
+        with self.assertRaises(system.Absent):
+            system.make_folder(self.folder / "gone" / "deeper")
+        deep = self.folder / "upper" / "middle" / "lower"
+        system.make_folders(deep, mode=0o770)
+        self.assertEqual([stat.S_IMODE(path.stat().st_mode) for path in (deep.parent.parent, deep.parent, deep)],
+                         [0o770, 0o770, 0o770])
+        os.chmod(self.inner, 0o755)
+        system.make_folders(self.inner / "top")
+        system.make_folders(self.inner)
+        self.assertEqual(stat.S_IMODE(self.inner.stat().st_mode), 0o755)
+
+    def test_a_whole_file_is_replaced_at_once_with_its_mode(self) -> None:
+        target = self.folder / "count.md"
+        system.write_whole(target, "first\n")
+        self.assertEqual((target.read_text(), stat.S_IMODE(target.stat().st_mode)), ("first\n", 0o600))
+        os.chmod(target, 0o640)
+        system.write_whole(target, b"second\n", mode=0o600)
+        self.assertEqual((target.read_bytes(), stat.S_IMODE(target.stat().st_mode)), (b"second\n", 0o640))
+        system.write_whole(target, b"third\n", mode=0o644, keep_mode=False)
+        self.assertEqual((target.read_bytes(), stat.S_IMODE(target.stat().st_mode)), (b"third\n", 0o644))
+        system.write_whole(self.folder / "new.md", b"new", mode=0o640)
+        self.assertEqual(stat.S_IMODE((self.folder / "new.md").stat().st_mode), 0o640)
+        with self.assertRaises(system.Link):
+            system.write_whole(self.link, b"x")
+        with self.assertRaises(system.NotAFile) as folder_there:
+            system.write_whole(self.inner, b"x")
+        self.assertEqual(folder_there.exception.found, "folder")
+        with self.assertRaises(system.Absent):
+            system.write_whole(self.folder / "gone" / "count.md", b"x")
+        self.assertEqual([path.name for path in self.folder.iterdir() if path.name.endswith(".tmp")], [])
+
+    def test_a_new_file_is_made_once_with_its_mode(self) -> None:
+        target = self.folder / "key"
+        self.assertTrue(system.create_new(target, b"rye"))
+        self.assertFalse(system.create_new(target, b"wheat"))
+        self.assertEqual((target.read_bytes(), stat.S_IMODE(target.stat().st_mode)), (b"rye", 0o600))
+        self.assertTrue(system.create_new(self.folder / "shared", b"oat", mode=0o640))
+        self.assertEqual(stat.S_IMODE((self.folder / "shared").stat().st_mode), 0o640)
+
+    def test_an_append_adds_waits_for_another_appender_and_a_cut_takes_back(self) -> None:
+        log = self.folder / "turns.jsonl"
+        system.append(log, b"")
+        self.assertFalse(log.exists())
+        system.append(log, b"one\n")
+        system.append(log, b"two\n")
+        self.assertEqual((log.read_bytes(), stat.S_IMODE(log.stat().st_mode)), (b"one\ntwo\n", 0o600))
+        self.assertFalse(system.cut_back(log, 8))
+        self.assertFalse(system.cut_back(log, 20))
+        self.assertTrue(system.cut_back(log, 4))
+        self.assertEqual(log.read_bytes(), b"one\n")
+        self.assertFalse(system.cut_back(self.folder / "gone.jsonl", 0))
+        with self.assertRaises(system.NotAFile) as fifo:
+            system.append(self.fifo, b"x")  # a fifo with no reader refuses a writer that will not wait
+        self.assertEqual(fifo.exception.found, "fifo")
+        with self.assertRaises(system.Link):
+            system.append(self.link, b"x")
+        holder = os.open(log, os.O_RDWR)
+        self.addCleanup(os.close, holder)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        started = time.monotonic()
+        with mock.patch.object(system, "APPEND_WAIT_SECONDS", 0.2), self.assertRaises(system.Busy) as busy:
+            system.append(log, b"three\n")
+        self.assertGreaterEqual(time.monotonic() - started, 0.2)  # it waited its whole time first
+        self.assertEqual(busy.exception.error, "deadline")
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        system.append(log, b"three\n")
+        self.assertEqual(log.read_bytes(), b"one\nthree\n")
+
+    def test_a_file_or_an_empty_folder_is_removed(self) -> None:
+        self.assertTrue(system.remove(self.link))
+        self.assertTrue(self.page.exists())
+        self.assertTrue(system.remove(self.page))
+        self.assertFalse(system.remove(self.page))
+        with self.assertRaises(system.NotAFile) as folder_there:
+            system.remove(self.inner)
+        self.assertEqual(folder_there.exception.found, "folder")
+        system.remove_folder(self.inner)
+        self.assertFalse(self.inner.exists())
+        with self.assertRaises(system.Absent):
+            system.remove_folder(self.inner)
+        with self.assertRaises(system.NotAFolder):
+            system.remove_folder(self.fifo)
+
+    def test_a_mode_is_set_without_following_a_link(self) -> None:
+        system.set_mode(self.page, 0o640)
+        self.assertEqual(stat.S_IMODE(self.page.stat().st_mode), 0o640)
+        try:
+            system.set_mode(self.link, 0o600)
+        except system.Link:
+            pass  # a system that cannot change a link's own mode refuses it
+        self.assertEqual(stat.S_IMODE(self.page.stat().st_mode), 0o640)
+        with self.assertRaises(system.Absent):
+            system.set_mode(self.folder / "gone", 0o600)
+
+    def test_a_folder_is_synced_and_each_place_is_named(self) -> None:
+        system.sync_folder(self.folder)
+        with self.assertRaises(system.Absent):
+            system.sync_folder(self.folder / "gone")
+        self.assertEqual(system.absolute("~/crates"), Path(os.path.expanduser("~")) / "crates")
+        self.assertEqual(system.absolute("crates"), Path(os.getcwd()) / "crates")
+        self.assertEqual(system.real_path(self.link), self.page)
+        self.assertEqual(system.working_folder(), Path(os.getcwd()))
+        self.assertEqual(system.home_folder(), os.path.expanduser("~"))
+        self.assertEqual(system.account_id(), os.getuid())
+        gone = self.base / "gone"
+        gone.mkdir()
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(gone)
+        gone.rmdir()
+        with self.assertRaises(system.Absent):
+            system.working_folder()  # the working folder was taken away
+        os.chdir(here)
+
+    def test_what_the_system_answers_in_the_middle_of_a_call_is_its_outcome(self) -> None:
+        """A name gone between the listing and its look is not listed; an error while listing, after an open or
+        while reading is the call's outcome, never a part answer."""
+        real_scandir = os.scandir
+
+        class Gone:
+            name = "gone.md"
+
+            def stat(self, follow_symlinks: bool = True) -> os.stat_result:
+                raise FileNotFoundError(errno.ENOENT, "gone")
+
+            def is_symlink(self) -> bool:
+                return False
+
+            def is_dir(self, follow_symlinks: bool = True) -> bool:
+                return False
+
+            def is_file(self, follow_symlinks: bool = True) -> bool:
+                return False
+
+        @contextlib.contextmanager
+        def with_a_name_gone(descriptor: int):
+            with real_scandir(descriptor) as entries:
+                yield [Gone(), *entries]
+
+        for looks in (False, True):
+            with self.subTest(looks=looks), mock.patch.object(system.os, "scandir", with_a_name_gone):
+                self.assertNotIn("gone.md", [entry.name for entry in system.listing(self.folder, looks=looks)])
+
+        @contextlib.contextmanager
+        def failing(descriptor: int):
+            def entries():
+                raise OSError(errno.EIO, "the disk failed")
+                yield  # pragma: no cover
+
+            yield entries()
+
+        with mock.patch.object(system.os, "scandir", failing), self.assertRaises(system.Other) as listed:
+            system.listing(self.folder)
+        self.assertEqual(listed.exception.error, "EIO")
+        with self.assertRaises(system.NotAFolder):
+            system.listing(self.page / "inner")  # a part of the path is a file
+        with mock.patch.object(system.os, "fstat", side_effect=OSError(errno.EIO, "the disk failed")), \
+                self.assertRaises(system.Other):
+            system.read_bytes(self.page)
+        with mock.patch.object(system.os, "read", side_effect=OSError(errno.EIO, "the disk failed")), \
+                self.assertRaises(system.Other):
+            system.read_bytes(self.page)
+
+    def test_a_write_the_system_refuses_is_its_outcome(self) -> None:
+        """What a write meets is told by the step that met it: a folder that cannot be made in, a mode that
+        cannot be set, a cut that fails, a path under a file, a fifo where a whole file goes."""
+        if os.geteuid() == 0:
+            self.skipTest("the superuser writes in every folder")
+        self.addCleanup(os.chmod, self.inner, 0o700)
+        os.chmod(self.inner, 0o500)
+        with self.assertRaises(system.Denied) as made:
+            system.make_folder(self.inner / "new")
+        self.assertEqual(made.exception.access, "write")
+        os.chmod(self.inner, 0o700)
+        with mock.patch.object(system.os, "chmod", side_effect=PermissionError(errno.EACCES, "refused")), \
+                self.assertRaises(system.Denied):
+            system.make_folder(self.inner / "new")
+        log = self.folder / "turns.jsonl"
+        log.write_bytes(b"one\ntwo\n")
+        with mock.patch.object(system.os, "ftruncate", side_effect=OSError(errno.EIO, "the disk failed")), \
+                self.assertRaises(system.Other):
+            system.cut_back(log, 4)
+        self.assertEqual(log.read_bytes(), b"one\ntwo\n")
+        with self.assertRaises(system.NotAFolder):
+            system.write_whole(self.page / "inner.md", b"x")
+        with self.assertRaises(system.NotAFile) as fifo:
+            system.write_whole(self.fifo, b"x")
+        self.assertEqual(fifo.exception.found, "fifo")
+        self.assertTrue(stat.S_ISFIFO(os.lstat(self.fifo).st_mode))
+
+    def test_a_step_that_fails_partway_through_a_write_is_the_writes_outcome(self) -> None:
+        if os.geteuid() == 0:
+            self.skipTest("the superuser writes in every folder")
+        target = self.folder / "count.md"
+        taken = self.folder / ".count.md.aaaaaaaa.tmp"
+        taken.write_bytes(b"")
+        with mock.patch.object(system.secrets, "choice", return_value="a"), self.assertRaises(system.Other) as names:
+            system.write_whole(target, b"x")  # every temporary name it tries is taken
+        self.assertEqual(names.exception.error, "EEXIST")
+        taken.unlink()
+        target.write_bytes(b"before")
+        with mock.patch.object(system.os, "replace", side_effect=OSError(errno.EIO, "the disk failed")), \
+                self.assertRaises(system.Other):
+            system.write_whole(target, b"after")
+        with mock.patch.object(system.os, "replace", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            system.write_whole(target, b"after")
+        self.assertEqual(target.read_bytes(), b"before")
+        self.assertEqual([path.name for path in self.folder.iterdir() if path.name.endswith(".tmp")], [])
+        self.addCleanup(os.chmod, self.inner, 0o700)
+        os.chmod(self.inner, 0o500)
+        with self.assertRaises(system.Denied):
+            system.create_new(self.inner / "key", b"rye")
+        os.chmod(self.inner, 0o700)
+        with mock.patch.object(system.os, "write", side_effect=OSError(errno.ENOSPC, "the disk is full")), \
+                self.assertRaises(system.Other) as full:
+            system.create_new(self.inner / "key", b"rye")
+        self.assertEqual((full.exception.error, (self.inner / "key").exists()), ("ENOSPC", False))
+        log = self.folder / "turns.jsonl"
+        with mock.patch.object(system.os, "fsync", side_effect=OSError(errno.EIO, "the disk failed")), \
+                self.assertRaises(system.Other):
+            system.append(log, b"one\n")
+        with mock.patch.object(system.fcntl, "flock", side_effect=OSError(errno.ENOLCK, "no locks")), \
+                self.assertRaises(system.Other):
+            system.append(log, b"two\n")
+        self.addCleanup(os.chmod, self.folder, 0o700)
+        os.chmod(self.folder, 0o500)
+        with self.assertRaises(system.Denied) as kept:
+            system.remove(self.page)
+        self.assertEqual(kept.exception.access, "write")
+        os.chmod(self.folder, 0o700)
+        with mock.patch.object(system.os, "fsync", side_effect=OSError(errno.EIO, "the disk failed")), \
+                self.assertRaises(system.Other):
+            system.sync_folder(self.folder)
+        with mock.patch.object(system.os.path, "realpath", side_effect=PermissionError(errno.EACCES, "denied")), \
+                self.assertRaises(system.Denied):
+            system.real_path(self.page)
+        real_chmod = os.chmod
+
+        def without_lchmod(path, mode, *, follow_symlinks=True):
+            if not follow_symlinks:
+                raise NotImplementedError("this system cannot change a link's own mode")
+            return real_chmod(path, mode)
+
+        with mock.patch.object(system.os, "chmod", without_lchmod):
+            with self.assertRaises(system.Link):
+                system.set_mode(self.link, 0o600)
+            system.set_mode(self.page, 0o604)
+        self.assertEqual(stat.S_IMODE(self.page.stat().st_mode), 0o604)
+
+    def test_a_denial_in_a_working_folder_that_cannot_be_entered_names_it(self) -> None:
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        self.addCleanup(os.chmod, self.folder, 0o700)
+        os.chdir(self.folder)
+        os.chmod(self.folder, 0o000)
+        if os.access(".", os.X_OK):
+            self.skipTest("this account enters every folder")
+        denied = system.outcome_of(OSError(errno.EACCES, "denied"), "tray.md", "read")
+        self.assertEqual((type(denied), denied.access, denied.where()), (system.Denied, "enter", "."))
+
+    def test_a_lock_is_taken_once_and_its_record_is_emptied_on_release(self) -> None:
+        path = self.folder / "build.lock"
+        self.assertTrue(system.lock_free(path))
+        first = system.lock(path)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertTrue(first.take())
+        first.record("held by the oven bot, a long record")
+        first.record("held again")
+        self.assertEqual(path.read_text(encoding="utf-8"), "held again")
+        self.assertFalse(system.lock_free(path))
+        second = system.lock(path)
+        self.assertFalse(second.take())
+        second.close()
+        second.close()
+        first.release()
+        self.assertEqual((path.read_bytes(), first.descriptor), (b"", -1))
+        self.assertTrue(system.lock_free(path))
+        with self.assertRaises(system.Link):
+            system.lock(self.link)
+        with self.assertRaises(system.NotAFile):
+            system.lock_free(self.inner)
+        broken = system.lock(path)
+        self.addCleanup(broken.close)
+        with mock.patch.object(system.fcntl, "flock", side_effect=OSError(errno.ENOLCK, "no locks")):
+            with self.assertRaises(system.Other):
+                broken.take()
+            with self.assertRaises(system.Other):
+                system.lock_free(path)
+        with mock.patch.object(system.os, "ftruncate", side_effect=OSError(errno.EIO, "the disk failed")), \
+                self.assertRaises(system.Other):
+            broken.record("held by the till bot")
 
 @unittest.skipIf(os.geteuid() == 0, "the superuser writes a read-only folder")
 class IndexSwapTests(ForestTestCase):

@@ -21,6 +21,7 @@ from pathlib import Path
 from unittest import mock
 
 from memory_forest import cli, system
+from memory_forest.errors import MemoryForestError
 
 from test_v1_find import FILES
 
@@ -53,7 +54,22 @@ def _interrupted(arguments) -> int:
     raise KeyboardInterrupt
 
 
+def _hooked(arguments) -> int:
+    """A stand-in run as a hook (``intake`` and ``--hook`` in its words): it meets what ``raised`` names."""
+    raised = {
+        "refusal": MemoryForestError("search_empty", "Give the words to search for.", next_step="fix"),
+        "not-text": UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        "door-other": system.Other(Path(arguments.root) / PAGE),
+        "sqlite-other": sqlite3.OperationalError("no such function: proof_time"),
+        "interrupted": KeyboardInterrupt(),
+        "fault": RuntimeError("a fault the code did not expect, at the till"),
+    }[arguments.raised]
+    raise raised
+
+
 STAND_INS = [
+    cli.ForestCommand(("stand-in", "intake"), _hooked, "Meet a fault as a hook does.",
+                      (cli.arg("raised"), cli.arg("--hook", action="store_true"))),
     cli.ForestCommand(("stand-in", "door-other"), _door_other, "Read a page; the door answers other."),
     cli.ForestCommand(("stand-in", "not-text"), _not_text, "Decode bytes that are not UTF-8."),
     cli.ForestCommand(("stand-in", "fault"), _fault, "Raise a fault of the code."),
@@ -151,6 +167,28 @@ class OwnerOutputTests(unittest.TestCase):
         for as_json in (False, True):
             with self.subTest(json=as_json):
                 self.assertEqual(self._run("interrupted", as_json=as_json), (130, "", ""))
+
+    def test_a_hook_says_nothing_exits_0_and_logs_only_the_class(self) -> None:
+        classes = {"refusal": "search_empty", "not-text": "UnicodeError", "door-other": "Other",
+                   "sqlite-other": "OperationalError", "interrupted": "KeyboardInterrupt", "fault": "RuntimeError"}
+        failures = self.root / ".forest" / "intake" / "failures.jsonl"
+        for raised, logged in classes.items():
+            with self.subTest(raised=raised):
+                argv = ["stand-in", "intake", raised, "--hook", "--root", str(self.root)]
+                out, err = io.StringIO(), io.StringIO()
+                with mock.patch.object(cli, "FOREST_COMMANDS", [*cli.FOREST_COMMANDS, *STAND_INS]), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = cli.forest_main(argv)
+                self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))
+                last = json.loads(failures.read_text(encoding="utf-8").splitlines()[-1])
+                self.assertEqual(last["class"], logged)
+        argv = ["stand-in", "intake", "--hook", "--root", str(self.root)]  # no argument: the parser refuses
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "FOREST_COMMANDS", [*cli.FOREST_COMMANDS, *STAND_INS]), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.forest_main(argv)
+        self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))
+        self.assertEqual(json.loads(failures.read_text(encoding="utf-8").splitlines()[-1])["class"], "intake_arguments")
 
     def test_no_part_of_the_fault_leaves(self) -> None:
         for name in TEXT:

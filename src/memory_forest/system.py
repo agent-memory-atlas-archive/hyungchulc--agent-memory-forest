@@ -363,7 +363,7 @@ def _unenterable(path: str) -> str:
         except OSError:
             return current
         return current
-    return current or os.sep
+    return current or "."  # a relative path whose first folder cannot be looked at: the working folder
 
 
 def outcome_of(exc: OSError, path: str | os.PathLike[str] = "", access: str = "read") -> Outcome:
@@ -827,13 +827,7 @@ def remove(path: str | os.PathLike[str]) -> bool:
     except FileNotFoundError:
         return False
     except OSError as exc:
-        if exc.errno in (errno.EISDIR, errno.EPERM):
-            try:
-                info = os.lstat(path)
-            except OSError:
-                info = None
-            if info is not None and stat.S_ISDIR(info.st_mode):
-                raise NotAFile(path, number=exc.errno, found="folder") from None
+        # A folder there is EISDIR on some systems and EPERM on others: either is ``not_a_file`` (``_denied``).
         raise _classify(exc, path, "write") from None
     return True
 
