@@ -43,10 +43,13 @@ added batches; the revision before it had none, and 2025-06-18 removed them.
 A tool that refuses answers ``isError: true`` with one JSON object as its text:
 ``code``, ``message``, ``details`` and, when there is one, the next move
 (``next`` with ``command`` or ``after_seconds``). An input validation error
-under 2025-11-25 is ``arguments_invalid`` in the same shape. A host name, a
-process id, a user name and an absolute path are removed at that one door.
-``lock_busy`` and ``lock_already_held`` leave as one busy refusal, next
-``retry``. Threads of this server wait their turn for ``memory_log``.
+under 2025-11-25 is ``arguments_invalid`` in the same shape. What the forest
+holds, and what the caller sent, is returned exactly. What the server says
+itself (a refusal, a lock owner, a status field) carries no host name, process
+id, user name, home folder or absolute path: those are removed at this door,
+and only on a refusal. ``lock_busy`` and ``lock_already_held`` leave as one
+busy refusal, next ``retry``. Threads of this server wait their turn for
+``memory_log``.
 
 The reader's id is ``--as``. A tool argument cannot set it, and cannot set the
 role or origin of ``memory_log``. The first tool call of each agent is recorded
@@ -939,39 +942,112 @@ def _port(text: str) -> int:
     return port
 
 
-# What a tool must not send on. The caller can retry; it cannot use a machine's name or a process id.
+# Keys the server adds. The caller can retry; it cannot use a machine's name or a process id.
 _MACHINE_KEYS = frozenset({"gid", "host", "hostname", "pid", "ppid", "uid", "user", "username"})
+# Resolved paths are for the person at the terminal. A tool never sends them.
+_TERMINAL_KEYS = frozenset({"real_path", "root"})
 _LOCK_BUSY = frozenset({"lock_already_held", "lock_busy"})
-_DROPPED = object()
+# A period is not an edge: ``root.sqlite`` is a longer name. A sentence period is handled on its own.
+_PATH_EDGE = set(" \t\n\r\"'`,:;()[]{}<>|")
 
 
-def _absolute_path(text: str) -> bool:
-    """A string whose whole value is an absolute path. A sentence that mentions one is left."""
-    stripped = text.strip()
-    return bool(stripped) and stripped.startswith("/") and "\n" not in stripped and " " not in stripped
+def _posix_absolute(text: str) -> bool:
+    """An absolute path as this platform writes one. The package does not claim Windows."""
+    return text.strip().startswith("/")
 
 
-def _without_machine_identity(value: Any) -> Any:
-    """Drop a host name, a process id, a user name, and a value that is an absolute path.
+def _fold_prefix(text: str, prefix: str, *, alone: str, followed: str) -> str:
+    """Replace ``prefix`` at a path boundary. A longer name that merely begins with it stays."""
+    if not prefix:
+        return text
+    pieces: list[str] = []
+    start = 0
+    while True:
+        index = text.find(prefix, start)
+        if index < 0:
+            pieces.append(text[start:])
+            return "".join(pieces)
+        after = index + len(prefix)
+        before_ok = index == 0 or text[index - 1] in _PATH_EDGE
+        # A period ends the path only when it ends a sentence (``in <root>.``). ``<root>.sqlite`` stays.
+        period = after < len(text) and text[after] == "." and (
+            after + 1 >= len(text) or text[after + 1] in _PATH_EDGE
+        )
+        if after >= len(text) or period:
+            kind = "end"
+        elif text[after] == "/":
+            kind = "slash"
+        elif text[after] in _PATH_EDGE:
+            kind = "end"
+        else:
+            kind = "inside"
+        if before_ok and kind != "inside":
+            pieces.append(text[start:index])
+            if kind == "slash":
+                pieces.append(followed)
+                start = after + 1
+            else:
+                pieces.append(alone)
+                start = after + (1 if period else 0)
+            continue
+        pieces.append(text[start:after])
+        start = after
 
-    This is the rule for every tool answer, a refusal or a result. Keys name the class; a path is a
-    value, so a relative forest path stays.
+
+def _identity_roots(root: str | os.PathLike[str]) -> list[str]:
+    """The forest root as it was given and as it resolves, longer first."""
+    given = os.fspath(root)
+    expanded = os.path.abspath(os.path.expanduser(given))
+    resolved = os.path.realpath(expanded)
+    found: list[str] = []
+    for item in (given, expanded, resolved):
+        cleaned = item.rstrip("/")
+        if cleaned and cleaned not in found:
+            found.append(cleaned)
+    found.sort(key=len, reverse=True)
+    return found
+
+
+def _home_folder() -> str:
+    home = os.path.expanduser("~")
+    if not home or home == "~" or home == "/":
+        return ""
+    return home.rstrip("/")
+
+
+def _fold_refusal(value: Any, root: str | os.PathLike[str]) -> Any:
+    """A refusal carries no host, process, user, home folder or absolute forest path.
+
+    The forest root, as given and as resolved, is folded first so what follows reads as a path of the
+    forest (the root alone becomes ``.``). The home folder then becomes ``~``. A success result does
+    not come through here: a page is returned exactly, whatever it looks like.
     """
-    if isinstance(value, dict):
-        kept: dict[Any, Any] = {}
-        for key, item in value.items():
-            if str(key) in _MACHINE_KEYS:
-                continue
-            cleaned = _without_machine_identity(item)
-            if cleaned is _DROPPED:
-                continue
-            kept[key] = cleaned
-        return kept
-    if isinstance(value, list):
-        return [item for item in (_without_machine_identity(entry) for entry in value) if item is not _DROPPED]
-    if isinstance(value, str) and _absolute_path(value):
-        return _DROPPED
-    return value
+    roots = _identity_roots(root)
+    home = _home_folder()
+
+    def fold(item: Any) -> Any:
+        if isinstance(item, dict):
+            kept: dict[Any, Any] = {}
+            for key, child in item.items():
+                name = str(key)
+                if name in _MACHINE_KEYS or name in _TERMINAL_KEYS:
+                    continue
+                if name == "source" and isinstance(child, str) and _posix_absolute(child):
+                    continue
+                kept[key] = fold(child)
+            return kept
+        if isinstance(item, list):
+            return [fold(child) for child in item]
+        if isinstance(item, str):
+            text = item
+            for prefix in roots:
+                text = _fold_prefix(text, prefix, alone=".", followed="")
+            if home:
+                text = _fold_prefix(text, home, alone="~", followed="~/")
+            return text
+        return item
+
+    return fold(value)
 
 
 def _tool_body(refusal: MemoryForestError) -> dict[str, Any]:
@@ -990,8 +1066,19 @@ def _tool_body(refusal: MemoryForestError) -> dict[str, Any]:
     return refusal.as_dict()
 
 
-def _tool_text(body: Any, root: str | os.PathLike[str], *, indent: int | None = None, drop_details: bool = False) -> str:
-    """The one door a tool answer leaves through: mask it, then apply the machine-identity rule."""
+def _tool_text(
+    body: Any,
+    root: str | os.PathLike[str],
+    *,
+    indent: int | None = None,
+    drop_details: bool = False,
+    refusal: bool = False,
+) -> str:
+    """The one door a tool answer leaves through.
+
+    Mask it. A success result is then returned exactly, whatever a line looks like. A refusal is folded
+    so the server's own text carries no machine identity and no absolute forest path.
+    """
     try:
         masked = search.mask_result(body, config=load_config(root))
     except Exception:
@@ -999,8 +1086,9 @@ def _tool_text(body: Any, root: str | os.PathLike[str], *, indent: int | None = 
             raise
         masked = dict(body)
         masked["details"] = {}
-    text = _without_machine_identity(masked)
-    return json.dumps(text, ensure_ascii=False, indent=indent, sort_keys=True)
+    if refusal:
+        masked = _fold_refusal(masked, root)
+    return json.dumps(masked, ensure_ascii=False, indent=indent, sort_keys=True)
 
 
 def _tool_error(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dict[str, Any]:
@@ -1009,7 +1097,7 @@ def _tool_error(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dic
     Its strings are masked like every answer; when the settings cannot be read for that, the details go.
     Machine identity is removed with every other tool answer.
     """
-    text = _tool_text(_tool_body(refusal), root, drop_details=True)
+    text = _tool_text(_tool_body(refusal), root, drop_details=True, refusal=True)
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 

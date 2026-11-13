@@ -14,11 +14,13 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+from unittest import mock
 
 from memory_forest import mcp, search
 from memory_forest.cli import forest_main
+from memory_forest.locking import hold_lock
 
-from test_v1_find import FILES, _http, _log_call
+from test_v1_find import FILES, _http, _log_call, held_in_thread
 from v1_support import ForestTestCase
 
 
@@ -90,18 +92,30 @@ class ToolBoundaryTests(ForestTestCase):
         self.root = self.make_forest(dict(FILES))
         search.build(self.root)
 
-    def test_the_rule_drops_machine_identity_and_keeps_a_relative_path(self) -> None:
-        cleaned = mcp._without_machine_identity(
+    def test_a_refusal_folds_the_forest_and_a_page_line_is_not_its_concern(self) -> None:
+        root = self.root
+        cleaned = mcp._fold_refusal(
             {
+                "message": f"No forest.toml in {root}.",
                 "note": "the note mentions /tmp/oven but is not a path",
                 "owner": {"host": "counter", "label": "memory_log", "pid": 4, "user": "till"},
-                "path": "/tmp/oven",
+                "path": f"{root}/04 stm/bakery/ovens/floor.md",
+                "real_path": f"{root}/04 stm/bakery/ovens/floor.md",
                 "relative": "06 istm/till-bot/2051-03-02.jsonl",
-            }
+                "root": str(root),
+                "source": str(root / "forest.toml"),
+                "tool": "/usr/local/bin/forest-tool",
+            },
+            root,
         )
         self.assertEqual(cleaned["owner"], {"label": "memory_log"})
-        self.assertNotIn("path", cleaned)
+        self.assertNotIn("real_path", cleaned)
+        self.assertNotIn("root", cleaned)
+        self.assertNotIn("source", cleaned)
+        self.assertEqual(cleaned["path"], "04 stm/bakery/ovens/floor.md")
+        self.assertEqual(cleaned["message"], "No forest.toml in .")
         self.assertEqual(cleaned["relative"], "06 istm/till-bot/2051-03-02.jsonl")
+        self.assertEqual(cleaned["tool"], "/usr/local/bin/forest-tool")
         self.assertIn("/tmp/oven", cleaned["note"])
 
     def test_a_lock_held_by_a_subprocess_does_not_leave_through_a_tool(self) -> None:
@@ -173,6 +187,154 @@ class ToolBoundaryTests(ForestTestCase):
         stored = "\n".join(lanes)
         self.assertIn("first loaf", stored)
         self.assertIn("second loaf", stored)
+
+    def test_every_tool_answer_keeps_the_forest_and_drops_the_machine(self) -> None:
+        """A page line comes back whole. A refusal carries no root, home, host or user."""
+        spaced = self.make_forest(dict(FILES), name="quill root")
+        home = Path("/quill-shelf-home")
+        host, user = "quill-host", "quill-user"
+        tool_line = "/usr/local/bin/forest-tool"
+        home_line = str(home)
+        page = spaced / "04 stm/bakery/ovens/floor.md"
+        page.write_text(
+            page.read_text(encoding="utf-8").replace(
+                "The oven room was swept today.\n",
+                f"The oven room was swept today.\n{tool_line}\n{home_line}\n",
+            ),
+            encoding="utf-8",
+        )
+        search.build(spaced)
+        lines = page.read_text(encoding="utf-8").splitlines()
+        tool_number = lines.index(tool_line) + 1
+        home_number = lines.index(home_line) + 1
+        secrets = [str(spaced), str(spaced.parent), "quill root", home_line, host, user]
+        environment = {**os.environ, "HOME": str(home), "LOGNAME": user, "USER": user}
+
+        def clean(text: str, *, keep: tuple[str, ...] = ()) -> None:
+            haystack = text
+            for line in keep:
+                haystack = haystack.replace(line, "")
+            for secret in secrets:
+                self.assertNotIn(secret, haystack, text)
+
+        def call(name: str, arguments: dict[str, object]) -> str:
+            reply, _version = mcp.handle_message(
+                spaced, "till-bot",
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                 "params": {"name": name, "arguments": arguments}},
+                "stdio", "2025-11-25",
+            )
+            self.assertIn("result", reply, reply)
+            return reply["result"]["content"][0]["text"]
+
+        success = (
+            ("memory_search", {"words": "swept"}),
+            ("memory_read", {"path": "04 stm/bakery/ovens/floor.md"}),
+            ("memory_read", {"lines": f"{tool_number}-{tool_number}", "path": "04 stm/bakery/ovens/floor.md"}),
+            ("memory_read", {"lines": f"{home_number}-{home_number}", "path": "04 stm/bakery/ovens/floor.md"}),
+            ("memory_timeline", {"subject": "deck-oven"}),
+            ("memory_navigate", {"path": "04 stm/bakery/ovens/floor.md"}),
+            ("memory_log", {"text": "the till noted the floor was swept"}),
+        )
+        with mock.patch.dict(os.environ, environment, clear=False), \
+                mock.patch("socket.gethostname", return_value=host), \
+                mock.patch("getpass.getuser", return_value=user):
+            answers = {name: [] for name, _arguments in success}
+            for name, arguments in success:
+                text = call(name, arguments)
+                answers[name].append(text)
+                clean(text, keep=(tool_line, home_line))
+            self.assertIn(tool_line, answers["memory_search"][0])
+            self.assertIn(home_line, answers["memory_search"][0])
+            self.assertIn(tool_line, answers["memory_read"][0])
+            self.assertIn(home_line, answers["memory_read"][0])
+            one_line = json.loads(answers["memory_read"][1])
+            self.assertEqual(one_line["results"][0]["sections"][0]["text"], tool_line)
+            home_only = json.loads(answers["memory_read"][2])
+            self.assertEqual(home_only["results"][0]["sections"][0]["text"], home_line)
+
+            escaped = call("memory_read", {"path": str(spaced)})
+            clean(escaped)
+            self.assertEqual(json.loads(escaped)["details"]["path"], ".")
+            outside = call("memory_read", {"path": "../outside"})
+            self.assertIn("out_of_scope", outside)
+            clean(outside)
+            for name, arguments in (
+                ("memory_search", {"words": "swept"}),
+                ("memory_timeline", {"phrase": "yesterday"}),
+                ("memory_navigate", {}),
+                ("memory_log", {"text": "the till tried while the lock was held"}),
+            ):
+                with held_in_thread(lambda: hold_lock(spaced, "intake", wait_seconds=30, label="boundary")):
+                    held_text = call(name, arguments)
+                clean(held_text, keep=(tool_line, home_line))
+                if name == "memory_log":
+                    self.assertIn("lock_busy", held_text)
+            toml = spaced / "forest.toml"
+            saved = toml.read_text(encoding="utf-8")
+            toml.unlink()
+            try:
+                for name, arguments in success:
+                    if name == "memory_read" and "lines" in arguments:
+                        continue
+                    clean(call(name, dict(arguments)), keep=(tool_line, home_line))
+            finally:
+                toml.write_text(saved, encoding="utf-8")
+            empty = self.base / "empty forest"
+            empty.mkdir()
+            code, _out, err = _run(["search", "swept", "--root", str(empty), "--as", "till-bot"])
+            self.assertEqual(code, 2)
+            self.assertIn(str(empty), err)
+            self.assertIn("no_forest", err)
+
+            pointer = spaced / ".forest" / "index.current"
+            pointer.write_bytes(b"\xff\xfe")
+            try:
+                for name, arguments in (
+                    ("memory_search", {"words": "swept"}),
+                    ("memory_timeline", {"subject": "deck-oven"}),
+                    ("memory_read", {"path": "04 stm/bakery/ovens/floor.md"}),
+                    ("memory_navigate", {}),
+                ):
+                    clean(call(name, arguments), keep=(tool_line, home_line))
+                self.assertIn("index_unreadable", call("memory_search", {"words": "swept"}))
+            finally:
+                search.reset(spaced)
+                search.build(spaced)
+            index = spaced / search.index_relative(spaced)
+            index.write_bytes(b"not a database, and longer than one header of a page " * 4)
+            try:
+                damaged = call("memory_search", {"words": "swept"})
+                self.assertIn("index_unreadable", damaged)
+                clean(damaged, keep=(tool_line, home_line))
+                clean(call("memory_timeline", {"subject": "deck-oven"}), keep=(tool_line, home_line))
+            finally:
+                search.reset(spaced)
+                search.build(spaced)
+            if os.geteuid() != 0:
+                folder = spaced / ".forest"
+                mode = folder.stat().st_mode
+                os.chmod(folder, 0o555)
+                try:
+                    probe = folder / "write-probe"
+                    writable = True
+                    try:
+                        probe.write_text("x", encoding="utf-8")
+                    except OSError:
+                        writable = False
+                    else:
+                        probe.unlink()
+                    if not writable:
+                        for name, arguments in (
+                            ("memory_search", {"words": "swept"}),
+                            ("memory_timeline", {"subject": "deck-oven"}),
+                            ("memory_read", {"path": "04 stm/bakery/ovens/floor.md"}),
+                            ("memory_navigate", {}),
+                            ("memory_log", {"text": "the till noted a read-only folder"}),
+                        ):
+                            clean(call(name, arguments), keep=(tool_line, home_line))
+                finally:
+                    os.chmod(folder, mode)
 
 
 def _run(arguments: list[str]) -> tuple[int, str, str]:

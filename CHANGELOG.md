@@ -13,6 +13,14 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- A tool returns a page's lines exactly, even when a line is a path. A refusal, and only a refusal,
+  carries no host name, process id, user name, home folder or absolute path: the forest root in the
+  server's own text becomes a forest path, the home folder becomes `~`, and `real_path`, `root` and an
+  absolute `source` are dropped at the door. The command line still prints them. The settings object's
+  own `source` stays the absolute path, because the sign-in ledger finds the forest from it.
+- A pointer is absent, one index file name, or damaged. Damaged bytes (including text that is not
+  UTF-8) are `index_unreadable` with `forest index reset` as the next move, and reset replaces the
+  pointer. A longer pointer is not read whole.
 - Masking reads a text in time proportional to its length. An assignment is found from its operator back
   (it finds what the earlier pattern found), each run is read for its end once, and a value longer than
   1024 characters after a secret name, a label or a scheme word is masked whole instead of being checked

@@ -642,11 +642,15 @@ after `after_seconds` while the sum of each answer's `waited_seconds` and `after
 `stop_after_seconds`, and report the message once that sum would reach it), or `report`
 (tell the owner the message; no command helps). A refusal with no next move, such as `search_empty`,
 has no `next`. An argument that fails a tool's schema under 2025-11-25 is `arguments_invalid` in the
-same shape. The strings are masked like every answer. A tool answer, a refusal or a result, never
-carries a host name, a process id, a user name, or an absolute path: the caller cannot act on them.
+same shape. The strings are masked like every answer. What the forest holds, and what the caller sent
+(a page's lines, a snippet, the question), is returned exactly, even when a line is a path. What the
+server says itself carries no host name, process id, user name, home folder or absolute path. A
+refusal's `details` name a path as the caller gave it, or relative to the forest; `real_path`, `root`
+and an absolute `source` are for the terminal only, and the door drops them. In a refusal's own text
+the forest root becomes a forest path (the root alone becomes `.`) and the home folder becomes `~`.
 `lock_busy` and `lock_already_held` leave a tool as one busy refusal, next `retry`. The command line
-still shows the lock's owner to the person at the terminal. Two `memory_log` calls in one server
-process wait their turn.
+still shows the lock's owner, and the absolute path, to the person at the terminal. Two `memory_log`
+calls in one server process wait their turn.
 
 The clients checked here, `claude mcp`, `codex mcp` and `grok mcp`, speak protocol versions
 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25, over stdio and streamable HTTP. Claude and Grok also
