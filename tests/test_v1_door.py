@@ -882,6 +882,29 @@ class DoorCallTests(ForestTestCase):
                 self.assertRaises(system.Other):
             broken.record("held by the till bot")
 
+    def test_sqlite_is_handed_the_descriptors_name_only_where_it_names_the_open_file(self) -> None:
+        # What the system answers for /dev/fd/N is stood in for, so the choice is tried as on any system.
+        with open(self.page, "rb") as opened:
+            descriptor = opened.fileno()
+            checked = os.fstat(descriptor)
+            with mock.patch.object(system.os, "stat", return_value=checked):
+                self.assertEqual(system._descriptor_path(descriptor, checked), f"/dev/fd/{descriptor}")
+            with mock.patch.object(system.os, "stat", return_value=os.stat(self.inner)):
+                self.assertIsNone(system._descriptor_path(descriptor, checked))
+            with mock.patch.object(system.os, "stat", side_effect=OSError(errno.ENOENT, "no such file")):
+                self.assertIsNone(system._descriptor_path(descriptor, checked))
+
+    def test_a_release_lets_the_lock_go_while_a_copy_of_its_descriptor_is_open(self) -> None:
+        # A copy of the descriptor (a child forked while the lock was held keeps one) keeps a lock that closing
+        # alone does not let go of: the release unlocks before it closes.
+        path = self.folder / "proof.lock"
+        held = system.lock(path)
+        self.assertTrue(held.take())
+        copy = os.dup(held.descriptor)
+        self.addCleanup(os.close, copy)
+        held.release()
+        self.assertTrue(system.lock_free(path))
+
 @unittest.skipIf(os.geteuid() == 0, "the superuser writes a read-only folder")
 class IndexSwapTests(ForestTestCase):
     """At the door's named point, between its look and SQLite's open, something else takes the index's place."""
