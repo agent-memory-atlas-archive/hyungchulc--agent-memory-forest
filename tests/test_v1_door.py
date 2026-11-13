@@ -894,6 +894,110 @@ class DoorCallTests(ForestTestCase):
             with mock.patch.object(system.os, "stat", side_effect=OSError(errno.ENOENT, "no such file")):
                 self.assertIsNone(system._descriptor_path(descriptor, checked))
 
+    def _index(self) -> Path:
+        path = self.folder / "trays.sqlite"
+        made = sqlite3.connect(path)
+        made.execute("CREATE TABLE trays (name TEXT)")
+        made.commit()
+        made.close()
+        return path
+
+    def test_an_index_is_read_without_writing_and_made_only_by_a_write(self) -> None:
+        index = self._index()
+        os.chmod(index, 0o400)
+        self.addCleanup(os.chmod, index, 0o600)
+        opened, rows = system.open_index(
+            index, immutable=False,
+            first=lambda connection: connection.execute("SELECT count(*) FROM trays").fetchone(),
+        )
+        opened.close()
+        self.assertEqual(rows, (0,))
+        absent = self.folder / "absent.sqlite"
+        with self.assertRaises(system.Absent):
+            system.open_index(absent, immutable=False)
+        self.assertFalse(absent.exists())
+        made, _ = system.open_index(absent, immutable=False, write=True)
+        made.close()
+        self.assertEqual(stat.S_IMODE(absent.stat().st_mode), 0o600)
+
+    def test_a_denial_injected_into_an_open_names_the_access_the_open_asked_for(self) -> None:
+        index = self._index()
+        for write, access in ((False, "read"), (True, "write")):
+            with self.subTest(write=write), system.watching(fail_calls={1: "denied"}), \
+                    self.assertRaises(system.Denied) as denied:
+                system.open_index(index, immutable=False, write=write)
+            self.assertEqual(denied.exception.access, access)
+
+    def test_a_write_connection_commits_each_statement_at_once(self) -> None:
+        index = self._index()
+        opened, _ = system.open_index(
+            index, immutable=False, write=True,
+            first=lambda connection: connection.execute("INSERT INTO trays VALUES ('rye')"),
+        )
+        self.addCleanup(opened.close)
+        other = sqlite3.connect(index)
+        self.addCleanup(other.close)
+        self.assertEqual(other.execute("SELECT name FROM trays").fetchall(), [("rye",)])
+
+    def test_what_stops_the_open_at_the_named_point_is_the_calls_answer(self) -> None:
+        index = self._index()
+
+        def stop(**info: object) -> None:
+            raise system.Busy(str(info["path"]), note="a hook")
+
+        with system.at(system.POINT_INDEX_OPEN, stop), self.assertRaises(system.Busy):
+            system.open_index(index, immutable=False)
+
+    def test_a_connection_whose_first_statement_fails_is_closed(self) -> None:
+        index = self._index()
+        made: list[sqlite3.Connection] = []
+
+        def first(connection: sqlite3.Connection) -> None:
+            made.append(connection)
+            raise sqlite3.OperationalError("no such table: loaves")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            system.open_index(index, immutable=False, first=first)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            made[0].execute("SELECT 1")
+
+    def test_an_open_past_its_deadline_closes_what_it_made_when_it_ends(self) -> None:
+        index = self._index()
+        made: list[sqlite3.Connection] = []
+        descriptors: list[int] = []
+        go = threading.Event()
+        real = system._open_checked
+
+        def recording(*args: object, **kwargs: object) -> tuple[int, os.stat_result]:
+            found = real(*args, **kwargs)  # type: ignore[arg-type]
+            descriptors.append(found[0])
+            return found
+
+        def first(connection: sqlite3.Connection) -> None:
+            made.append(connection)
+            go.wait(10)
+
+        with mock.patch.object(system, "_open_checked", recording), self.assertRaises(system.Busy):
+            system.open_index(index, immutable=False, first=first, deadline_seconds=0.2)
+        go.set()
+        for thread in threading.enumerate():
+            if thread.name == "memory-forest index open":
+                thread.join(10)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            made[0].execute("SELECT 1")
+        with self.assertRaises(OSError):
+            os.fstat(descriptors[0])
+
+    def test_the_descriptor_is_let_go_once(self) -> None:
+        opened, _ = system.open_index(self._index(), immutable=False)
+        self.addCleanup(opened.close)
+        descriptor = opened.descriptor
+        opened.release_descriptor()
+        self.assertEqual(opened.descriptor, -1)
+        with self.assertRaises(OSError):
+            os.fstat(descriptor)
+        opened.release_descriptor()
+
     def test_a_release_lets_the_lock_go_while_a_copy_of_its_descriptor_is_open(self) -> None:
         # A copy of the descriptor (a child forked while the lock was held keeps one) keeps a lock that closing
         # alone does not let go of: the release unlocks before it closes.

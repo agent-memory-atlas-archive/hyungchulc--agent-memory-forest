@@ -305,6 +305,16 @@ class RefusalCodeTests(unittest.TestCase):
         self.assertIn("index_protocol", self.codes)
         self.assertTrue(set(search.INTERNAL_CODES).isdisjoint(errors.REFUSALS))
 
+    def test_the_table_is_read_from_the_document_up_to_what_follows_it(self) -> None:
+        row = "| `oven_cold` | fix | | The oven is cold. |\n"
+        text = "# Refusals\n\n" + codes_walk.TABLE_HEAD + row + row + "\nWhat follows the table.\n"
+        self.assertEqual(
+            codes_walk.split_document(text),
+            ("# Refusals\n\n", codes_walk.TABLE_HEAD + row + row, "\nWhat follows the table.\n"),
+        )
+        last = "# Refusals\n\n" + codes_walk.TABLE_HEAD + row.rstrip("\n")
+        self.assertEqual(codes_walk.split_document(last), ("# Refusals\n\n", codes_walk.TABLE_HEAD + row.rstrip("\n"), ""))
+
     def test_the_document_is_the_generated_table(self) -> None:
         text = (PACKAGE.parents[1] / "docs" / "refusals.md").read_text(encoding="utf-8")
         _before, written, _after = codes_walk.split_document(text)

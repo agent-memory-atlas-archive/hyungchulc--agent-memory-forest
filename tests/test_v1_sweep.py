@@ -369,9 +369,16 @@ class EdgeTests(unittest.TestCase):
 
     def test_a_tool_call_the_server_cannot_take_is_refused_by_its_kind(self) -> None:
         root = self._sweep_forest()
-        for params in ({"name": 7}, {"name": "memory_bake"}, {"name": "memory_search", "arguments": ["trays"]}):
-            with self.subTest(params=params), self.assertRaises(mcp._BadArguments):
-                mcp._call(root, READER, params, "stdio")
+        refused = (
+            ({"name": 7}, "Name a tool this server serves."),
+            ({"name": "memory_bake"}, "Name a tool this server serves."),
+            ({"name": "memory_search", "arguments": ["trays"]}, "Pass the tool's arguments as an object."),
+        )
+        for params, message in refused:
+            with self.subTest(params=params):
+                with self.assertRaises(mcp._BadArguments) as refusal:
+                    mcp._call(root, READER, params, "stdio")
+                self.assertEqual(refusal.exception.message, message)
         wrong = {"name": "memory_search", "arguments": {"words": "trays", "shelf": "upper"}}
         reply = mcp._call(root, READER, wrong, "stdio", "2025-11-25")  # a tool error from this version on
         answer = json.loads(reply["content"][0]["text"])

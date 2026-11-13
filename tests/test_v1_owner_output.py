@@ -190,6 +190,26 @@ class OwnerOutputTests(unittest.TestCase):
         self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))
         self.assertEqual(json.loads(failures.read_text(encoding="utf-8").splitlines()[-1])["class"], "intake_arguments")
 
+    def _main(self, argv: list[str]) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "FOREST_COMMANDS", [*cli.FOREST_COMMANDS, *STAND_INS]), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.forest_main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_without_a_hook_a_refusal_exits_2_and_a_wrong_call_is_the_parsers(self) -> None:
+        code, out, err = self._main(["stand-in", "intake", "refusal", "--root", str(self.root), "--json"])
+        self.assertEqual((code, json.loads(out)["error"]["code"], err), (2, "search_empty", ""))
+        with self.assertRaises(SystemExit) as stopped, contextlib.redirect_stderr(io.StringIO()):
+            self._main(["stand-in", "intake", "--root", str(self.root)])
+        self.assertEqual(stopped.exception.code, 2)
+
+    def test_a_folder_that_is_not_a_forest_is_refused_before_the_command_runs(self) -> None:
+        empty = self.root.parent / "empty"
+        empty.mkdir()
+        code, out, _err = self._main(["stand-in", "fault", "--root", str(empty), "--json"])
+        self.assertEqual((code, json.loads(out)["error"]["code"]), (2, "no_forest"))
+
     def test_no_part_of_the_fault_leaves(self) -> None:
         for name in TEXT:
             for as_json in (False, True):
