@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml/badge.svg)](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
-[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-2EA44F.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
 
 Agent Memory Forest는 agent가 알게 된 것을 내 디스크의 번호 붙은 몇 개 폴더 안에 평범한 Markdown 페이지로
@@ -231,4 +231,4 @@ make check
 
 ## License
 
-[GNU General Public License v3.0](LICENSE)으로 공개합니다.
+[MIT License](LICENSE)로 공개합니다.

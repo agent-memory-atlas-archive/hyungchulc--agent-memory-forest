@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml/badge.svg)](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
-[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-2EA44F.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
 
 Agent Memory Forest is a Python package and a `forest` command that keep what agents learn as plain
@@ -233,4 +233,4 @@ Security issues follow [SECURITY.md](SECURITY.md). Community participation follo
 
 ## License
 
-Agent Memory Forest is released under the [GNU General Public License v3.0](LICENSE).
+Agent Memory Forest is released under the [MIT License](LICENSE).

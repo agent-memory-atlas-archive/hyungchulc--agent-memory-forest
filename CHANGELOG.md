@@ -11,6 +11,10 @@ Milestone 2 now has intake, the search index, timeline, reader scopes and the MC
 programs and nightly upkeep. Nothing is released. The 0.3 `memory-forest` command stays in the tree until
 the version 1 commands replace it.
 
+### Changed
+
+- The licence changed from GPL-3.0-only to MIT. Copies of earlier releases keep the licence they were released under.
+
 ### Fixed
 
 - The disk is reached through one module, `system` (the door). Every call that looks, lists, opens,

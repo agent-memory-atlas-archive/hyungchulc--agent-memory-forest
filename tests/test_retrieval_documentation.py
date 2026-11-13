@@ -62,6 +62,14 @@ class RetrievalDocumentationTests(unittest.TestCase):
         self.assertIn("## 0.3.0 - 2026-08-31", changelog)
         self.assertIn("license changed from MIT to GPL-3.0-only", changelog)
 
+    def test_version_1_is_published_under_mit(self) -> None:
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "The licence changed from GPL-3.0-only to MIT. "
+            "Copies of earlier releases keep the licence they were released under.",
+            changelog,
+        )
+
     def test_public_guidance_is_provider_neutral(self) -> None:
         for path in (
             ROOT / "README.md",
