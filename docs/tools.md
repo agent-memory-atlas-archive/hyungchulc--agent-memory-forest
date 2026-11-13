@@ -574,7 +574,9 @@ process. This package registers none and never opens a network connection.
 
 Results are one per page. Each matching section is printed as written, with why it matched and the lines
 to read. `--as` is the reader. Omit it and the reader is not an agent: shared trees only, and no raw
-lane. `--named` is an agent the task names. It is how one agent is allowed into another's tree. It does
+lane. `--as-group` with `--agent` is the same read for one member of a group (design, section 6). Pass
+one of `--as` and `--as-group`, not both. `--agent` without a group cannot change the reader.
+`--named` is an agent the task names. It is how one agent is allowed into another's tree. It does
 not open that agent's raw lane.
 
 `forest read` prints a page, or the section an address names. `--lines A-B` keeps that range. The text
@@ -588,6 +590,7 @@ forest search "the old oven" --as till-bot
 #   ...
 # trees: bakery
 forest read "04 stm/bakery/ovens/deck-oven.md#head" --as till-bot --lines 1-12
+forest search "the old oven" --as-group bakery-bots --agent till-bot
 ```
 
 The answer ends with the trees that produced a result.
@@ -609,14 +612,43 @@ same scope.
 forest timeline query "yesterday evening" --as front-desk
 forest timeline query "지난 3시간" --as front-desk
 forest timeline subject deck-oven --as till-bot
+forest navigate --as till-bot
+forest navigate "03 mtm/bakery/bakery_MTM.md" --as-group bakery-bots --agent till-bot
 ```
+
+`forest navigate` is the command for `memory_navigate`: one level down from the root index, or from a
+path the previous call showed. The scope is the reader's.
+
+## `forest log`
+
+`forest log` is the command-line twin of `memory_log`. The turn is read from stdin. An argument is
+refused, because arguments show in process lists, and the refusal says to pass the text on stdin. The
+command sets the role to `agent` and the origin to `interactive`, the same as `memory_log` on stdio. A
+caller-supplied role or origin is refused. `--session` names the session. The default session is `cli`. The turn goes through the one
+writer of the lane, with the same masking, and a turn the lane already holds is not written again.
+
+```sh
+forest log --as till-bot <<'EOF'
+the till counted the trays
+EOF
+forest log --as-group bakery-bots --agent "Till Bot"
+```
+
+## `forest agents`
+
+`forest agents` lists each group, whether it is open, and each member: its id, its name, whether it has
+written a lane, and when it was last seen on a connection. Agents that are not in a group are listed
+after the groups.
 
 ## `forest mcp`
 
 `forest mcp --as <agent>` speaks MCP on stdio. The tools are `memory_search`, `memory_read`,
 `memory_timeline`, `memory_navigate` and `memory_log`. Each description says when to use it. The
 server's own instructions stay under 2,048 characters. The reader is `--as`. A tool argument cannot
-set it, and cannot set the role or origin of `memory_log`.
+set it, and cannot set the role or origin of `memory_log`. `forest mcp --as-group <group>` is the same
+server for several agents on one connection. Exactly one of `--as` and `--as-group` is given. On a
+group connection every tool requires `agent`, the caller's own name, resolved only to a member of the
+group. Stdio and `--http` use the same token rule.
 
 `memory_navigate` starts at the root index and walks one level down. `memory_log` appends the caller's
 own turn through the intake writer. The server sets the role to `agent` and the origin from the
@@ -673,10 +705,11 @@ A stdio line over 1,000,000 bytes gets one error and the next line is read. The 
 `MCP-Protocol-Version` response header is the version negotiated with that client.
 
 The first tool call of each agent is recorded in `.forest/mcp/seen.json`, with the agent, the time, the
-tool and the transport. The question is not stored. `forest doctor` can later use that file to prove
-the server was called. `forest doctor` itself is not built yet.
+tool and the transport. Each later call records when the agent was last seen. The question is not stored.
+`forest doctor` can later use that file to prove the server was called. `forest doctor` itself is not built yet.
 
 ```sh
 forest mcp --as till-bot
 forest mcp --as till-bot --http 8765
+forest mcp --as-group bakery-bots --http 8765
 ```

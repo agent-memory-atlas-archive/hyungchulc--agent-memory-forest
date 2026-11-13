@@ -132,8 +132,10 @@ The same happens at once when the owner states a fact for everyone ("the depot i
 
 ## Who reads what
 
-Every reader has an id. It comes from the reader's connection (the MCP session, the command's settings),
-never from the text of the question, so an agent cannot widen its view by asking for another's.
+Every reader has an id. It comes from the reader's connection (the MCP session, the command's `--as`),
+never from the text of the question, so an agent cannot widen its view by asking for another's. When
+several agents share one connection, the caller also names itself, and that name resolves only inside
+its group (below, "An app that runs several agents").
 
 - An **orchestrator**, listed in `agents.orchestrators`, reads the whole forest. Studio Hub needs that to
   check the bots' work and to answer Juno about anything.
@@ -249,3 +251,57 @@ When Juno stops shipping by courier and Post Bot is retired (`forest move retire
   (by default `agents.folded_type`, `component`) and leaves `## Agents`. Its old branches become the
   `subtopic:` of its leaves, nothing is lost, and `forest move resolve` sends every old path to the new
   place. Its raw lane makes no new tree: the id now names the folded subject.
+
+## An app that runs several agents
+
+Kiln Bot and Ledger Bot can run inside one app Juno uses, with one tool connection for both of them, no
+hooks, and no transcript on Juno's machine. The connection is a group. It tells the two bots apart for
+memory. It is not a wall between them: each still reads the shared trees that bot may read. A caller on
+this connection cannot be an agent outside the group, so it cannot be Studio Hub unless Studio Hub is a
+member, and it cannot be the group's own id.
+
+```toml
+[agents.groups.studio-counter]
+members = ["kiln-bot", "ledger-bot"]
+open = false
+
+[agents.known.kiln-bot]
+name = "Kiln Bot"
+```
+
+```sh
+forest mcp --as-group studio-counter
+```
+
+Every tool on that connection takes `agent`, the name the app uses for the caller. `Kiln Bot`,
+`kiln-bot`, `kiln_bot` and `KilnBot` are Kiln Bot. A name one edit away (`kiln-bott`, or `post-bott`
+when Post Bot is outside the group) is refused, and the refusal names that agent, so a typing slip
+does not make a second agent. A closed group refuses any
+other name and lists the members. An open group (`open = true`) admits a new slug once, keeps the given
+string as that member's `name`, and a second call finds the member and does not write the settings
+again. `forest agents` shows the group, whether each member has written a lane, and when it was last
+seen on a connection.
+
+Three questions for a host of this kind:
+
+- **Who is calling.** The group, and the name on the call.
+- **How the forest is reached from a computer that is not Juno's.** `forest mcp --http` on Juno's
+  machine, behind an HTTPS front inside Juno's own private network, the token sent as a header. It is
+  not put on the public internet. Where the host can only run a command on Juno's machine, the same
+  doors are `forest search`, `forest read`, `forest timeline`, `forest navigate` and `forest log`, with
+  `--as-group studio-counter --agent "Kiln Bot"`.
+- **How turns get in.** Where a reader of the host's own records exists, that reader is the net.
+  Otherwise the agent writes its own turn.
+
+## An agent you wrote yourself
+
+An agent Juno wrote, under a name Juno chose, uses the same doors.
+
+- Its own write: `forest log --as kiln-bot`, with the turn on stdin, never as an argument, or
+  `memory_log` on `forest mcp --as kiln-bot`. The door sets the role and the origin. A turn the lane
+  already holds is skipped. The same masking applies. This depends on the agent calling it, so where a
+  reader of the host's records exists, the reader is the net and this write is the addition.
+- An export folder the `jsonl` adapter reads.
+- An adapter module for that agent's own records, outside the core.
+
+The tree appears from the first file in the lane, as any agent's does.

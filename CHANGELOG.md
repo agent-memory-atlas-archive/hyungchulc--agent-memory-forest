@@ -91,6 +91,15 @@ the version 1 commands replace it.
 
 ### Added
 
+- One connection can serve a group of the owner's agents. `forest mcp --as-group <group>` (stdio or
+  `--http`, the same token rule as `--as`) requires `agent` on every tool, resolved only to a member.
+  `--as` is unchanged: a tool argument cannot set the reader. A closed group refuses a stranger and
+  lists the members. An open group admits a new slug once, keeps the given name, and a second admission
+  changes no byte. A near-miss resolves, or is refused with that member named. `forest log` is the
+  command-line twin of `memory_log` (the text is stdin). `forest search`, `forest read`,
+  `forest timeline` and `forest navigate` take the same `--as-group` and `--agent`. `forest agents`
+  lists each group, its lanes, and when a member was last seen.
+
 - `forest index build | status` writes `.forest/index.sqlite`, one row per page section, collection
   entry, daily block and raw-lane turn. The stored text is what a read prints. The build holds the
   `index` lock and writes the file in place in WAL mode, in one transaction, so a reader never waits and

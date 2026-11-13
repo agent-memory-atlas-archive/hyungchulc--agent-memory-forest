@@ -144,6 +144,24 @@ A helper started for one task works as the agent that started it.
   its own tree, and another agent's tree only when `agents.default_scope` allows it or its task names that
   agent; a reader that is no agent reads the shared trees. `agents.readable_trees(config, registry,
   reader_id)` is that rule as one function. Each tool call records which trees answered.
+- **Several agents, one connection.** A group (`[agents.groups.<id>]`) is one app the owner runs, with
+  several named agents and one connection: `forest mcp --as-group <id>`, or a command with `--as-group`
+  and `--agent`. Exactly one of `--as` and `--as-group` is given. On a group connection every tool takes
+  `agent`, the caller's own name. With `--as` the tools are unchanged, and no argument can set the reader.
+  The name resolves only inside the group: a member's id, its declared `name`, or the same letters apart
+  from case, spaces, hyphens and underscores. Anything else one edit away from a member (one inserted,
+  deleted or substituted letter, or two adjacent letters swapped) is refused, and the refusal names that
+  member, so a typing slip does not make a second agent.   It is never an agent outside the group, never one edit away from such an agent,
+  never an orchestrator who is not a member, and never the group's own id. A closed group (`open = false`)
+  refuses a stranger and lists the members' ids and names. An open group admits a new slug once, when it
+  is not a near-miss and not an agent outside the group, writes that member under the group, and keeps
+  the given string as its `name`. A second identical admission changes no byte of the settings. Two
+  calls that would both admit the same new name end as one member and one settings write. The member's
+  scope, the lane a log writes, and the seen record are that member's. Its tree appears from its first
+  lane file as any agent's does (`agents.auto_create`), and from the settings entry the admission wrote,
+  as any declared agent's does. Inside the group the name tells the agents apart for memory. It is not a
+  wall: each member reads the shared trees that member's own scope allows. Outside the group, no caller
+  on that connection can be any agent.
 - **Who writes.** Agents do not edit forest pages at the same time. Each appends to its own raw lane
   (`06 istm/<agent>/`), the daily record is written from the lanes, and one filing run at a time, holding
   the forest writer lock, files into the forest. Direct edits go through the same lock.
@@ -305,7 +323,8 @@ starred and sign-in values are masked, as on every other read. A path or address
 trees or lane is refused, and the refusal does not include the text.
 
 Every search, read, timeline and MCP call takes its reader from `--as` or from the connection, never
-from the question. Results come only from `agents.readable_trees`. An agent also reads its own raw lane;
+from the question. On a group connection the caller also passes `agent`, and that name resolves to a
+member of the group (section 6). It still cannot name an agent outside the group. Results come only from `agents.readable_trees`. An agent also reads its own raw lane;
 an orchestrator reads every lane. The daily record and the root index are shared. `--named <agent>` is
 the task naming another agent, and it is not an MCP argument, so a tool call cannot widen its scope.
 The answer names the trees that answered.
@@ -315,7 +334,9 @@ phrase is evaluated in each entry's own time zone. A duration, and a range writt
 `YYYY-MM-DD..YYYY-MM-DD`, is one window of instants in the forest's zone.
 
 `forest mcp --as <agent> [--http HOST:PORT]` serves `memory_search`, `memory_read`, `memory_timeline`,
-`memory_navigate` and `memory_log`. `memory_navigate` walks one level down from the root index and
+`memory_navigate` and `memory_log`. `forest mcp --as-group <group> [--http HOST:PORT]` is the same
+server for one group: every tool then requires `agent`. Exactly one of `--as` and `--as-group` is
+given. The token rule is the same for both. `memory_navigate` walks one level down from the root index and
 returns the lines the reader may follow, each line as written. `memory_log` appends the caller's own
 turn through the intake writer; the server sets the role to `agent` and the origin from the transport
 (`interactive` on stdio, `headless` on HTTP). A caller-supplied role or origin is refused. The server's
@@ -348,7 +369,9 @@ port is refused; the name is not resolved. A bind the owner set to another addre
 address with the same port, and a bind on every interface accepts the host the client used, because
 that port was opened on purpose. The token is still required. The body must be `application/json`.
 Reaching a non-loopback port from outside the machine is the owner's own network decision. The first tool call of each agent is recorded in `.forest/mcp/seen.json` (the
-agent, the time, the tool and the transport, not the question) so `forest doctor` can later prove use.
+agent, the time, the tool and the transport, not the question), and each later call records when that
+agent was last seen, so `forest doctor` can later prove use. `forest agents` lists each group, its
+members, whether a member has written a lane, and that last-seen time.
 
 ## 11. The pipeline
 
@@ -430,6 +453,10 @@ folded_type = "component"       # the type an agent's subject takes when fold-tr
 [agents.known.<id>]             # an agent declared by the people running the forest (any slug as id)
 name = "…"                      # optional, free text in any script; default: the id
 role = "…"                      # optional; default: `## Role` holds `(not set)`
+[agents.groups.<group-id>]      # one app that runs several of the owner's agents, one connection
+members = ["kiln-bot", "ledger-bot"]
+open = false                    # true: a new name the caller gives becomes a member, once
+                                # the group's own id is not a member and not an agent
 [intake]
 tool_output = "omit"            # omit | keep. omit: a tool turn records that the tool ran
 [intake.tools.<adapter>]        # claude-code, codex, grok, jsonl, or an adapter added later
@@ -458,6 +485,7 @@ provider = "none"               # none | openai-compatible
 | `maps`, `validate`, `audit` | derived lists (Leaves, Pointers, Branches), structure checks | `forest check` |
 | `checks` | the one table of `forest check`'s checks | `forest check` |
 | `agents` | agents from the settings and the raw lanes, their problems, `readable_trees` | `forest levels` |
+| `groups` | one connection's members, admitting a new member, the agent list | `forest agents`, `forest mcp --as-group` |
 | `lint` | the codes, baselines | `forest lint` |
 | `repeats` | fact lines, the index leaf, the judged ledger; repeated lines to their one home | `forest repeats` |
 | `view` | a read-only view of one forest that the checks share: settings, registry, pages read once | |
@@ -465,7 +493,7 @@ provider = "none"               # none | openai-compatible
 | `intake`, `adapters` | the turn record, the one writer of a raw lane, per-tool transcript readers and their cursors | `forest intake` |
 | `timeline` | the time index and time phrases | `forest timeline` |
 | `search`, `scope` | the search index, coarse-to-fine retrieval, reader scopes | `forest search`, `forest read` |
-| `mcp` | the MCP server | `forest mcp` |
+| `mcp` | the MCP server, one agent or one group | `forest mcp` |
 | `stage` | daily store, bounded filing interval, cursors, receipts | `forest stage` |
 | `setup`, `doctor` | setup driven by the agent, the connection proof, the guide for agents | `forest setup`, `forest doctor`, `forest guide` |
 
@@ -532,9 +560,11 @@ that agent's own job.
   the environment of the model process. Only the first owner turn's own text marks a session; a hook
   still reads the environment. A hosted assistant has no transcript to read. Its
   `memory_log` path belongs to the MCP server, not to intake.
-- **An agent with no transcript and no hooks** has three ways in, strongest last: the MCP tool `memory_log`,
-  with which it appends its own turn (it depends on the agent calling it, and the setup says so); an export
-  folder read by the `jsonl` adapter; an adapter for that product, kept outside the core.
+- **An agent with no transcript and no hooks** has three ways in, strongest last: its own write, either
+  the MCP tool `memory_log` or the command `forest log` (the text comes on stdin, never as an argument;
+  it depends on the agent calling it, so where a reader of the host's own records exists, the reader is
+  the net and this write is the addition); an export folder read by the `jsonl` adapter; an adapter
+  module for that host, kept outside the core.
 - **An agent that runs somewhere else** (a hosted assistant) reaches the forest over `forest mcp --http` on
   the owner's machine, inside the owner's own private network, and writes its lane with `memory_log` or
   through an export the owner's machine reads. A lane belongs to one agent and is append-only, so two
@@ -543,7 +573,10 @@ that agent's own job.
 ### 15.2 Use: how an agent finds what it needs
 
 - `forest mcp --as <agent>` (section 10): search, read, navigate, timeline. The reader's id comes from the
-  connection, so the scope rule of section 6 holds without the agent saying who it is.
+  connection, so the scope rule of section 6 holds without the agent saying who it is. `forest mcp
+  --as-group <group>` is the same server when several agents share that one connection: each call passes
+  `agent`, and the name resolves only to a member (section 6). `forest search`, `forest read`,
+  `forest timeline`, `forest navigate` and `forest log` take the same `--as` or `--as-group` and `--agent`.
 - A skill says when to look: when the owner names something, when a question reaches into the past, and
   before asking the owner something the forest may already hold.
 - A session may open with a short card (who the owner is, what is in progress, the newest daily lines);
@@ -590,3 +623,36 @@ One plugin folder with a manifest for each supported tool, and shared `skills/`,
 `.mcp.json`: the hooks call `forest intake`, the MCP entry starts `forest mcp --as <agent>`, and the setup
 skill is the guide. Installing the plugin and running `forest setup` are one path: with the plugin installed
 and no forest set up, the first session says so and names the command.
+
+### 15.6 An app that runs several agents
+
+Some hosts are not a coding tool on the owner's machine. One app runs several named agents (Kiln Bot and
+Ledger Bot, in Juno's studio) and offers one tool connection for all of them, no hooks, and no transcript
+the owner's machine can read. Three questions, and the answers this package gives:
+
+- **Who is calling.** The connection is the group (`forest mcp --as-group studio-counter`). Each call
+  passes `agent`, the name the app uses for that agent. The name resolves only inside the group, to that
+  member's scope, lane and seen record. The group tells the agents apart for memory. It is not a wall:
+  each member sees the shared trees that member may see. Outside the group, a caller on this connection
+  cannot be any agent. Studio Hub is not a member, so a call cannot be Studio Hub.
+- **How the forest is reached from a computer that is not the owner's.** `forest mcp --http` on the
+  owner's machine, behind an HTTPS front that stays inside the owner's own private network. The client
+  sends the token as a header. The server is not put on the public internet. Where the host can run a
+  command on the owner's machine and nothing else, the commands are the same doors: `forest search`,
+  `forest read`, `forest timeline`, `forest navigate` and `forest log`, with `--as` or with
+  `--as-group` and `--agent`.
+- **How turns get in.** Where a reader of the host's own records exists, that reader is the net. Otherwise
+  the agent writes its own turn, with `memory_log` or with `forest log`. The write depends on the agent
+  calling it.
+
+### 15.7 An agent you wrote yourself
+
+An agent the owner wrote, rather than an app's, has the same doors under the name the owner gave it.
+
+- Its own write: `forest log --as kiln-bot`, the turn on stdin, or `memory_log` on `forest mcp --as kiln-bot`.
+  The role and the origin are set by that door. A turn the lane already holds is not written again.
+  Numbers and sign-in values are masked at the door.
+- An export folder of records in the lane's shape, read by the `jsonl` adapter.
+- An adapter module for that agent's own records, kept outside the core (`memory_forest.adapters`).
+
+The tree appears from the first lane file, as any agent's does.

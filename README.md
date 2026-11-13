@@ -154,6 +154,9 @@ forest index build                             # .forest/index.sqlite, rebuildab
 forest search "the old oven" --as till-bot     # aliases first, then words, inside the reader's scope
 forest timeline query "yesterday evening" --as till-bot
 forest mcp --as till-bot                       # search, read, timeline, navigate, memory_log
+forest mcp --as-group studio-counter           # several agents, one connection; each call names its agent
+forest log --as kiln-bot                       # the turn is read from stdin
+forest agents                                  # groups, lanes, and when each agent was last seen
 forest setup                                   # not built yet: run by your agent
 forest doctor                                  # not built yet: proves a turn arrives and the MCP server answers
 

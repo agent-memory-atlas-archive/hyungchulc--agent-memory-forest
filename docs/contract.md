@@ -508,6 +508,11 @@ helper started for one task works as the agent that started it.
     **shared**: the upkeep run moves it to the shared subject's home, and each agent's leaf keeps a
     reference line.
 - **Who reads what.** Every reader has an id, taken from its connection and never from the question.
+  A group (`[agents.groups.<id>]`, design section 6) is one connection for several agents of one app.
+  The call names the caller, and that name resolves only to a member of the group. The scope, the lane
+  and the record of which trees answered are that member's. The name cannot be an agent outside the
+  group, and the group's own id is not an agent. Inside the group the agents are told apart so each
+  has its own lane. They are not walled off from the shared trees.
   - An orchestrator (listed in `agents.orchestrators`) reads the whole forest.
   - Any other agent reads the shared trees and its own tree, and reads another agent's tree only when
     `agents.default_scope` is `all` or its task names that agent. The default scope is `own+shared`.

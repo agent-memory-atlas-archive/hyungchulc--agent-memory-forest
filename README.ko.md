@@ -152,6 +152,9 @@ forest index build                             # .forest/index.sqlite, 지우고
 forest search "the old oven" --as till-bot     # 별칭을 먼저, 그다음 단어, 읽는 쪽의 범위 안에서
 forest timeline query "yesterday evening" --as till-bot
 forest mcp --as till-bot                       # search, read, timeline, navigate, memory_log
+forest mcp --as-group studio-counter           # 에이전트 여럿이 연결 하나. 호출마다 자기 이름을 냄
+forest log --as kiln-bot                       # 턴은 stdin으로
+forest agents                                  # 그룹, lane, 연결에서 마지막으로 보인 때
 forest setup                                   # 아직 없음: 에이전트가 실행
 forest doctor                                  # 아직 없음: 턴이 들어오고 MCP server가 답하는지 확인
 
@@ -204,7 +207,8 @@ Agent Memory Forest는 alpha 단계이며, 이 트리의 버전은 1.0.0a1입니
 - **Milestone 2, 연결하고 찾기 (intake, index, 검색, MCP server는 이 저장소에 있음):** `forest intake`가
   각 도구의 대화 기록을 그 agent의 raw lane으로 받습니다. `forest index`가 `.forest/index.sqlite`를 만들고,
   `forest search`, `forest read`, `forest timeline`이 그 index에서 `agents.readable_trees` 범위로 답합니다.
-  `forest mcp`는 search, read, timeline, navigate, `memory_log`를 제공합니다. 주인의 agent가 직접 하는
+  `forest mcp`는 search, read, timeline, navigate, `memory_log`를 제공합니다. `--as-group`은 에이전트
+  여럿이 연결 하나를 쓸 때이고, `forest log`는 그 쓰기의 명령입니다. 주인의 agent가 직접 하는
   설치(`forest setup`, `forest doctor`, 안내, plugin)는 아직 없습니다
   ([design 15장](docs/v1-design.md#15-connecting-agents)).
 - **Milestone 3, 자라기 (아직 없음):** 단계별 프로그램과 prompt, 야간 관리.
