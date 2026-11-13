@@ -82,6 +82,9 @@ class SyntaxTests(unittest.TestCase):
             'from os import stat as lookup; lookup("x")',
             'from os import fdopen as reader; f = reader',
             'from sqlite3 import Connection as database; database("x")',
+            'f = getattr', 'import functools; functools.partial(getattr, p, "name")',
+            'from pathlib import *; p = Path("synthetic")', 'from .safety import *',
+            'import memory_forest_extra', 'from memory_forestx import reader',
         ]
         for code in probes:
             with self.subTest(code=code):

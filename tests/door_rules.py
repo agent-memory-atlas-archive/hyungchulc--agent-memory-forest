@@ -96,10 +96,12 @@ def forbidden_calls(tree: ast.Module) -> list[tuple[int, str]]:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     bound[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
-                    if alias.name not in ALLOWED_IMPORTS and not alias.name.startswith("memory_forest"):
+                    if alias.name not in ALLOWED_IMPORTS and not (alias.name == "memory_forest" or alias.name.startswith("memory_forest.")):
                         found.add((node.lineno, "import " + alias.name))
             else:
                 module = node.module or ""
+                if any(alias.name == "*" for alias in node.names):
+                    found.add((node.lineno, "wildcard import"))
                 if module == "os" and any(a.name not in ALLOWED_OS for a in node.names):
                     found.add((node.lineno, "non-pure os import"))
                 if module == "os.path" and any(a.name not in ALLOWED_OS_PATH for a in node.names):
@@ -111,7 +113,7 @@ def forbidden_calls(tree: ast.Module) -> list[tuple[int, str]]:
                 for alias in node.names:
                     local = alias.asname or alias.name
                     bound[local] = module + "." + alias.name
-                    if node.level or module.startswith("memory_forest"):
+                    if node.level or (module == "memory_forest" or module.startswith("memory_forest.")):
                         if module:
                             own.add(module)
                         # Resolve actual modules/classes, never the receiver's spelling.
@@ -122,7 +124,7 @@ def forbidden_calls(tree: ast.Module) -> list[tuple[int, str]]:
                                 own.add(local)
                         if not module and (PACKAGE / (alias.name + ".py")).is_file():
                             own.add(local)
-                if not node.level and module not in ALLOWED_IMPORTS and not module.startswith("memory_forest"):
+                if not node.level and module not in ALLOWED_IMPORTS and not (module == "memory_forest" or module.startswith("memory_forest.")):
                     found.add((node.lineno, "import " + module))
         if isinstance(node, ast.ClassDef):
             classes[node.name] = {n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
@@ -143,6 +145,10 @@ def forbidden_calls(tree: ast.Module) -> list[tuple[int, str]]:
             full = bound.get(node.id, node.id)
             if full in {"open", "builtins.open", "eval", "exec", "compile", "__import__"}:
                 found.add((node.lineno, full))
+            if full in {"getattr", "builtins.getattr"}:
+                parent = parents.get(node)
+                if not (isinstance(parent, ast.Call) and parent.func is node):
+                    found.add((node.lineno, "getattr passed as a value"))
         if isinstance(node, ast.Attribute):
             dotted = _dotted(node)
             if dotted:

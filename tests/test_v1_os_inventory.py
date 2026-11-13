@@ -30,7 +30,7 @@ sys.addaudithook(audit)
 PURE = frozenset({
     "basename", "commonpath", "commonprefix", "dirname", "expandvars", "isabs", "join", "normcase",
     "normpath", "relpath", "split", "splitdrive", "splitext", "splitroot", "isreserved",
-    "fsdecode", "fsencode", "fspath", "expanduser",
+    "fsdecode", "fsencode", "fspath", "expanduser", "samestat",
 })
 # These generators must be consumed to perform their work.
 GENERATORS = {"walk", "fwalk", "scandir"}
@@ -70,16 +70,30 @@ def inventory():
             except (TypeError, ValueError):
                 pass
             names = set(re.findall(r"\b[a-z_]+\b", signature))
-            if names & {"path", "filename", "src", "dst", "top", "file", "path1", "path2", "f1", "f2"}:
+            explicit = names & {"path", "filename", "src", "dst", "top", "file", "path1", "path2", "f1", "f2"}
+            described = names & {"name", "old", "new"} and re.search(
+                r"\b(?:path|file|filename|directory|directories)\b", function.__doc__ or "", re.IGNORECASE)
+            if owner is os.path or explicit or described:
                 yield owner, name, function, signature
 
 
 class InventoryTests(unittest.TestCase):
+    def test_discovery_covers_path_aliases_and_the_whole_path_namespace(self):
+        found = {(owner.__name__, name) for owner, name, _, _ in inventory()}
+        for owner, name in ((os, "makedirs"), (os, "removedirs"), (os, "renames"),
+                            (os.path, "basename"), (os.path, "join"), (os.path, "sameopenfile")):
+            self.assertIn((owner.__name__, name), found)
+
     def test_every_path_function_audits_or_is_wrapped(self):
         global _EVENTS, _SILENT_EVENTS
         missing, invalid, called = [], [], []
         with tempfile.TemporaryDirectory() as temporary, silent_watch():
             absent = str(Path(temporary) / "absent" / "decoy")
+            existing = Path(temporary) / "existing-decoy"
+            existing.write_bytes(b"synthetic")
+            descriptor = os.open(existing, os.O_RDONLY)
+            self.addCleanup(os.close, descriptor)
+            info = os.fstat(descriptor)
             for owner, name, function, text in inventory():
                 _EVENTS = []
                 _SILENT_EVENTS = []
@@ -101,6 +115,10 @@ class InventoryTests(unittest.TestCase):
                         result = function(*args)
                     elif name in {"posix_spawn", "posix_spawnp"}:
                         result = function(absent, [absent], {})
+                    elif name == "sameopenfile":
+                        result = function(descriptor, descriptor)
+                    elif name == "samestat":
+                        result = function(info, info)
                     elif name == "abspath":
                         result = function("synthetic-decoy/absent")
                     elif name == "utime":
@@ -116,6 +134,8 @@ class InventoryTests(unittest.TestCase):
                             if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) or p.default is not p.empty:
                                 continue
                             value = VALUES.get(p.name, absent)
+                            if p.name == "name" and name not in {"pathconf", "fpathconf"}:
+                                value = absent
                             if p.name in {"paths", "m"}:
                                 value = [absent, absent]
                             args.append(value)
