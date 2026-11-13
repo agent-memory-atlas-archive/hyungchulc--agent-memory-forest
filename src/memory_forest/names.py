@@ -170,39 +170,23 @@ def _merged() -> tuple[Mapping[str, str], frozenset[str]]:
     return letters, frozenset(doubling)
 
 
-def _hangul_apart(text: str) -> str:
-    """Each Hangul syllable as its initial, vowel and final (the Unicode decomposition)."""
-    return "".join(
-        unicodedata.normalize("NFD", character) if 0xAC00 <= ord(character) <= 0xD7A3 else character
-        for character in text
-    )
-
-
 def _base(character: str, letters: Mapping[str, str]) -> str | None:
-    """A letter no table holds, taken apart and its marks dropped, when every part is carried; else None."""
-    parts = unicodedata.normalize("NFKD", character)
-    kept = [part for part in parts if not unicodedata.combining(part)]
-    if not kept or "".join(kept) == character:
+    """A letter no table holds, taken apart and its marks dropped, when a table holds every part; else None.
+
+    The text is in NFKC already, so taking a character apart only parts a letter from its marks (a Hangul
+    syllable from its initial, vowel and final). Over all of Unicode every part left is a table's letter or
+    a character no table carries, so nothing else is looked for.
+    """
+    parts = [part for part in unicodedata.normalize("NFKD", character) if not unicodedata.combining(part)]
+    if not parts or any(part not in letters for part in parts):
         return None
-    out = []
-    for part in kept:
-        if part in letters:
-            out.append(letters[part])
-        elif part.isascii() and part.isalnum():
-            out.append(part.lower())
-        elif part in _DROPPED:
-            continue
-        elif _separator(part) or unicodedata.category(part).startswith("P"):
-            out.append("-")
-        else:
-            return None
-    return "".join(out)
+    return "".join(letters[part] for part in parts)
 
 
 def transliterated(name: str) -> str | None:
     """The name letter for letter in ASCII, separators as hyphens; None when a character is carried by no table."""
     letters, doubling = _merged()
-    text = _hangul_apart(folded(name))
+    text = folded(name)
     pieces: list[str] = []
     double = False
     index = 0

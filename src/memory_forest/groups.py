@@ -288,7 +288,7 @@ def _remarks(rows: list[tuple[str, str]]) -> list[dict[str, str]]:
         for right_id, right_name in unique[index + 1 :]:
             left_key = names.key(left_name or left_id)
             right_key = names.key(right_name or right_id)
-            if not left_key or left_key == right_key:
+            if not left_key or not right_key or left_key == right_key:
                 continue
             if _one_edit(left_key, right_key):
                 how = "one edit"
@@ -320,7 +320,9 @@ def _member_rows(rows: list[tuple[str, str]]) -> list[dict[str, str]]:
 
 
 def _agent_rows(root: str | os.PathLike[str], config: Config) -> list[tuple[str, str]]:
-    """Every agent the forest already has: its id and its stored name (the settings', else the registry's)."""
+    """Every agent the forest already has: its id and its stored name (the settings', else the registry's).
+
+    The settings' names come first, and a name once set is not replaced, so the settings' name wins."""
     rows: dict[str, str] = {}
 
     def add(agent_id: str, name: str) -> None:
@@ -332,10 +334,9 @@ def _agent_rows(root: str | os.PathLike[str], config: Config) -> list[tuple[str,
         elif not current and name:
             rows[agent_id] = name
 
+    # An orchestrator is not among them: ``_interpret`` finds one before it asks for this list.
     for known in config.agents.known:
         add(known.id, known.name)
-    for agent_id in config.agents.orchestrators:
-        add(agent_id, _name_of(config, agent_id))
     for group in config.agents.groups:
         for member in group.members:
             add(member, _name_of(config, member))
@@ -349,9 +350,6 @@ def _agent_rows(root: str | os.PathLike[str], config: Config) -> list[tuple[str,
         for agent_id in compiled.agents:
             subject = compiled.subject(agent_id) or {}
             add(agent_id, str(subject.get("name") or _name_of(config, agent_id)))
-    for known in config.agents.known:
-        if known.name:
-            rows[known.id] = known.name
     return list(rows.items())
 
 
@@ -422,9 +420,7 @@ def _interpret(
         return _ambiguous(group, everyone, existing)
     if len(existing) == 1 and allowed:
         return Admit(existing[0], create=False)
-    if len(existing) == 1:
-        return _not_in_group(group, rows, given)
-    if allowed:
+    if allowed and not existing:
         return _plan_new(root, config, group, given)
     return _not_in_group(group, rows, given)
 
@@ -439,10 +435,9 @@ def _group_full(group: AgentGroup) -> MemoryForestError:
     )
 
 
-def _plan_new(root: str | os.PathLike[str], config: Config, group: AgentGroup, given: str) -> Admit | MemoryForestError:
-    """A new agent: its id is made once from the name, and never an id something already holds."""
-    if group.max_members is not None and len(group.members) >= group.max_members:
-        return _group_full(group)
+def _plan_new(root: str | os.PathLike[str], config: Config, group: AgentGroup, given: str) -> Admit:
+    """A new agent: its id is made once from the name, and never an id something already holds. A full group
+    is refused by ``_admit``, under the settings lock, for a new agent and an existing one alike."""
     return Admit(agents_mod.new_id(given, agents_mod.taken(root, config)), create=True)
 
 
@@ -569,10 +564,9 @@ def _admit(
         assert isinstance(decision, Admit)
         if group.max_members is not None and decision.id not in group.members and len(group.members) >= group.max_members:
             raise _group_full(group)
-        known = config.agents.declared(decision.id)
-        write_known = decision.create or known is None
-        stored_name = given if write_known else (known.name if known is not None else given)
-        edits = _edits(group, decision.id, stored_name, write_known=write_known)
+        # A table is written for a new agent, or an agent the settings do not declare yet, with the name given.
+        write_known = decision.create or config.agents.declared(decision.id) is None
+        edits = _edits(group, decision.id, given, write_known=write_known)
         path = config_path(root)
         if _settings_unwritable(path):
             raise _unwritable(group_id, decision.id, edits)
@@ -586,7 +580,7 @@ def _admit(
         except UnicodeDecodeError as exc:
             raise _unpatched(group_id, decision.id, edits) from exc
         try:
-            updated = _patch(original, group, decision.id, stored_name, write_known=write_known)
+            updated = _patch(original, group, decision.id, given, write_known=write_known)
         except _Unpatchable as exc:
             raise _unpatched(group_id, decision.id, edits) from exc
         try:
@@ -594,7 +588,7 @@ def _admit(
         except MemoryForestError as exc:
             # The owner's file parsed before the patch: a file that does not parse after it is the patch's fault.
             raise _unpatched(group_id, decision.id, edits) from exc
-        if not _means(config, parsed, group_id, decision.id, stored_name, write_known=write_known):
+        if not _means(config, parsed, group_id, decision.id, given, write_known=write_known):
             raise _unpatched(group_id, decision.id, edits)
         if updated == original:
             return Resolved(decision.id, wrote=False)
@@ -735,11 +729,9 @@ def _extend_members(block: str, member_id: str) -> str:
     token = _toml_value(member_id)
     key_at = _find_key(block, "members")
     if key_at is None:
-        lines = _lines(block)
-        header = lines[0]
-        if header.endswith("\n"):
-            return header + f"members = [{token}]{_ending(header)}" + block[len(header):]
-        return block + f"{_file_ending(block)}members = [{token}]"
+        # A group that admits has a key (``open`` or ``source``), so its header line ends in a line ending.
+        header = _lines(block)[0]
+        return header + f"members = [{token}]{_ending(header)}" + block[len(header):]
     value_at = _value_at(block, key_at)
     if value_at is None or block[value_at] != "[":
         raise _Unpatchable("members")
@@ -748,16 +740,10 @@ def _extend_members(block: str, member_id: str) -> str:
         raise _Unpatchable("members")
     body = block[value_at + 1 : end]
     last = _last_code(body)
-    if "\n" not in body:
-        if last == "":
-            addition = token
-        elif last == ",":
-            addition = " " + token
-        else:
-            addition = ", " + token
-        return block[:end] + addition + block[end:]
     line_start = block.rfind("\n", 0, end) + 1
     before_bracket = block[line_start:end]
+    # The closing bracket on a line of its own: the new member is a line of its own above it, indented as the
+    # items are. Otherwise (one line, or items before the bracket) it follows the last item on its line.
     if last in {"", ","} and not before_bracket.strip():
         newline = _ending(block[:line_start])
         return block[:line_start] + f"{_item_indent(body)}{token},{newline}" + block[line_start:]
@@ -767,8 +753,13 @@ def _extend_members(block: str, member_id: str) -> str:
 
 
 def _find_key(block: str, key: str) -> int | None:
-    """Index of ``key`` where it is a key of the table (bare or quoted), not a word in a string or a comment."""
-    for offset, line in _offsets(block):
+    """Index of ``key`` where a line of the table starts with it (bare or quoted) and an ``=``.
+
+    The file parsed as TOML, so no line inside an array starts with a key and an ``=``; a line of a multi-line
+    string that looks like the key is caught by the check of the patched file's meaning (``_means``).
+    """
+    offset = 0
+    for line in _lines(block):
         stripped = line.lstrip(" \t")
         at = offset + len(line) - len(stripped)
         for written in (key, f'"{key}"', f"'{key}'"):
@@ -776,6 +767,7 @@ def _find_key(block: str, key: str) -> int | None:
                 after = stripped[len(written):].lstrip(" \t")
                 if after.startswith("="):
                     return at
+        offset += len(line)
     return None
 
 
@@ -850,7 +842,7 @@ def _array_end(text: str, open_index: int) -> int | None:
         if in_string:
             if escape:
                 escape = False
-            elif character == "\\":
+            elif character == "\\" and quote == '"':
                 escape = True
             elif character == quote:
                 in_string = False
@@ -886,7 +878,7 @@ def _last_code(body: str) -> str:
         if in_string:
             if escape:
                 escape = False
-            elif character == "\\":
+            elif character == "\\" and quote == '"':
                 escape = True
             elif character == quote:
                 in_string = False

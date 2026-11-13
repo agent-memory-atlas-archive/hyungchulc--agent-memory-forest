@@ -165,25 +165,17 @@ def taken(root: str | os.PathLike[str], config: Config) -> dict[str, list[str]]:
                 add(subject_id, "agent")
             elif kind:
                 add(subject_id, f"subject:{kind}")
-            if str(subject_id).endswith(registry.COLLECTION_SUFFIX):
-                add(subject_id, "collection-suffix")
         for tree, kind in compiled.tree_kinds.items():
             if kind != registry.TREE_KIND_AGENT:
                 add(tree, "area-tree")
     return found
 
 
-def kinds_of(
-    slug: str, taken_map: Mapping[str, list[str]] | None = None, *, root: str | os.PathLike[str] | None = None,
-    config: Config | None = None,
-) -> list[str]:
-    """The kinds that hold ``slug``. A collection suffix counts even when nothing is registered under it."""
-    if taken_map is None:
-        if root is None or config is None:
-            return []
-        taken_map = taken(root, config)
+def kinds_of(slug: str, taken_map: Mapping[str, list[str]]) -> list[str]:
+    """The kinds that hold ``slug`` (:func:`taken`). A collection suffix counts even when nothing is registered
+    under it."""
     found = list(taken_map.get(slug, []))
-    if slug.endswith(registry.COLLECTION_SUFFIX) and "collection-suffix" not in found:
+    if slug.endswith(registry.COLLECTION_SUFFIX):
         found.append("collection-suffix")
     return found
 

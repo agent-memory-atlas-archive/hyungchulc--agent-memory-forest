@@ -14,8 +14,9 @@ import unicodedata
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
-from memory_forest import agents, groups, mcp, names, search
+from memory_forest import agents, groups, mcp, move, names, search
 from memory_forest.cli import forest_main
 from memory_forest.config import load_config, parse_config
 from memory_forest.errors import MemoryForestError
@@ -115,6 +116,35 @@ class KeyTests(ForestTestCase):
             self.assertEqual(_tool_body(reply)["code"], "out_of_scope")
 
 
+class AmbiguityTests(ForestTestCase):
+    """A name two agents share is refused with both ids, among members first, then main agents, then everyone."""
+
+    def _refused(self, settings: str, group: str, given: str, name: str) -> MemoryForestError:
+        root = self.make_forest({**FILES, "forest.toml": settings}, name=name)
+        before = (root / "forest.toml").read_bytes()
+        with self.assertRaises(MemoryForestError) as caught:
+            groups.resolve_caller(root, group, given)
+        self.assertEqual((root / "forest.toml").read_bytes(), before)
+        return caught.exception
+
+    def test_a_name_two_agents_share_is_refused_with_both_wherever_the_two_are(self) -> None:
+        two = '\n[agents.known.desk-one]\nname = "Front Desk"\n\n[agents.known.desk-two]\nname = "front_desk"\n'
+        members = BAKERY_GROUPS.replace('members = ["till-bot", "oven-bot"]', 'members = ["desk-one", "desk-two"]')
+        mains = BAKERY_GROUPS.replace('orchestrators = ["front-desk"]', 'orchestrators = ["front-desk", "frontdesk"]')
+        shelves = '\n[agents.known.shelf-one]\nname = "Shelf Bot"\n\n[agents.known.shelf-two]\nname = "shelf_bot"\n'
+        cases = (
+            # Two members share the key, and a main agent has it too: the members are asked first.
+            ("members", members + two, "bakery-bots", "Front Desk", ["desk-one", "desk-two"]),
+            ("main agents", mains, "night-shift", "Front Desk", ["front-desk", "frontdesk"]),
+            ("agents of no group", BAKERY_GROUPS + shelves, "night-shift", "Shelf Bot", ["shelf-one", "shelf-two"]),
+        )
+        for label, settings, group, given, wanted in cases:
+            with self.subTest(where=label):
+                refused = self._refused(settings, group, given, label.replace(" ", "-"))
+                self.assertEqual(refused.code, "agent_ambiguous")
+                self.assertEqual([item["id"] for item in refused.details["members"]], wanted)
+
+
 class BadArgumentTests(ForestTestCase):
     def test_only_empty_too_long_or_control_text_is_a_bad_argument(self) -> None:
         for given, code in (("", "agent_unset"), ("   ", "agent_unset"), ("y" * 201, "agent_name_invalid"),
@@ -163,6 +193,16 @@ class IdTests(ForestTestCase):
             if unicodedata.category(character).startswith("L"):
                 self.assertFalse(names.make_id(f"{character}x").startswith("agent-"), hex(point))
 
+    def test_only_the_json_files_of_the_folder_are_tables(self) -> None:
+        folder = self.base / "letters"
+        (folder / "notes.json").mkdir(parents=True)
+        (folder / "README").write_text("not a table\n", encoding="utf-8")
+        (folder / "latin.json").write_bytes((names.LETTERS_DIR / "latin.json").read_bytes())
+        names.tables.cache_clear()
+        self.addCleanup(names.tables.cache_clear)
+        with mock.patch.object(names, "LETTERS_DIR", folder):
+            self.assertEqual([table.name for table in names.tables()], ["latin"])
+
     def test_ids_are_made_letter_for_letter_and_a_name_no_table_carries_is_hashed(self) -> None:
         cases = {
             "Kiln Bot": "kiln-bot", "Crème Brûlée": "creme-brulee", "Søren Ålund": "soren-alund",
@@ -170,9 +210,13 @@ class IdTests(ForestTestCase):
             "카피 Bot": "kapi-bot", "スカウト": "sukauto", "マッチャ": "matcha", "ガッツ": "gattsu", "きょう": "kyou",
             "ラーメン": "ramen", "Разведчик": "razvedchik", "Ёлка": "yolka", "Θάλεια Ρόδου": "thaleia-rodou",
             "Ωmega 7": "omega-7", "Ψmega 7": "psmega-7", "Crate.Bot": "crate-bot", "Kiln!": "kiln",
+            "Kiln -- Bot!": "kiln-bot",
         }
         for given, wanted in cases.items():
             self.assertEqual(names.make_id(given), wanted, given)
+        # A small tsu doubles the first letter of what follows, a Hangul syllable taken apart included.
+        self.assertEqual(names.make_id("ガッ야"), "gayya")
+        self.assertEqual(names.make_id("ガッや"), "gayya")
         for given in ("侦察兵", "名 7", "字 7", "كشاف", "★", "Tea+Bot", "✓✓", "---", "스카우트 ★"):
             self.assertEqual(names.make_id(given), f"agent-{_hash(given)}", given)
         self.assertNotEqual(names.make_id("名 7"), names.make_id("字 7"))
@@ -211,6 +255,47 @@ class IdTests(ForestTestCase):
         self.assertEqual(names.new_id("X", lambda value: held.get(value, [])), "x-4")
         held = {"x": ["subject:place", "agent"], "x-agent": ["agent"]}
         self.assertEqual(names.new_id("X", lambda value: held.get(value, [])), "x-agent-2")
+
+    def test_an_id_held_by_any_one_kind_of_agent_entry_alone_is_not_given_again(self) -> None:
+        settings = BAKERY_GROUPS.replace('orchestrators = ["front-desk"]', 'orchestrators = ["front-desk", "proof-bot"]')
+        settings += '\n[agents.known.sift-bot]\nrole = "sifts"\n'
+        settings += '\n[agents.groups.flour]\nmembers = ["mill-bot"]\nopen = true\n'
+        settings += '\n[intake.tools.jsonl]\nagent = "dough-bot"\n'
+        lane = json.dumps({"id": "r1", "at": "2051-03-02T06:00:00+00:00", "role": "agent", "session": "s",
+                           "text": "racked"}) + "\n"
+        root = self.make_forest({**FILES, "forest.toml": settings, "06 istm/rack-bot/2051-03-02.jsonl": lane},
+                                name="holders")
+        # oven-bot is an agent with a tree as well as a table and a lane: an agent's id, so a number follows.
+        for held in ("mill-bot", "sift-bot", "proof-bot", "dough-bot", "rack-bot", "oven-bot"):
+            given = held.replace("-", ".").title()  # another key, the same letters
+            self.assertEqual(names.make_id(given), held)
+            self.assertEqual(groups.resolve_caller(root, "night-shift", given).id, f"{held}-2", given)
+
+    def test_a_name_finds_an_agent_the_forest_already_has_wherever_only_it_is_written(self) -> None:
+        settings = BAKERY_GROUPS + '\n[agents.known.sift-bot]\nrole = "sifts"\n'
+        settings += '\n[agents.groups.flour]\nmembers = ["mill-bot"]\nopen = false\n'
+        settings += '\n[intake.tools.jsonl]\nagent = "dough-bot"\n'
+        lane = json.dumps({"id": "r1", "at": "2051-03-02T06:00:00+00:00", "role": "agent", "session": "s",
+                           "text": "racked"}) + "\n"
+        root = self.make_forest({
+            **FILES, "forest.toml": settings, "06 istm/rack-bot/2051-03-02.jsonl": lane,
+            "06 istm/kiln-keeper/2051-03-02.jsonl": lane, "06 istm/Shelf Bot/2051-03-02.jsonl": lane,
+        }, name="existing")
+        move.execute(root, "new-agent", id="kiln-keeper", name="Kiln Warden", role="keeps the kiln", today="2051-03-02")
+        move.execute(root, "new-agent", id="tray-bot", name="Tray Carrier", role="carries trays", today="2051-03-02")
+        found = {given: groups.resolve_caller(root, "night-shift", given).id
+                 for given in ("Sift Bot", "Mill Bot", "Dough Bot", "Rack Bot", "Kiln Warden", "Tray Carrier",
+                               "Oven Bot", "Shelf Bot")}
+        self.assertEqual(found, {
+            "Sift Bot": "sift-bot",  # a known table with no name: named by its id
+            "Mill Bot": "mill-bot",  # a member of another group only
+            "Dough Bot": "dough-bot",  # an adapter's agent only
+            "Rack Bot": "rack-bot",  # a lane only
+            "Kiln Warden": "kiln-keeper",  # a lane, and on the registry line a name that is not its id
+            "Tray Carrier": "tray-bot",  # a registry line only
+            "Oven Bot": "oven-bot",  # the settings' name
+            "Shelf Bot": "shelf-bot",  # a lane folder that cannot be an id is no agent
+        })
 
     def test_an_id_is_made_once_and_the_owners_own_id_wins(self) -> None:
         settings = BAKERY_GROUPS + '\n[agents.known.scout-one]\nname = "스카우트"\n'
@@ -302,6 +387,19 @@ class SettingsTests(ForestTestCase):
         root = self.make_forest({**FILES, "forest.toml": text}, name="twice")
         problems = agents.problems(root, load_config(root), agents.Subjects({}, frozenset()))
         self.assertEqual(len([item for item in problems if item.code == agents.SETTING_INVALID]), 2)
+
+    def test_a_declared_id_that_cannot_be_an_agent_is_a_problem_and_the_rest_are_not(self) -> None:
+        text = BAKERY_GROUPS + f'\n[agents.known.{"y" * 300}]\nname = "Too Long"\n'
+        text += '\n[agents.known.none]\nname = "Nobody"\n\n[agents.known.shelf-bot]\nname = "Shelf Bot"\n'
+        root = self.make_forest({**FILES, "forest.toml": text}, name="declared")
+        subjects = agents.Subjects({"shelf-bot": "place", "till-bot": "agent"}, frozenset())
+        problems = [item for item in agents.problems(root, load_config(root), subjects) if item.code == agents.INVALID]
+        self.assertEqual(len(problems), 3, [item.detail for item in problems])
+        self.assertTrue(problems[0].path.startswith("agents.known.y") and "cannot be placed" in problems[0].detail)
+        self.assertIn("`[agents.known.none]`: `none` is a reserved name", problems[1].detail)
+        self.assertIn("`[agents.known.shelf-bot]`: `shelf-bot` is registered as a `place`", problems[2].detail)
+        # A declared agent with no registry line yet differs from nothing.
+        self.assertEqual(agents.settings_differ(load_config(root), {"till-bot": "Till Bot"}, {}), [])
 
     def test_a_member_written_as_a_name_is_that_agents_id(self) -> None:
         text = BAKERY_GROUPS.replace('members = ["till-bot", "oven-bot"]', 'members = ["Till Bot", "ovenbot"]')
