@@ -526,6 +526,9 @@ helper started for one task works as the agent that started it.
     **shared**: the upkeep run moves it to the shared subject's home, and each agent's leaf keeps a
     reference line.
 - **Who reads what.** Every reader has an id, taken from its connection and never from the question.
+  A path whose folders are that reader's own tree and lane is inside the reader's scope whatever its last
+  part looks like, and a last part that names no page there is not found; a path whose folders are not the
+  reader's is outside the scope, and the answer does not say whether a page is there.
   A group (`[agents.groups.<id>]`, design section 6) is one connection for several agents of one app.
   The agent is its name. Inside a group a caller is whoever it says it is, so any member can read what
   another member's own tree and lane hold by calling under that member's name. A group tells one owner's
