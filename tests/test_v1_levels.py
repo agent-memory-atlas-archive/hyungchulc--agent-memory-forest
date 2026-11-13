@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import sys
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -101,3 +103,21 @@ class LevelsTests(ForestTestCase):
         self.add_timeline(root, MILLSTONE, ["2051-01-02", "2051-01-09", "2051-01-16", "2051-01-23", "2051-01-30"])
         self.assertEqual(levels.check(root, ["deck-oven"]), [])
         self.assertEqual(len(levels.check(root, ["millstone-flour"])), 1)
+
+    def test_a_subject_whose_pages_cannot_be_read_is_left_out_and_the_rest_are_still_due(self) -> None:
+        root = self.forest()
+        self.add_timeline(root, MILLSTONE, ["2051-01-02", "2051-01-09", "2051-01-16", "2051-01-23", "2051-01-30"])
+        real = levels.measure
+        unread: list[str] = []
+
+        def measure(plan, ref, counter=None):
+            if ref.id == "deck-oven":
+                unread.append(ref.id)
+                raise OSError(errno.ENAMETOOLONG, "File name too long")
+            return real(plan, ref, counter)
+
+        with mock.patch.object(levels, "measure", measure):
+            found = levels.check(root)
+        self.assertEqual(unread, ["deck-oven"])
+        self.assertEqual([(item.subject, item.level, item.new_level) for item in found],
+                         [("millstone-flour", "leaf", "branch")])

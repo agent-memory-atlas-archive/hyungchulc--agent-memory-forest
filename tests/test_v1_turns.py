@@ -15,9 +15,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
-from memory_forest import intake, levels, mcp
+from memory_forest import intake, levels, mcp, sources
 from memory_forest.cli import forest_main
 from memory_forest import cli_find
 from memory_forest.errors import MemoryForestError
@@ -135,6 +136,184 @@ class TurnTests(ForestTestCase):
         self.assertEqual(code, 0, out.getvalue())
         second = json.loads(out.getvalue())
         self.assertEqual((second["stored"], second["id"]), ("already stored", first["id"]))
+
+
+class LaneWriterTests(ForestTestCase):
+    """The lane writer's own checks, and stored lines it meets that it did not write."""
+
+    def _forest(self, name: str = "writer") -> Path:
+        return self.make_forest({**FILES, "forest.toml": BAKERY_GROUPS}, name=name)
+
+    def test_each_bad_argument_is_its_own_refusal_and_nothing_is_written(self) -> None:
+        root = self._forest()
+        lane = root / "06 istm" / "till-bot"
+        before = sorted(path.name for path in lane.iterdir())
+        for code, change in (
+            ("intake_agent_invalid", {"agent": "Till Bot"}),
+            ("intake_agent_invalid", {"agent": "t" * 201}),
+            ("intake_role_invalid", {"role": "baker"}),
+            ("intake_origin_invalid", {"origin": "somewhere"}),
+            ("intake_text_empty", {"text": " \n"}),
+        ):
+            arguments = {"agent": "till-bot", "text": "the till is open", "role": "agent", "origin": "interactive",
+                         "session": "shift", **change}
+            with self.subTest(code=code, change=sorted(change)):
+                agent = arguments.pop("agent")
+                text = arguments.pop("text")
+                with self.assertRaises(MemoryForestError) as caught:
+                    intake.append_owned(root, agent, text, at=NOON, **arguments)
+                self.assertEqual(caught.exception.code, code)
+        self.assertEqual(sorted(path.name for path in lane.iterdir()), before)
+
+    def test_the_group_is_on_the_line_only_when_the_call_named_one_and_a_time_without_a_zone_is_utc(self) -> None:
+        root = self._forest()
+        plain = intake.append_owned(root, "till-bot", "no group", role="agent", origin="interactive",
+                                    session="shift", at=datetime(2051, 3, 2, 12, 0))
+        grouped = intake.append_owned(root, "till-bot", "a group", role="agent", origin="interactive",
+                                      session="shift", group="night-shift", at=NOON)
+        lines = {line["text"]: line for line in _lines(root, plain["path"])}
+        self.assertNotIn("group", lines["no group"]["source"])
+        self.assertEqual(lines["a group"]["source"]["group"], "night-shift")
+        self.assertEqual(lines["no group"]["at"], "2051-03-02T12:00:00+00:00")
+        self.assertEqual(lines["no group"]["source"]["place"], "2051-03-02T12:00:00+00:00")
+        self.assertEqual(grouped["path"], plain["path"])
+
+    def test_a_turn_id_is_matched_by_id_only_and_stored_lines_with_odd_times_are_read_safely(self) -> None:
+        root = self._forest()
+        first = _log(root, "Done.", at=NOON, turn_id="a")
+        other = _log(root, "Done.", at=NOON + timedelta(seconds=5), turn_id="b", door="cli")
+        self.assertEqual((first["stored"], other["stored"]), ("written", "written"))
+        # The same turn again through the same source changes no lane, so the sources record stays as it was.
+        sources.listed(root, ["till-bot"])  # the fixture's lane came by hand: the listing records it
+        record = root / sources.RECORD
+        kept = (record.read_bytes(), record.stat().st_ino)
+        self.assertEqual(_log(root, "Done.", at=NOON + timedelta(seconds=9), turn_id="a")["stored"], "already stored")
+        self.assertEqual((record.read_bytes(), record.stat().st_ino), kept)
+        path = root / first["path"]
+        with path.open("a", encoding="utf-8") as handle:
+            for number, moment in enumerate(("not a time", "2051-03-02T13:00:00")):
+                handle.write(json.dumps({"id": f"hand-{number}", "at": moment, "role": "agent", "session": "shift",
+                                         "source": {"adapter": "jsonl"}, "text": f"by hand {number}"}) + "\n")
+        unreadable = _log(root, "by hand 0", at=NOON + timedelta(hours=1), door="cli")
+        naive = _log(root, "by hand 1", at=NOON + timedelta(hours=1, seconds=30), door="cli")
+        self.assertEqual((unreadable["stored"], naive["stored"]), ("written", "joined"))
+        self.assertEqual(naive["sources"], ["adapter:jsonl", "door:cli"])
+
+
+def _tool(root: Path, name: Any, arguments: Any, *, group: str | None = "night-shift",
+          version: str = "2025-11-25") -> dict:
+    message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
+    reply, _version = mcp.handle_message(root, "till-bot", message, "stdio", version, group=group)
+    assert isinstance(reply, dict)
+    return reply
+
+
+def _body(reply: dict) -> dict:
+    return json.loads(reply["result"]["content"][0]["text"])
+
+
+class ToolCallTests(ForestTestCase):
+    """One group call: what is refused before anything runs, what an admission adds, and every fault after it."""
+
+    def _forest(self) -> Path:
+        return self.make_forest({**FILES, "forest.toml": BAKERY_GROUPS}, name="calls")
+
+    def test_a_call_that_names_no_tool_or_passes_no_object_or_bad_arguments_is_refused_before_it_runs(self) -> None:
+        root = self._forest()
+        before = (root / "forest.toml").read_bytes()
+        for name, arguments, version in (
+            ("memory_nothing", {"agent": "New Clerk"}, "2025-11-25"),
+            ("memory_log", ["New Clerk"], "2025-11-25"),
+            ("memory_log", {"agent": "New Clerk", "text": 7}, "2025-06-18"),
+        ):
+            with self.subTest(name=name, version=version):
+                reply = _tool(root, name, arguments, version=version)
+                self.assertEqual(reply["error"]["code"], -32602, reply)
+        reply = _tool(root, "memory_log", {"agent": "New Clerk", "text": 7})
+        self.assertEqual(_body(reply)["code"], "arguments_invalid")
+        self.assertEqual((root / "forest.toml").read_bytes(), before)
+
+    def test_only_the_call_that_admitted_the_caller_says_so(self) -> None:
+        root = self._forest()
+        first = _body(_tool(root, "memory_log", {"agent": "New Clerk", "text": "the first turn"}))
+        second = _body(_tool(root, "memory_log", {"agent": "New Clerk", "text": "the second turn"}))
+        self.assertEqual(first.get("admitted"), "new-clerk")
+        self.assertNotIn("admitted", second)
+
+    def test_every_fault_after_an_admission_is_a_refusal_that_names_the_admission(self) -> None:
+        root = self._forest()
+        faults = (
+            ("bad argument inside", mcp._BadArguments("The lines are two numbers."), None),
+            ("refusal", MemoryForestError("index_busy", "busy", next_step="retry"), "index_busy"),
+            ("disk", PermissionError(13, "Permission denied", str(root / "06 istm")), None),
+            ("fault", RuntimeError("a fault of the code"), "tool_failed"),
+        )
+        for number, (label, fault, code) in enumerate(faults):
+            with self.subTest(label):
+                def invoke(*_args: Any, fault: BaseException = fault, **_kwargs: Any) -> Any:
+                    raise fault
+
+                with mock.patch.object(mcp, "_invoke", invoke):
+                    reply = _tool(root, "memory_search", {"agent": f"Clerk {number}", "words": "trays"})
+                if isinstance(fault, mcp._BadArguments):
+                    self.assertEqual(reply["error"]["code"], -32602, reply)
+                    continue
+                body = _body(reply)
+                self.assertTrue(reply["result"]["isError"])
+                if code is not None:
+                    self.assertEqual(body["code"], code)
+                self.assertEqual(body["details"]["admitted"], f"clerk-{number}")
+
+    def test_a_turn_whose_answer_cannot_be_masked_still_says_it_was_written_and_a_read_does_not(self) -> None:
+        root = self._forest()
+
+        real = mcp._tool_text
+
+        def failing(fault: BaseException) -> Any:
+            # The answer's masking fails; a refusal's own masking (``refusal=True``) still works.
+            def text(*args: Any, **kwargs: Any) -> Any:
+                if kwargs.get("refusal"):
+                    return real(*args, **kwargs)
+                raise fault
+            return text
+
+        unreadable = failing(MemoryForestError("config_invalid", "the settings cannot be read now", next_step="report"))
+        broken = failing(RuntimeError("a fault of the code"))
+
+        with mock.patch.object(mcp, "_tool_text", unreadable):
+            written = _body(_tool(root, "memory_log", {"agent": "Till Bot", "text": "masked later"}))
+            read = _tool(root, "memory_search", {"agent": "Till Bot", "words": "trays"})
+        self.assertEqual((written["wrote"], written["stored"], written["withheld"]), (True, "written", "config_invalid"))
+        self.assertNotIn("id", written)
+        self.assertTrue(read["result"]["isError"])
+        self.assertEqual(_body(read)["code"], "config_invalid")
+        with mock.patch.object(mcp, "_tool_text", failing(PermissionError(13, "Permission denied", str(root)))):
+            disk = _tool(root, "memory_search", {"agent": "Till Bot", "words": "trays"})
+        self.assertTrue(disk["result"]["isError"])
+        with mock.patch.object(mcp, "_tool_text", broken):
+            failed = _tool(root, "memory_search", {"agent": "Till Bot", "words": "trays"})
+        self.assertEqual(_body(failed)["code"], "tool_failed")
+        self.assertEqual(sorted(mcp.withheld({"wrote": True, "id": "x", "path": "p"}, OSError(5, "I/O error"))),
+                         ["withheld", "wrote"])
+
+    def test_a_forest_this_account_cannot_write_refuses_the_turn_as_unwritten_and_names_the_index(self) -> None:
+        root = self._forest()
+        refusal = MemoryForestError("index_read_only", "read only", next_step="report")
+        with mock.patch.object(mcp.search, "unwritable", lambda _root: refusal):
+            with self.assertRaises(MemoryForestError) as caught:
+                _log(root, "not kept", at=NOON)
+        self.assertEqual(caught.exception.code, "log_read_only")
+        other = MemoryForestError("index_link", "a link", next_step="report")
+        with mock.patch.object(mcp.search, "unwritable", lambda _root: other):
+            with self.assertRaises(MemoryForestError) as linked:
+                _log(root, "not kept", at=NOON)
+        self.assertEqual(linked.exception.code, "index_link")
+        mcp.search.build(root)
+        written = _log(root, "kept", at=NOON)
+        self.assertEqual((written["indexed"], written["index"]), (True, "updated"))
+        with mock.patch.object(mcp.search, "update_files", lambda *_args, **_kwargs: {"indexed": False}):
+            busy = _log(root, "kept, the index busy", at=NOON)
+        self.assertEqual((busy["indexed"], busy["index"], busy["reason"]), (False, "pending", "index_busy"))
 
 
 class WriteAnswerTests(ForestTestCase):
