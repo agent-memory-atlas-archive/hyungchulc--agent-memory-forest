@@ -46,6 +46,8 @@ def cmd_index_reset(arguments: Any) -> int:
         lines.append(f"{verb}: (nothing)")
     left = "would leave" if dry_run else "orphan"
     lines.extend(f"{left}: {path}" for path in result.get("orphans") or [])
+    if result.get("command"):
+        lines.append(f"next: {result['command']}")
     _print_lines(lines)
     return 0
 

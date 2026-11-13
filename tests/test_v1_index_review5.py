@@ -5,6 +5,7 @@ The bakery and the bots are invented. Nothing here is a real person, shop or tra
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -96,6 +97,7 @@ class RefusalTableTests(unittest.TestCase):
     def test_the_table_matches_the_codes_the_module_raises(self) -> None:
         source = Path(search.__file__).read_text(encoding="utf-8")
         raised = set(re.findall(r'MemoryForestError\(\s*"([a-z0-9_]+)"', source))
+        raised.update(re.findall(r'_state_refusal\(\s*\w+,\s*"([a-z0-9_]+)"', source))
         raised.update(code for code, _message in search._PERSON_MESSAGES.values())
         self.assertIn("index_protocol", raised)
         raised.discard("index_protocol")
@@ -176,21 +178,46 @@ class ReadOnlyForestTests(ForestTestCase):
         finally:
             os.chmod(self.folder, 0o700)
 
+    def _touching(self, *, calls: set[int]):
+        """A stamp that moves the file's time on the calls named, as a writer of another account would."""
+        real = search._descriptor_stamp
+        seen = {"n": 0}
+
+        def stamp(descriptor: int) -> tuple[int, int, int, int]:
+            seen["n"] += 1
+            value = real(descriptor)
+            if seen["n"] in calls:
+                later = value[3] + 1_000_000
+                os.utime(self.index, ns=(later, later))
+            return value
+
+        return mock.patch.object(search, "_descriptor_stamp", stamp), seen
+
     def test_a_file_that_changes_between_the_two_looks_is_busy(self) -> None:
         self._locked()
-        real = search._index_file_stamp
-
-        def stamp(path: Path) -> tuple[int, int, int]:
-            size, mtime, inode = real(path)
-            os.utime(path, ns=(mtime + 1_000_000, mtime + 1_000_000))
-            return (size, mtime, inode)
-
+        patch, seen = self._touching(calls=set(range(1, 100)))
         try:
-            with mock.patch.object(search, "_index_file_stamp", stamp):
+            with patch:
                 with self.assertRaises(MemoryForestError) as refused:
                     search.status(self.root)
             self.assertEqual(refused.exception.code, "index_busy")
             self.assertEqual(refused.exception.next_step, "retry")
+            self.assertEqual(seen["n"], 4, "two looks, each before and after")
+        finally:
+            os.chmod(self.folder, 0o700)
+
+    def test_a_file_that_changes_only_on_the_first_look_is_read_once_more_and_answers(self) -> None:
+        self._locked()
+        patch, seen = self._touching(calls={1})
+        try:
+            with patch:
+                state = search.status(self.root)
+                found = search.query(self.root, "trays", reader="till-bot")
+            self.assertTrue(state["read_only"])
+            self.assertEqual(state["state"], "sound")
+            self.assertTrue(found["read_only"])
+            self.assertIn("trays", json.dumps(found))
+            self.assertGreaterEqual(seen["n"], 4)
         finally:
             os.chmod(self.folder, 0o700)
 

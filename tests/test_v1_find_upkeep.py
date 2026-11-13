@@ -867,15 +867,14 @@ class QuerySizeTests(ForestTestCase):
         files[TILL] = files[TILL] + "".join(_turn(number, f"빵 {number}번 판이 나갔다") for number in range(1, 1201))
         self.root = self.make_forest(files)
         search.build(self.root)
-        opened = search.connect
+        opened = search._connect_reader
 
-        def stock(root):
-            connection = opened(root)
-            if connection is not None:
-                connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        def stock(path, relative, *, immutable):
+            connection = opened(path, relative, immutable=immutable)
+            connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
             return connection
 
-        with mock.patch.object(search, "connect", stock):
+        with mock.patch.object(search, "_connect_reader", stock):
             found = search.query(self.root, "빵", reader="till-bot")
         sections = [section for page in found["results"] for section in page["sections"]]
         self.assertGreaterEqual(len(sections), 1200)

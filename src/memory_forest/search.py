@@ -48,6 +48,8 @@ registered. Nothing here opens a network connection.
 
 from __future__ import annotations
 
+import errno
+import functools
 import hashlib
 import json
 import os
@@ -59,6 +61,7 @@ import threading
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -85,7 +88,8 @@ POINTER_FILENAME = "index.current"
 _INDEX_NAME = re.compile(r"index(?:-[0-9a-f]{16})?\.sqlite\Z")
 # A pointer is one short name. A longer file is damaged and is not read whole.
 _POINTER_BYTES = 64
-SCHEMA = "3"
+# 4: the metadata names the tables that held rows (``filled``), so an emptied table is damage.
+SCHEMA = "4"
 LOCK_NAME = "index"
 # When the masking changed, a query waits this long for another build before it refuses to answer.
 MASKING_WAIT_SECONDS = 60.0
@@ -110,6 +114,36 @@ _BLOCK_RE = re.compile(r"<!--[ \t]*block:[ \t]*(\S+)[ \t]+(\S+)[ \t]*-->[ \t]*$"
 _FENCE_RE = re.compile(r"^[ \t]{0,3}```")
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 _TOKEN_STRIP = ".,;:!?\"'()[]{}"
+
+
+def _public(function: Any) -> Any:
+    """The boundary of a public function: what leaves is a public refusal.
+
+    ``index_protocol`` is this module's own signal to try a read or a write again. A loop that retries
+    decides when its budget is spent; whatever still carries the signal here becomes the I/O refusal
+    the budget turns it into. A ``sqlite3.Error`` that no inner guard classified is classified here.
+    """
+
+    @functools.wraps(function)
+    def boundary(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return function(*args, **kwargs)
+        except MemoryForestError as exc:
+            if exc.code not in INTERNAL_CODES:
+                raise
+            waited = float(exc.waited_seconds or 0.0)
+            raise protocol_spent(waited, path=str(exc.details.get("path") or "")) from exc
+        except sqlite3.Error as exc:
+            raise finish_read(exc, path=_boundary_path(args[0] if args else None)) from exc
+
+    return boundary
+
+
+def _boundary_path(root: Any) -> str:
+    try:
+        return _index_message_path(require_real_root(root))
+    except Exception:
+        return layout.STATE_DIR
 
 
 def trigram_available() -> bool:
@@ -152,11 +186,13 @@ class _Masker:
         return value if isinstance(value, str) else text
 
 
+@_public
 def masking_fingerprint(root: str | os.PathLike[str]) -> str:
     """The fingerprint of the masking the forest at ``root`` applies now."""
     return _Masker(load_config(require_real_root(root))).fingerprint
 
 
+@_public
 def build(
     root: str | os.PathLike[str],
     *,
@@ -170,18 +206,20 @@ def build(
     the new one after the commit. ``verify`` hashes every file whose size and time are unchanged.
     """
     safe = require_real_root(root)
-    _refuse_unwritable_write(safe)
+    _refuse_write(safe, "build")
     result = _attempt_write(
         safe,
         None if only is None else list(only),
         verify=verify,
         wait_seconds=wait_seconds,
+        command="build",
     )
     if not result.get("busy"):
         result["indexed"] = True
     return result
 
 
+@_public
 def update_files(
     root: str | os.PathLike[str],
     paths: Sequence[str],
@@ -200,12 +238,14 @@ def update_files(
         [layout.normalize(item) for item in paths],
         verify=verify,
         wait_seconds=wait_seconds,
+        command="update",
     )
     if not result.get("busy"):
         result["indexed"] = True
     return result
 
 
+@_public
 def reset(root: str | os.PathLike[str], *, dry_run: bool = False) -> dict[str, Any]:
     """Point the index at a new file, then remove the old one and its ``-wal`` and ``-shm`` files.
 
@@ -213,10 +253,11 @@ def reset(root: str | os.PathLike[str], *, dry_run: bool = False) -> dict[str, A
     no order of removals has to be right: a reader that already opened the old file finishes on it. The
     index lock is held, which keeps a build or an update out. A server may be running. Pages and lanes stay.
     A file that cannot be removed is named in ``orphans`` and is not a failure. ``dry_run`` says what would
-    change and writes nothing. A held lock is the refusal ``index_busy`` (next: retry).
+    change and writes nothing. A held lock is the refusal ``index_busy`` (next: retry). What is left after
+    a reset is a build: the answer's next move is ``run`` ``forest index build``.
     """
     safe = require_real_root(root)
-    _refuse_unwritable_write(safe)
+    _refuse_write(safe, "reset")
     try:
         with _index_writer(safe, 0):
             result = _reset_held(safe, dry_run=dry_run)
@@ -242,26 +283,48 @@ _LOCK_HELD_MESSAGE = "The index lock is held."
 _FILE_HELD_MESSAGE = "The index file is in use."
 
 
+@_public
 def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
     """Make the index fit to answer from. Returns how many changed files could not be brought in.
 
-    When the masking fingerprint differs from the stored one, or the stored one cannot be read, every file
-    is indexed again first, waiting up to ``MASKING_WAIT_SECONDS``. A query then refuses rather than answer
-    from text masked under other rules. When the fingerprint is the same, a busy index answers from the rows
-    already on file. Otherwise the changed lane files and daily pages are brought in, by the sizes and times
-    of one listing of their folders.
+    The state of the derived folder decides first (``index_state``): a state a read cannot answer from is
+    its refusal. When the masking fingerprint differs from the stored one, or the stored one cannot be
+    read, every file is indexed again first, waiting up to ``MASKING_WAIT_SECONDS``. A query then refuses
+    rather than answer from text masked under other rules. When the fingerprint is the same, a busy index
+    answers from the rows already on file. Otherwise the changed lane files and daily pages are brought
+    in, by the sizes and times of one listing of their folders. A folder this process cannot write is
+    only counted: the number of changed lane files and daily pages is returned, and nothing is written.
     """
     safe = require_real_root(root)
-    folder = _state_dir(safe)
-    if folder.exists() and not _folder_writable(folder):
-        return _refresh_readonly(safe)
     listing = _lane_daily_listing(safe)
-    published = _index_path(safe)
-    connection = connect(safe)
-    if connection is None:
-        # No file yet: a busy build has no rows to answer from. A file whose fingerprint cannot be read
-        # is not answered as stale.
-        if published.is_file():
+    state, opened = _open_state(safe)
+    try:
+        refusal = state.read_refusal()
+        if refusal is not None:
+            raise refusal
+        if state.kind == MISSING:
+            stored = None
+        elif state.kind == MASKING_CHANGED:
+            stored = None
+        else:
+            assert opened is not None
+            try:
+                stored = {
+                    row[0]: (row[1], row[2])
+                    for row in opened.connection.execute(
+                        "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
+                        (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
+                    )
+                }
+            except sqlite3.Error as exc:
+                raise finish_read(exc, path=state.path) from exc
+    finally:
+        if opened is not None:
+            opened.close()
+    if state.kind == MISSING:
+        # No file yet: a busy build has no rows to answer from. A file whose first build has not
+        # committed is waited for like a masking change.
+        if state.exists:
             result = build(safe, wait_seconds=MASKING_WAIT_SECONDS)
             if result.get("busy"):
                 _raise_busy(result, _NOT_COMMITTED)
@@ -269,26 +332,12 @@ def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
         if build(safe, wait_seconds=0).get("busy"):
             return len(listing)
         return 0
-    try:
-        try:
-            meta = _metadata(connection)
-            stored = {
-                row[0]: (row[1], row[2])
-                for row in connection.execute(
-                    "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
-                    (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
-                )
-            }
-        except sqlite3.Error as exc:
-            raise finish_read(exc, path=f"{layout.STATE_DIR}/{published.name}") from exc
-    finally:
-        connection.close()
-    if "masking" not in meta or meta.get("masking") != masking_fingerprint(safe):
+    if state.kind == MASKING_CHANGED:
         result = build(safe, wait_seconds=MASKING_WAIT_SECONDS)
         if result.get("busy"):
-            because = _FINGERPRINT_MISSING if "masking" not in meta else _FINGERPRINT_DIFFERS
-            _raise_busy(result, because)
+            _raise_busy(result, _FINGERPRINT_MISSING if state.fingerprint == "missing" else _FINGERPRINT_DIFFERS)
         return 0
+    assert stored is not None
     changed = sorted(
         {
             relative
@@ -297,27 +346,37 @@ def refresh_lanes_and_daily(root: str | os.PathLike[str]) -> int:
         }
         | {relative for relative in stored if relative not in listing}
     )
-    if not changed:
-        return 0
+    if not changed or not state.writable:
+        return len(changed)
     result = update_files(safe, changed, wait_seconds=0)
     if result.get("busy") or not result.get("indexed"):
         return len(changed)
     return 0
 
 
+@_public
 def status(root: str | os.PathLike[str]) -> dict[str, Any]:
-    """Counts, the tokenizer, and whether a file has changed since the build. This does not take the lock."""
+    """Counts, the tokenizer, the state, and whether a file has changed since the build. No lock is taken.
+
+    ``state`` is the state of the derived folder (``index_state``). A state a read cannot answer from is its
+    refusal. When there is something to do, ``next`` and ``message`` say what, as a refusal would.
+    """
     safe = require_real_root(root)
 
-    def read(connection: sqlite3.Connection | None) -> dict[str, Any]:
-        relative = f"{layout.STATE_DIR}/{_current_index_name(safe)}"
+    def read(state: IndexState, connection: sqlite3.Connection | None) -> dict[str, Any]:
+        refusal = state.read_refusal()
+        if refusal is not None:
+            raise refusal
         if connection is None:
-            return {
+            payload: dict[str, Any] = {
                 "available": False,
-                "exists": _index_path(safe).is_file(),
+                "exists": state.exists,
                 "ok": True,
-                "path": relative,
+                "path": state.path,
+                "state": state.kind,
             }
+            _attach_next(payload, state, [])
+            return payload
         try:
             meta = _metadata(connection)
             files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
@@ -327,59 +386,222 @@ def status(root: str | os.PathLike[str]) -> dict[str, Any]:
             torn = _flagged(connection, "torn")
             verify_due = _verify_due(connection)
         except sqlite3.Error as exc:
-            raise finish_read(exc, path=relative) from exc
+            raise finish_read(exc, path=state.path) from exc
         payload = {
             "available": True,
             "built_at": meta.get("built_at", ""),
             "exists": True,
             "files": files,
-            "masking": "current" if meta.get("masking") == masking_fingerprint(safe) else "changed",
+            "masking": "changed" if state.kind == MASKING_CHANGED else "current",
             "ok": True,
-            "path": relative,
+            "path": state.path,
             "schema": meta.get("schema", ""),
             "stale": stale,
+            "state": state.kind,
             "tokenizer": meta.get("tokenizer", ""),
             "torn": torn,
             "undecodable": undecodable,
             "units": units,
             "verify_due": verify_due,
         }
-        if id(connection) in _IMMUTABLE_IDS:
+        if is_read_only(connection):
             payload["read_only"] = True
+        _attach_next(payload, state, stale)
         return payload
 
-    return _checked_read(safe, read)
+    return _checked_read(safe, read, describe=True)
 
 
-# Connections opened in SQLite's immutable mode. The folder could not be written and no WAL stood beside
-# the file. Immutable mode promises the file does not change; ``_checked_read`` checks that promise.
-# sqlite3.Connection cannot be weak-referenced. The id is recorded while the connection is open and
-# dropped when this package closes it.
-_IMMUTABLE_IDS: set[int] = set()
+def _attach_next(payload: dict[str, Any], state: IndexState, stale: Sequence[str]) -> None:
+    """The next move a status answer carries when something is to be done, said as a refusal says it."""
+    claims: list[str] = []
+    if state.kind == MISSING:
+        claims.append("no_index")
+    elif state.kind == MASKING_CHANGED:
+        claims.append(_masking_claim(state))
+    elif stale:
+        claims.append(_pages_changed(len(stale)))
+    if not claims:
+        return
+    if state.writable:
+        payload["next"] = "run"
+        payload["command"] = _BUILD_COMMAND
+        payload["message"] = _sentences([*claims, _cure_here(_BUILD_COMMAND)])
+        return
+    payload["next"] = "report"
+    payload["message"] = _sentences(
+        [*claims, _folder_claim(state), "reads_answer", _cure_by_writer(state, (_BUILD_COMMAND,))]
+    )
 
-_READ_ONLY_WAL = (
-    "The .forest folder cannot be written, and a write-ahead log stands beside the index, so the index "
-    "cannot be read safely. One `forest index build` by an account that can write this folder folds the log in."
-)
-_READ_ONLY_MISSING = (
-    "There is no search index to read, and the .forest folder cannot be written, so a build cannot make "
-    "one. An account that can write the folder runs `forest index build`."
-)
-_READ_ONLY_UPDATE = (
-    "The .forest folder cannot be written, so the index cannot be updated. Reading it still answers. "
-    "An account that can write the folder runs `forest index build`."
-)
+
+# ─────────────────────── the state of the derived folder ───────────────────────
+#
+# One function reads what is true on disk (``_open_state``) and gives one state. The state gives the
+# refusal of a read and of a write, with their text and next move. ``status``, ``build``, ``reset``,
+# ``search``, the timeline and every MCP tool that reads or writes the index ask here, so no command
+# meets a different check first. The derived folder is ``.forest``, or the forest root while there is no
+# ``.forest`` yet (a build would make it there).
+
+SOUND = "sound"
+MASKING_CHANGED = "masking_changed"
+MISSING = "missing"
+DAMAGED = "damaged"
+POINTER_DAMAGED = "pointer_damaged"
+WAL_PRESENT = "wal"
+STATES = (SOUND, MASKING_CHANGED, MISSING, DAMAGED, POINTER_DAMAGED, WAL_PRESENT)
+_BUILD_COMMAND = "forest index build"
+_RESET_COMMAND = "forest index reset"
+
+# Every sentence a state's message is made of. Each one is a claim about the disk or about what a call
+# does; the state test checks each claim by doing it. A sentence with a number or a command is built by
+# ``_pages_changed``, ``_cure_here`` and ``_cure_by_writer``.
+CLAIMS = {
+    "pointer_damaged": "The index pointer does not name an index file.",
+    "damaged": "The search index is damaged (a table, an index or a table's rows are missing) or is not a database.",
+    "no_index": "There is no search index to read.",
+    "wal": "A write-ahead log stands beside the index, so the index cannot be read safely.",
+    "masking_changed": "The masking changed since the index was built.",
+    "masking_missing": "The index has no masking fingerprint.",
+    "folder_unwritable": (
+        "The .forest folder cannot be written, so the index cannot be built, updated or reset here."
+    ),
+    "root_unwritable": (
+        "The forest folder cannot be written, so .forest cannot be made and no index can be built here."
+    ),
+    "reads_answer": "Reading the index still answers.",
+    "reads_refused": "Nothing is answered from it.",
+}
 
 
-def _folder_writable(folder: Path) -> bool:
-    """Whether this process can create a file in ``folder``. A missing folder is not read-only."""
+@dataclass(frozen=True)
+class IndexState:
+    """What is true of the derived folder, as one of ``STATES``.
+
+    ``writable``: this process can write the folder the index lives in. ``made``: ``.forest`` exists.
+    ``path``: what a message names, the index file or, for a damaged pointer, the pointer. ``exists``: an
+    index file is on disk. ``fingerprint``: ``missing`` or ``changed`` for ``masking_changed``.
+    """
+
+    kind: str
+    writable: bool
+    made: bool
+    path: str
+    exists: bool = False
+    fingerprint: str = ""
+
+    def read_refusal(self) -> MemoryForestError | None:
+        """What a read answers in this state: None when a read answers (or builds first and answers)."""
+        if self.kind == SOUND:
+            return None
+        if self.writable:
+            if self.kind in (MISSING, MASKING_CHANGED, WAL_PRESENT):
+                return None
+            return _unreadable_refusal(self)
+        cure = (_RESET_COMMAND, _BUILD_COMMAND) if self.kind in (DAMAGED, POINTER_DAMAGED) else (_BUILD_COMMAND,)
+        claims = [_kind_claim(self), _folder_claim(self), "reads_refused", _cure_by_writer(self, cure)]
+        return _state_refusal(self, "index_read_only", claims)
+
+    def write_refusal(self, command: str) -> MemoryForestError | None:
+        """What ``build``, ``update`` or ``reset`` answers in this state: None when it can run."""
+        if self.writable:
+            if command != "reset" and self.kind in (DAMAGED, POINTER_DAMAGED):
+                return _unreadable_refusal(self)
+            return None
+        damaged = self.kind in (DAMAGED, POINTER_DAMAGED)
+        cure = (_RESET_COMMAND, _BUILD_COMMAND) if damaged or command == "reset" else (_BUILD_COMMAND,)
+        claims = [] if self.kind == SOUND else [_kind_claim(self)]
+        claims += [
+            _folder_claim(self),
+            "reads_answer" if self.kind == SOUND else "reads_refused",
+            _cure_by_writer(self, cure),
+        ]
+        return _state_refusal(self, "index_read_only", claims)
+
+
+def _kind_claim(state: IndexState) -> str:
+    if state.kind == MASKING_CHANGED:
+        return _masking_claim(state)
+    return {
+        DAMAGED: "damaged",
+        POINTER_DAMAGED: "pointer_damaged",
+        MISSING: "no_index",
+        WAL_PRESENT: "wal",
+    }[state.kind]
+
+
+def _masking_claim(state: IndexState) -> str:
+    return "masking_missing" if state.fingerprint == "missing" else "masking_changed"
+
+
+def _folder_claim(state: IndexState) -> str:
+    return "folder_unwritable" if state.made else "root_unwritable"
+
+
+def _pages_changed(count: int) -> str:
+    return f"{count} file changed since the build." if count == 1 else f"{count} files changed since the build."
+
+
+def _cure_here(command: str) -> str:
+    return f"Run `{command}`."
+
+
+def _cure_by_writer(state: IndexState, commands: Sequence[str]) -> str:
+    folder = "the .forest folder" if state.made else "the forest folder"
+    named = ", then ".join(f"`{command}`" for command in commands)
+    return f"An account that can write {folder} runs {named}."
+
+
+def _sentences(claims: Sequence[str]) -> str:
+    return " ".join(CLAIMS.get(claim, claim) for claim in claims)
+
+
+def _state_refusal(state: IndexState, code: str, claims: Sequence[str], *, command: str = "") -> MemoryForestError:
+    return MemoryForestError(
+        code,
+        _sentences(claims),
+        details={"path": state.path, "state": state.kind},
+        next_step="run" if command else "report",
+        command=command or None,
+    )
+
+
+def _unreadable_refusal(state: IndexState) -> MemoryForestError:
+    """A damaged index or pointer in a folder this process can write: reset it."""
+    claim = "pointer_damaged" if state.kind == POINTER_DAMAGED else "damaged"
+    return _state_refusal(
+        state, "index_unreadable", [claim, _cure_here(_RESET_COMMAND)], command=_RESET_COMMAND
+    )
+
+
+def _derived_folder(root: Path, folder: Path) -> tuple[bool, bool]:
+    """Whether ``.forest`` exists, and whether this process can write the folder the index lives in.
+
+    With no ``.forest``, a build would make it in the forest root, so the root is what must be writable.
+    """
     try:
-        info = folder.lstat()
+        folder.lstat()
     except FileNotFoundError:
-        return True
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        return False
-    return os.access(folder, os.W_OK)
+        return False, os.access(root, os.W_OK | os.X_OK)
+    return True, os.access(folder, os.W_OK | os.X_OK)
+
+
+def derived_writable(root: str | os.PathLike[str]) -> bool:
+    """Whether this process can write the folder the index and the locks live in."""
+    safe = require_real_root(root)
+    return _derived_folder(safe, _state_dir(safe))[1]
+
+
+def _refuse_write(root: Path, command: str) -> None:
+    """``build``, ``update`` and ``reset`` need a folder they can write. The state says what to tell."""
+    folder = _state_dir(root)
+    if _derived_folder(root, folder)[1]:
+        return
+    state, opened = _open_state(root)
+    if opened is not None:
+        opened.close()
+    refusal = state.write_refusal(command)
+    assert refusal is not None
+    raise refusal
 
 
 def _wal_exists(path: Path) -> bool:
@@ -391,98 +613,186 @@ def _wal_exists(path: Path) -> bool:
     return stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode)
 
 
-def _read_only_refusal(message: str, path: str) -> MemoryForestError:
-    return MemoryForestError("index_read_only", message, details={"path": path}, next_step="report")
+class _Reader(sqlite3.Connection):
+    """A reading connection. It carries its own flag, so nothing is kept beside it by its address."""
+
+    read_only = False
 
 
-def _index_file_stamp(path: Path) -> tuple[int, int, int]:
-    """Size, modification time and inode. Immutable mode is only honest while these stay still."""
-    info = path.lstat()
-    return (info.st_size, info.st_mtime_ns, info.st_ino)
+class _ImmutableReader(_Reader):
+    """A connection in SQLite's immutable mode: the folder could not be written and no WAL stood beside it."""
+
+    read_only = True
 
 
-def _refuse_unwritable_write(root: Path) -> None:
-    """``build`` and ``reset`` need a folder they can write. A read does not come through here."""
-    folder = _state_dir(root)
-    if not folder.exists() or _folder_writable(folder):
-        return
-    relative = _index_message_path(root)
-    name = relative.rsplit("/", 1)[-1]
-    path = folder / name
-    if path.is_file() and not path.is_symlink() and _wal_exists(path):
-        raise _read_only_refusal(_READ_ONLY_WAL, relative)
-    if not path.is_file() or path.is_symlink():
-        raise _read_only_refusal(_READ_ONLY_MISSING, relative)
-    raise _read_only_refusal(_READ_ONLY_UPDATE, relative)
+def is_read_only(connection: sqlite3.Connection | None) -> bool:
+    """Whether ``connection`` was opened in SQLite's immutable mode."""
+    return bool(getattr(connection, "read_only", False))
 
 
-def connect(root: str | os.PathLike[str]) -> sqlite3.Connection | None:
-    """Open the published index for reading, or None when there is no index yet. Writes are refused on it.
+# Opened for reading only, without following a link, and without blocking on a fifo put in a file's place.
+_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 
-    The index is in WAL mode, so a reader does not wait for a writer: it reads the last committed snapshot.
-    The short timeout only covers SQLite's own brief locks (opening the WAL index after a crash). A file
-    whose schema is not there yet (the first build's transaction is still open) is no index yet. Any other
-    SQLite error is classified by ``index_error``: only a corrupt file, or one that is not a database, is
-    ``index_unreadable``.
 
-    When this process cannot write the folder and no write-ahead log stands beside the file, the index is
-    opened read-only in SQLite's immutable mode. Immutable mode is never used on a folder this process can
-    write. A write-ahead log in a folder that cannot be written, or no index there at all, is
-    ``index_read_only``.
+def _open_regular(path: Path, relative: str, *, flags: int = _READ_FLAGS, mode: int = 0o600) -> int | None:
+    """Open ``path`` first, then check what was opened. None when nothing is there.
+
+    A symlink is ``symlink_forbidden``; anything but a regular file (a folder or a fifo in its place) is
+    ``index_cannot_open``. The caller owns the descriptor.
     """
-    safe = require_real_root(root)
-    path = _index_path(safe)
-    relative = f"{layout.STATE_DIR}/{path.name}"
-    folder = path.parent
-    writable = _folder_writable(folder)
-    present = path.is_file() and not path.is_symlink()
-    if not present:
-        if folder.exists() and not writable:
-            raise _read_only_refusal(_READ_ONLY_MISSING, relative)
+    try:
+        descriptor = os.open(path, flags, mode)
+    except FileNotFoundError:
         return None
-    if not writable:
-        if _wal_exists(path):
-            raise _read_only_refusal(_READ_ONLY_WAL, relative)
-        return _open_immutable(path, relative)
-    return _open_ordinary(path, relative)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise MemoryForestError(
+                "symlink_forbidden",
+                "Symlinks are not allowed inside a Memory Forest.",
+                details={"path": relative},
+                next_step="report",
+            ) from exc
+        if exc.errno == errno.EISDIR:
+            raise _not_a_file(relative) from exc
+        writing = flags & (os.O_WRONLY | os.O_RDWR)
+        kind = "read_only" if writing and exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS) else "cannot_open"
+        code, message = _PERSON_MESSAGES[kind]
+        raise MemoryForestError(code, message, details={"path": relative}, next_step="report") from exc
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise _not_a_file(relative)
+    return descriptor
 
 
-def _open_ordinary(path: Path, relative: str) -> sqlite3.Connection | None:
+def _not_a_file(relative: str) -> MemoryForestError:
+    _code, message = _PERSON_MESSAGES["cannot_open"]
+    return MemoryForestError("index_cannot_open", message, details={"path": relative}, next_step="report")
+
+
+class _Opened:
+    """A reading connection and the descriptor of the file it reads, opened before SQLite opened the path."""
+
+    __slots__ = ("connection", "descriptor", "path", "relative", "before")
+
+    def __init__(self, connection: sqlite3.Connection, descriptor: int, path: Path, relative: str) -> None:
+        self.connection = connection
+        self.descriptor = descriptor
+        self.path = path
+        self.relative = relative
+        self.before = _descriptor_stamp(descriptor)
+
+    def unchanged(self) -> bool:
+        """The file is still the one opened, with the same size and time, and no WAL appeared beside it."""
+        if _descriptor_stamp(self.descriptor) != self.before:
+            return False
+        try:
+            info = self.path.lstat()
+        except FileNotFoundError:
+            return False
+        if (info.st_dev, info.st_ino) != self.before[:2]:
+            return False
+        return not _wal_exists(self.path)
+
+    def release_descriptor(self) -> None:
+        if self.descriptor >= 0:
+            os.close(self.descriptor)
+            self.descriptor = -1
+
+    def close(self) -> None:
+        try:
+            self.connection.close()
+        finally:
+            self.release_descriptor()
+
+
+def _descriptor_stamp(descriptor: int) -> tuple[int, int, int, int]:
+    """Device, inode, size and modification time of an open file. Immutable mode is honest while these stay."""
+    info = os.fstat(descriptor)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def _open_state(root: Path) -> tuple[IndexState, _Opened | None]:
+    """The state of the derived folder, and the open index when a read can use it.
+
+    Nothing here writes. In a folder this process can write the index is opened as usual (WAL); in one it
+    cannot, it is opened in SQLite's immutable mode, and only when no write-ahead log stands beside it.
+    """
+    folder = _state_dir(root)
+    made, writable = _derived_folder(root, folder)
     try:
-        connection = sqlite3.connect(path, timeout=READER_TIMEOUT_SECONDS)
+        name = _current_index_name(root)
+    except MemoryForestError as exc:
+        if exc.code != "index_unreadable":
+            raise
+        return IndexState(POINTER_DAMAGED, writable, made, f"{layout.STATE_DIR}/{POINTER_FILENAME}"), None
+    relative = f"{layout.STATE_DIR}/{name}"
+    path = folder / name
+    descriptor = _open_regular(path, relative) if made else None
+    if descriptor is None:
+        return IndexState(MISSING, writable, made, relative), None
+    kept = False
+    try:
+        if not writable and _wal_exists(path):
+            return IndexState(WAL_PRESENT, writable, made, relative, exists=True), None
+        connection = _connect_reader(path, relative, immutable=not writable)
+        opened = _Opened(connection, descriptor, path, relative)
+        try:
+            meta = _prepare_reader(connection, relative)
+        except MemoryForestError as exc:
+            if exc.code != "index_unreadable":
+                raise
+            return IndexState(DAMAGED, writable, made, relative, exists=True), None
+        if meta is None:
+            return IndexState(MISSING, writable, made, relative, exists=True), None
+        if "masking" not in meta:
+            kind, fingerprint = MASKING_CHANGED, "missing"
+        elif meta.get("masking") != masking_fingerprint(root):
+            kind, fingerprint = MASKING_CHANGED, "changed"
+        else:
+            kind, fingerprint = SOUND, ""
+        kept = True
+        return IndexState(kind, writable, made, relative, exists=True, fingerprint=fingerprint), opened
+    finally:
+        if not kept:
+            os.close(descriptor)
+
+
+@_public
+def index_state(root: str | os.PathLike[str]) -> IndexState:
+    """The state of the derived folder, as every command sees it."""
+    state, opened = _open_state(require_real_root(root))
+    if opened is not None:
+        opened.close()
+    return state
+
+
+def _connect_reader(path: Path, relative: str, *, immutable: bool) -> sqlite3.Connection:
+    """Open the file SQLite reads. ``mode=rw`` never creates a file that went away since it was opened."""
+    flags = "?mode=ro&immutable=1" if immutable else "?mode=rw"
+    factory = _ImmutableReader if immutable else _Reader
+    try:
+        return sqlite3.connect(
+            path.as_uri() + flags, uri=True, timeout=READER_TIMEOUT_SECONDS, factory=factory
+        )
     except sqlite3.Error as exc:
+        if not path.exists():
+            raise index_busy_error("The index file went away while it was opened.", path=relative) from exc
         raise finish_read(exc, path=relative) from exc
-    return _prepare_reader(connection, relative)
 
 
-def _open_immutable(path: Path, relative: str) -> sqlite3.Connection | None:
-    """SQLite immutable mode. The caller has already promised the folder cannot be written and no WAL exists."""
-    try:
-        connection = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=READER_TIMEOUT_SECONDS)
-    except sqlite3.Error as exc:
-        raise finish_read(exc, path=relative) from exc
-    _IMMUTABLE_IDS.add(id(connection))
-    try:
-        prepared = _prepare_reader(connection, relative)
-    except BaseException:
-        _IMMUTABLE_IDS.discard(id(connection))
-        raise
-    if prepared is None:
-        _IMMUTABLE_IDS.discard(id(connection))
-    return prepared
+def _prepare_reader(connection: sqlite3.Connection, relative: str) -> dict[str, str] | None:
+    """The metadata of a whole index, or None (and closed) for a file whose first build has not committed.
 
-
-def _prepare_reader(connection: sqlite3.Connection, relative: str) -> sqlite3.Connection | None:
+    A file that fails the probe is closed and refused as ``index_unreadable``.
+    """
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA query_only = ON")
-        schema = connection.execute("SELECT value FROM metadata WHERE key = 'schema'").fetchone()
-        if schema is None or schema[0] != SCHEMA:
+        meta = _metadata(connection)
+        if meta.get("schema") != SCHEMA:
             connection.close()
             return None
-        tokenizer = connection.execute("SELECT value FROM metadata WHERE key = 'tokenizer'").fetchone()
-        trigram = tokenizer is not None and "trigram" in str(tokenizer[0])
-        if not _structure_ok(connection, trigram=trigram):
+        if not _probe(connection, meta):
             connection.close()
             raise index_unreadable_error(damaged=True, path=relative)
     except sqlite3.Error as exc:
@@ -490,75 +800,74 @@ def _prepare_reader(connection: sqlite3.Connection, relative: str) -> sqlite3.Co
         if _no_schema_yet(exc):
             return None
         raise finish_read(exc, path=relative) from exc
-    return connection
+    return meta
 
 
-def _checked_read(root: Path, fn: Any) -> Any:
-    """Run ``fn(connection)`` and close it. An immutable read is compared before and after, once more, then busy."""
-    path = _index_path(root)
-    relative = f"{layout.STATE_DIR}/{path.name}"
-    folder = path.parent
-    immutable = (
-        path.is_file() and not path.is_symlink() and not _folder_writable(folder) and not _wal_exists(path)
-    )
+def _checked_read(root: Path, fn: Any, *, describe: bool = False) -> Any:
+    """Run ``fn`` on the open index and close it. An immutable read is compared before and after, once more, then busy.
+
+    ``fn`` gets the connection (None when there is no index yet). A state a read cannot answer from is its
+    refusal first. With ``describe``, ``fn`` gets the state and the connection and decides itself.
+    """
     for attempt in (1, 2):
-        before = _index_file_stamp(path) if immutable else None
-        connection = connect(root)
+        state, opened = _open_state(root)
+        connection = opened.connection if opened is not None else None
         error: BaseException | None = None
         result: Any = None
         try:
-            result = fn(connection)
+            if describe:
+                result = fn(state, connection)
+            else:
+                refusal = state.read_refusal()
+                if refusal is not None:
+                    raise refusal
+                result = fn(connection)
         except BaseException as exc:
             error = exc
-        finally:
-            if connection is not None:
-                _IMMUTABLE_IDS.discard(id(connection))
-                connection.close()
-        if immutable and before != _index_file_stamp(path):
+        changed = False
+        if opened is not None:
+            changed = is_read_only(connection) and not opened.unchanged()
+            opened.close()
+        if changed:
             if attempt == 1:
                 continue
-            raise index_busy_error("The index file changed while it was read.", path=relative)
+            raise index_busy_error("The index file changed while it was read.", path=state.path)
         if error is not None:
+            if isinstance(error, MemoryForestError) and error.code == "index_unreadable" and not state.writable:
+                raise IndexState(DAMAGED, False, state.made, state.path, exists=True).read_refusal() from error
             raise error
         return result
-    raise index_busy_error("The index file changed while it was read.", path=relative)
-
-
-def _refresh_readonly(root: Path) -> int:
-    """Count changed pages without writing. The folder cannot be written, and the index can still be read."""
-    listing = _lane_daily_listing(root)
-
-    def read(connection: sqlite3.Connection | None) -> int:
-        if connection is None:
-            raise _read_only_refusal(_READ_ONLY_MISSING, _index_message_path(root))
-        try:
-            meta = _metadata(connection)
-            stored = {
-                row[0]: (row[1], row[2])
-                for row in connection.execute(
-                    "SELECT path, size, mtime_ns FROM files WHERE path LIKE ? OR path LIKE ?",
-                    (f"{layout.DAILY}/%", f"{layout.ISTM}/%"),
-                )
-            }
-        except sqlite3.Error as exc:
-            raise finish_read(exc, path=_index_message_path(root)) from exc
-        if "masking" not in meta or meta.get("masking") != masking_fingerprint(root):
-            raise _read_only_refusal(_READ_ONLY_UPDATE, _index_message_path(root))
-        changed = {
-            relative
-            for relative, (_path, size, mtime_ns) in listing.items()
-            if stored.get(relative) != (size, mtime_ns)
-        } | {relative for relative in stored if relative not in listing}
-        return len(changed)
-
-    return _checked_read(root, read)
+    raise AssertionError("unreachable")
 
 
 def _no_schema_yet(exc: sqlite3.Error) -> bool:
     """A file with no ``metadata`` table: SQLite's generic error, naming that table."""
-    return sqlite_error_kind(exc) == "other" and "no such table" in str(exc).casefold()
+    return sqlite_error_kind(exc) == "other" and "no such table: metadata" in str(exc).casefold()
 
 
+@_public
+def connect(root: str | os.PathLike[str]) -> sqlite3.Connection | None:
+    """Open the published index for reading, or None when there is no index yet. Writes are refused on it.
+
+    The state decides (``index_state``): a state a read cannot answer from is its refusal. The index is in
+    WAL mode, so a reader does not wait for a writer: it reads the last committed snapshot. In a folder
+    this process cannot write, the connection is in SQLite's immutable mode (``is_read_only``).
+    """
+    state, opened = _open_state(require_real_root(root))
+    if opened is None:
+        refusal = state.read_refusal()
+        if refusal is not None:
+            raise refusal
+        return None
+    opened.release_descriptor()
+    refusal = state.read_refusal()
+    if refusal is not None:
+        opened.connection.close()
+        raise refusal
+    return opened.connection
+
+
+@_public
 def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
     connection = connect(root)
     if connection is None:
@@ -567,7 +876,7 @@ def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
             "The forest has no search index. Run `forest index build`.",
             details={"path": index_relative(root)},
             next_step="run",
-            command="forest index build",
+            command=_BUILD_COMMAND,
         )
     return connection
 
@@ -576,7 +885,8 @@ def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
 # first, so a second thread waits like a second process instead of meeting ``lock_already_held``.
 _WRITERS = threading.Lock()
 _BUSY_CODES = frozenset({"lock_busy", "lock_already_held"})
-_RESET_COMMAND = "forest index reset"
+# Codes this module raises to itself and never lets out (``_public``).
+INTERNAL_CODES = frozenset({"index_protocol"})
 
 
 def _index_message_path(root: Path) -> str:
@@ -595,23 +905,10 @@ def _index_message_path(root: Path) -> str:
 
 def index_unreadable_error(name: str = "", *, damaged: bool = False, path: str) -> MemoryForestError:
     """The index file is corrupt, not a database, or damaged. The next move is ``forest index reset``."""
-    details = {"path": path}
+    refusal = _unreadable_refusal(IndexState(DAMAGED, True, True, path, exists=True))
     if name:
-        details["sqlite"] = name
-    if damaged:
-        message = (
-            "The search index is damaged: its schema mark matches but a table or a column is missing. "
-            "Run `forest index reset`."
-        )
-    else:
-        message = "The search index file is corrupt or is not a database. Run `forest index reset`."
-    return MemoryForestError(
-        "index_unreadable",
-        message,
-        details=details,
-        next_step="run",
-        command=_RESET_COMMAND,
-    )
+        refusal.details["sqlite"] = name
+    return refusal
 
 
 def index_busy_error(
@@ -804,6 +1101,7 @@ def _attempt_write(
     *,
     verify: bool,
     wait_seconds: float,
+    command: str,
 ) -> dict[str, Any]:
     """Write the index, or return a busy result.
 
@@ -813,7 +1111,7 @@ def _attempt_write(
     A locked conflict inside this connection is ``index_failed`` and is not retried. Every other refusal
     is raised.
     """
-    _refuse_unwritable_write(root)
+    _refuse_write(root, command)
     started = time.monotonic()
     deadline = started + max(0.0, wait_seconds)
     while True:
@@ -904,36 +1202,33 @@ def _pointer_name(blob: bytes) -> str | None:
 def _read_pointer(root: Path) -> tuple[str | None, bool]:
     """The current index file's name, and whether the pointer is damaged.
 
-    No pointer means the legacy name. A symlink pointer, or a pointer that is not a file, is refused
-    before a reset writes anything. A regular file is a name or it is damaged. Damaged never raises
-    from here: it is ``(None, True)``, a reset replaces it, and every other caller refuses it. The
-    read stops after ``_POINTER_BYTES``, so a longer file is damaged without being read whole.
+    No pointer means the legacy name. The pointer is opened first, without following a link and without
+    blocking, and what was opened is then checked. A symlink pointer, or a pointer that is not a file, is
+    refused before a reset writes anything. A regular file is a name or it is damaged, and so is a file
+    this process cannot open. Damaged never raises from here: it is ``(None, True)``, a reset replaces it,
+    and every other caller refuses it. The read stops after ``_POINTER_BYTES``, so a longer file is
+    damaged without being read whole.
     """
     path = _state_dir(root) / POINTER_FILENAME
     relative = f"{layout.STATE_DIR}/{POINTER_FILENAME}"
     try:
-        info = path.lstat()
+        descriptor = os.open(path, _READ_FLAGS)
     except FileNotFoundError:
         return INDEX_FILENAME, False
-    if stat.S_ISLNK(info.st_mode):
-        raise MemoryForestError(
-            "symlink_forbidden",
-            "Symlinks are not allowed inside a Memory Forest. Nothing was removed.",
-            details={"path": relative},
-            next_step="report",
-        )
-    if not stat.S_ISREG(info.st_mode):
-        raise MemoryForestError(
-            "index_reset_refused",
-            "The index pointer is not a file, so a new index cannot be published. Move it out of .forest/.",
-            details={"path": relative},
-            next_step="report",
-        )
-    try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError:
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise MemoryForestError(
+                "symlink_forbidden",
+                "Symlinks are not allowed inside a Memory Forest. Nothing was removed.",
+                details={"path": relative},
+                next_step="report",
+            ) from exc
+        if exc.errno == errno.EISDIR:
+            raise _pointer_not_a_file(relative) from exc
         return None, True
     try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise _pointer_not_a_file(relative)
         try:
             blob = os.read(descriptor, _POINTER_BYTES + 1)
         except OSError:
@@ -946,20 +1241,25 @@ def _read_pointer(root: Path) -> tuple[str | None, bool]:
     return name, False
 
 
+def _pointer_not_a_file(relative: str) -> MemoryForestError:
+    return MemoryForestError(
+        "index_reset_refused",
+        "The index pointer is not a file, so a new index cannot be published. Move it out of .forest/.",
+        details={"path": relative},
+        next_step="report",
+    )
+
+
 def _current_index_name(root: Path) -> str:
     """The index file every caller opens. One function, so a reset and a build cannot disagree."""
     name, bad = _read_pointer(root)
     if bad or name is None:
-        raise MemoryForestError(
-            "index_unreadable",
-            "The index pointer does not name an index file. Run `forest index reset`.",
-            details={"path": f"{layout.STATE_DIR}/{POINTER_FILENAME}"},
-            next_step="run",
-            command=_RESET_COMMAND,
-        )
+        state = IndexState(POINTER_DAMAGED, True, True, f"{layout.STATE_DIR}/{POINTER_FILENAME}")
+        raise _unreadable_refusal(state)
     return name
 
 
+@_public
 def index_relative(root: str | os.PathLike[str]) -> str:
     """The forest-relative path of the current index file."""
     safe = require_real_root(root)
@@ -1054,9 +1354,9 @@ def _unused_index_name(root: Path, reserved: set[str]) -> str:
 def _publish_pointer(root: Path, name: str) -> None:
     """Write the pointer and sync it, then rename it into place. Readers see the old name or the new one."""
     folder = _state_dir(root)
-    if not folder.exists():
-        folder.mkdir(mode=0o700)
-    atomic_write(folder / POINTER_FILENAME, name + "\n", mode=0o600)
+    folder.mkdir(mode=0o700, exist_ok=True)
+    # The pointer is the package's own file: owner read and write, whatever the file it replaces had.
+    atomic_write(folder / POINTER_FILENAME, name + "\n", mode=0o600, keep_mode=False)
 
 
 def _reset_held(root: Path, *, dry_run: bool) -> dict[str, Any]:
@@ -1079,7 +1379,16 @@ def _reset_held(root: Path, *, dry_run: bool) -> dict[str, Any]:
     _publish_pointer(root, new_name)
     removed, orphans = _apply_removals(root, ordered)
     removed.extend(_remove_pointer_temps(root))
-    return {"dry_run": False, "ok": True, "orphans": orphans, "path": new_relative, "removed": removed}
+    return {
+        "command": _BUILD_COMMAND,
+        "dry_run": False,
+        "message": "The index now points at a new file, which a build fills. Run `forest index build`.",
+        "next": "run",
+        "ok": True,
+        "orphans": orphans,
+        "path": new_relative,
+        "removed": removed,
+    }
 
 
 def _plan_removals(root: Path, bases: list[str]) -> tuple[list[str], list[str]]:
@@ -1170,9 +1479,7 @@ def _index_writer(root: str | os.PathLike[str], wait_seconds: float) -> Iterator
         _WRITERS.release()
 
 
-def _busy_result(
-    message: str, *, path: str = INDEX_RELATIVE, waited_seconds: float = 0.0
-) -> dict[str, Any]:
+def _busy_result(message: str, *, path: str, waited_seconds: float = 0.0) -> dict[str, Any]:
     result: dict[str, Any] = {
         "busy": True,
         "files": 0,
@@ -1210,11 +1517,7 @@ def _write_held(
     try:
         connection.execute("BEGIN IMMEDIATE")
         meta = _metadata_or_none(connection)
-        if (
-            meta is not None
-            and meta.get("schema") == SCHEMA
-            and not _structure_ok(connection, trigram="trigram" in str(meta.get("tokenizer") or ""))
-        ):
+        if meta is not None and meta.get("schema") == SCHEMA and not _probe(connection, meta):
             raise index_unreadable_error(damaged=True, path=published_relative)
         recreate = (
             meta is None
@@ -1249,6 +1552,7 @@ def _write_held(
         _set_meta(connection, "tokenizer", tokenizer)
         _set_meta(connection, "masking", masker.fingerprint)
         _set_meta(connection, "built_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        _set_meta(connection, "filled", json.dumps(_filled_tables(connection)))
         connection.commit()
         files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]
@@ -1259,6 +1563,15 @@ def _write_held(
         except sqlite3.Error:
             pass
         raise index_error(exc, busy_message=_WRITER_HELD, path=published_relative) from exc
+    except FileNotFoundError as exc:
+        # A page or a lane file went away between the listing and the read. Nothing was published.
+        try:
+            connection.rollback()
+        except sqlite3.Error:
+            pass
+        raise index_busy_error(
+            "A page went away while the index was built, so nothing was published.", path=published_relative
+        ) from exc
     except BaseException:
         try:
             connection.rollback()
@@ -1268,9 +1581,7 @@ def _write_held(
     finally:
         connection.close()
     for suffix in ("", "-wal", "-shm"):
-        sidecar = Path(str(published) + suffix)
-        if sidecar.is_file() and not sidecar.is_symlink():
-            os.chmod(sidecar, 0o600)
+        _owner_only(Path(str(published) + suffix))
     if created:
         _fsync_directory(published.parent)
     return {
@@ -1287,20 +1598,20 @@ def _write_held(
 def _open_writer(published: Path, busy_seconds: float = WRITER_TIMEOUT_SECONDS) -> sqlite3.Connection:
     """The published file, opened for writing in WAL mode. A file SQLite cannot read is refused, not replaced.
 
-    Every SQLite error is classified by ``index_error``; a mode other than WAL means an old reader keeps the
-    file in its rollback journal, which is busy.
+    The file is opened (or made) first, without following a link, and what was opened is checked before
+    SQLite opens the path. Every SQLite error is classified by ``index_error``; a mode other than WAL means
+    an old reader keeps the file in its rollback journal, which is busy.
     """
     relative = f"{layout.STATE_DIR}/{published.name}"
-    if published.is_symlink():
-        raise MemoryForestError(
-            "symlink_forbidden",
-            "Symlinks are not allowed inside a Memory Forest.",
-            next_step="report",
-        )
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = _open_regular(published, relative, flags=flags)
+    assert descriptor is not None
     try:
         connection = sqlite3.connect(published, timeout=busy_seconds, isolation_level=None)
     except sqlite3.Error as exc:
         raise index_error(exc, busy_message=_WRITER_HELD, path=relative) from exc
+    finally:
+        os.close(descriptor)
     try:
         mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
         connection.execute("PRAGMA synchronous = NORMAL")
@@ -1332,8 +1643,20 @@ def _remove_old_staging(published: Path) -> None:
     """A staging copy an earlier release left behind. No connection reads it: it was never published."""
     staging = published.with_name(published.name + _STAGING_SUFFIX)
     for leftover in (staging, Path(str(staging) + "-journal")):
-        if leftover.is_file() and not leftover.is_symlink():
-            leftover.unlink()
+        _remove_index_file(leftover)
+
+
+def _owner_only(path: Path) -> None:
+    """Mode 0600 on a file of the index, through a descriptor: a link put in its place is not followed."""
+    try:
+        descriptor = os.open(path, _READ_FLAGS)
+    except OSError:
+        return
+    try:
+        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
 
 
 def _metadata_or_none(connection: sqlite3.Connection) -> dict[str, str] | None:
@@ -1359,48 +1682,92 @@ def _drop_all(connection: sqlite3.Connection) -> None:
             connection.execute(f'DROP TABLE IF EXISTS "{name.replace(chr(34), chr(34) * 2)}"')
 
 
-_REQUIRED_COLUMNS = {
-    "cjk_grams": frozenset({"gram", "unit_id"}),
-    "files": frozenset({
-        "indexed_bytes", "indexed_lines", "mtime_ns", "path", "prefix_sha256", "sha256", "size",
-        "torn", "undecodable", "verified_at",
-    }),
-    "metadata": frozenset({"key", "value"}),
-    "times": frozenset({"end_utc", "start_utc", "unit_id", "zone"}),
-    "units": frozenset({
-        "address", "agent", "heading", "id", "kind", "layer", "line_end", "line_start", "page_zone",
-        "path", "subjects", "text", "tree",
-    }),
-    "units_words": frozenset({"heading", "text"}),
-    "vectors": frozenset({"unit_id", "vector"}),
+# The columns each plain table is read for. The probe selects exactly these, as the reads do.
+_SELECTED_COLUMNS = {
+    "cjk_grams": ("gram", "unit_id"),
+    "files": (
+        "path", "size", "mtime_ns", "sha256", "verified_at", "undecodable", "torn", "indexed_bytes",
+        "indexed_lines", "prefix_sha256",
+    ),
+    "metadata": ("key", "value"),
+    "times": ("unit_id", "start_utc", "end_utc", "zone"),
+    "units": (
+        "id", "path", "address", "layer", "tree", "agent", "kind", "subjects", "heading", "text",
+        "line_start", "line_end", "page_zone",
+    ),
+    "vectors": ("unit_id", "vector"),
 }
+# The word indexes a search matches against.
+_MATCHED_TABLES = ("units_words", "units_tri")
 
 
-def _structure_ok(connection: sqlite3.Connection, *, trigram: bool) -> bool:
-    """Whether every table and column of this schema mark is present. An extra column is still whole."""
-    required = dict(_REQUIRED_COLUMNS)
-    if trigram:
-        required["units_tri"] = frozenset({"heading", "text"})
-    present = {
-        row[0]
-        for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-        )
-    }
-    for name, columns in required.items():
-        if name not in present:
-            return False
-        have = {row[1] for row in connection.execute(f"PRAGMA table_info({name})")}
-        if not columns <= have:
-            return False
-    # The word index's own tables can be missing while the virtual table still lists its columns.
-    # One small read is what a query does, so status, build and query agree.
+@functools.lru_cache(maxsize=2)
+def expected_objects(trigram: bool) -> frozenset[tuple[str, str]]:
+    """Every table, index and shadow table this schema makes, as ``(type, name)``.
+
+    Read from the schema itself, built once in memory, so an object added to ``_create_schema`` is
+    checked without anyone listing it.
+    """
+    connection = sqlite3.connect(":memory:")
     try:
-        connection.execute("SELECT rowid FROM units_words LIMIT 1").fetchone()
-        if trigram:
-            connection.execute("SELECT rowid FROM units_tri LIMIT 1").fetchone()
-    except sqlite3.Error:
-        return False
+        _create_schema(connection, trigram=trigram)
+        rows = connection.execute(
+            "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    finally:
+        connection.close()
+    return frozenset((str(kind), str(name)) for kind, name in rows)
+
+
+def _filled_tables(connection: sqlite3.Connection) -> list[str]:
+    """The tables that hold at least one row, at the commit that writes this list."""
+    names = [
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )
+    ]
+    return [name for name in names if connection.execute(f'SELECT 1 FROM "{name}" LIMIT 1').fetchone()]
+
+
+def _probe(connection: sqlite3.Connection, meta: dict[str, str]) -> bool:
+    """Whether a query can run on this file: what a search or a timeline read touches, touched once.
+
+    Every object of the schema is there; each plain table is read for the columns the code selects; each
+    word index is matched; and every table that held rows at the last commit still holds one. An error of
+    a missing or corrupt object is damage (False). Any other error (busy, I/O) is raised for its own
+    refusal.
+    """
+    trigram = "trigram" in str(meta.get("tokenizer") or "")
+    try:
+        try:
+            filled = json.loads(meta.get("filled") or "")
+        except ValueError:
+            return False
+        if not isinstance(filled, list):
+            return False
+        present = {
+            (str(kind), str(name))
+            for kind, name in connection.execute("SELECT type, name FROM sqlite_master")
+        }
+        if not expected_objects(trigram) <= present:
+            return False
+        for table, columns in _SELECTED_COLUMNS.items():
+            connection.execute(f"SELECT {', '.join(columns)} FROM {table} LIMIT 1").fetchall()
+        for table in _MATCHED_TABLES[: 2 if trigram else 1]:
+            connection.execute(
+                f"SELECT rowid, heading, text FROM {table} WHERE {table} MATCH ? LIMIT 1", ('"probe"',)
+            ).fetchall()
+        tables = {name for kind, name in present if kind == "table"}
+        for name in filled:
+            if not isinstance(name, str) or name not in tables:
+                return False
+            if connection.execute(f'SELECT 1 FROM "{name}" LIMIT 1').fetchone() is None:
+                return False
+    except sqlite3.Error as exc:
+        if sqlite_error_kind(exc) in ("other", "corrupt"):
+            return False
+        raise
     return True
 
 
@@ -1496,7 +1863,10 @@ def _lane_daily_listing(root: Path) -> dict[str, tuple[Path, int, int]]:
                     if entry.is_dir(follow_symlinks=False):
                         stack.append((entry.path, relative))
                     elif entry.is_file(follow_symlinks=False) and entry.name.endswith(".md"):
-                        info = entry.stat(follow_symlinks=False)
+                        try:
+                            info = entry.stat(follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
                         found[relative] = (Path(entry.path), info.st_size, info.st_mtime_ns)
     top = layout.resolve(root, layout.ISTM)
     if not top.exists():
@@ -1530,7 +1900,10 @@ def _lane_daily_listing(root: Path) -> dict[str, tuple[Path, int, int]]:
                     continue
                 if not entry.is_file(follow_symlinks=False):
                     continue
-                info = entry.stat(follow_symlinks=False)
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
                 found[f"{layout.ISTM}/{agent.name}/{entry.name}"] = (
                     Path(entry.path), info.st_size, info.st_mtime_ns,
                 )
@@ -1549,7 +1922,7 @@ def _file_at(root: Path, relative: str) -> Path | None:
 
 def _unchanged(connection: sqlite3.Connection, relative: str, path: Path, *, verify: bool) -> bool:
     """Size and time first. Hash when ``verify`` is set or the stored hash is older than a day."""
-    info = path.stat()
+    info = path.lstat()
     row = connection.execute(
         "SELECT size, mtime_ns, sha256, verified_at FROM files WHERE path = ?", (relative,)
     ).fetchone()
@@ -1577,11 +1950,12 @@ def _replace_path(
     path: Path,
     tokenizer: str,
 ) -> None:
-    info = path.stat()
-    if _is_lane(relative):
-        _index_lane(connection, masker, relative, path, info, tokenizer)
-        return
-    data = path.read_bytes()
+    with _open_page(path) as handle:
+        info = os.fstat(handle.fileno())
+        if _is_lane(relative):
+            _index_lane(connection, masker, relative, handle, info, tokenizer)
+            return
+        data = handle.read()
     digest = hashlib.sha256(data).hexdigest()
     text, undecodable = _decode(data)
     verified = _verified_stamp()
@@ -1605,7 +1979,7 @@ def _index_lane(
     connection: sqlite3.Connection,
     masker: _Masker,
     relative: str,
-    path: Path,
+    handle: Any,
     info: os.stat_result,
     tokenizer: str,
 ) -> None:
@@ -1621,39 +1995,38 @@ def _index_lane(
         (relative,),
     ).fetchone()
     verified = _verified_stamp()
-    with path.open("rb") as handle:
-        if row is not None and 0 < row[3] <= info.st_size:
-            prefix = hashlib.sha256()
-            remaining = int(row[3])
-            while remaining:
-                chunk = handle.read(min(1 << 20, remaining))
-                if not chunk:
-                    break
-                prefix.update(chunk)
-                remaining -= len(chunk)
-            if remaining == 0 and prefix.hexdigest() == row[5]:
-                tail = handle.read()
-                whole = prefix.copy()
-                whole.update(tail)
-                cut = tail.rfind(b"\n") + 1
-                added = tail[:cut]
-                prefix.update(added)
-                text, undecodable = _decode(added)
-                units, torn = _turn_units(relative, text, layout.classify(relative), masker.config,
-                                          first_line=int(row[4]) + 1)
-                _insert_units(connection, masker, units, tokenizer)
-                connection.execute(
-                    "UPDATE files SET size = ?, mtime_ns = ?, sha256 = ?, verified_at = ?, undecodable = ?, "
-                    "torn = ?, indexed_bytes = ?, indexed_lines = ?, prefix_sha256 = ? WHERE path = ?",
-                    (
-                        info.st_size, info.st_mtime_ns, whole.hexdigest(), verified,
-                        int(bool(row[1]) or undecodable), int(bool(row[2]) or torn),
-                        int(row[3]) + cut, int(row[4]) + added.count(b"\n"), prefix.hexdigest(), relative,
-                    ),
-                )
-                return
-            handle.seek(0)
-        data = handle.read()
+    if row is not None and 0 < row[3] <= info.st_size:
+        prefix = hashlib.sha256()
+        remaining = int(row[3])
+        while remaining:
+            chunk = handle.read(min(1 << 20, remaining))
+            if not chunk:
+                break
+            prefix.update(chunk)
+            remaining -= len(chunk)
+        if remaining == 0 and prefix.hexdigest() == row[5]:
+            tail = handle.read()
+            whole = prefix.copy()
+            whole.update(tail)
+            cut = tail.rfind(b"\n") + 1
+            added = tail[:cut]
+            prefix.update(added)
+            text, undecodable = _decode(added)
+            units, torn = _turn_units(relative, text, layout.classify(relative), masker.config,
+                                      first_line=int(row[4]) + 1)
+            _insert_units(connection, masker, units, tokenizer)
+            connection.execute(
+                "UPDATE files SET size = ?, mtime_ns = ?, sha256 = ?, verified_at = ?, undecodable = ?, "
+                "torn = ?, indexed_bytes = ?, indexed_lines = ?, prefix_sha256 = ? WHERE path = ?",
+                (
+                    info.st_size, info.st_mtime_ns, whole.hexdigest(), verified,
+                    int(bool(row[1]) or undecodable), int(bool(row[2]) or torn),
+                    int(row[3]) + cut, int(row[4]) + added.count(b"\n"), prefix.hexdigest(), relative,
+                ),
+            )
+            return
+        handle.seek(0)
+    data = handle.read()
     digest = hashlib.sha256(data).hexdigest()
     if row is not None and row[0] == digest:
         connection.execute(
@@ -1775,11 +2148,15 @@ def _stale_files(root: Path, connection: sqlite3.Connection) -> list[str]:
     }
     stale: list[str] = []
     for relative, path in present.items():
-        info = path.stat()
         old = stored.get(relative)
-        if old is None or old[0] != info.st_size or old[1] != info.st_mtime_ns:
-            if old is None or _hash(path) != old[2]:
-                stale.append(relative)
+        try:
+            info = path.lstat()
+            if old is None or old[0] != info.st_size or old[1] != info.st_mtime_ns:
+                if old is None or _hash(path) != old[2]:
+                    stale.append(relative)
+        except FileNotFoundError:
+            # Gone since the listing: changed since the build.
+            stale.append(relative)
     for relative in stored:
         if relative not in present:
             stale.append(relative)
@@ -1797,9 +2174,31 @@ def _set_meta(connection: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+def _open_page(path: Path) -> Any:
+    """A page or lane file, opened first without following a link or blocking, then checked to be a file.
+
+    A file that went away raises ``FileNotFoundError`` for the caller to name. A symlink put in its place
+    is ``symlink_forbidden``, and anything else that is not a regular file is ``non_regular_file``.
+    """
+    try:
+        descriptor = os.open(path, _READ_FLAGS)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise MemoryForestError(
+                "symlink_forbidden", "Symlinks are not allowed inside a Memory Forest.", next_step="report"
+            ) from exc
+        raise
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise MemoryForestError(
+            "non_regular_file", "A forest page is not a regular file.", next_step="report"
+        )
+    return os.fdopen(descriptor, "rb")
+
+
 def _hash(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with _open_page(path) as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -1815,7 +2214,8 @@ def _decode(data: bytes) -> tuple[str, bool]:
 
 def _read_text(path: Path) -> tuple[str, bool]:
     """The file as text. A page that is not UTF-8 is read with replacement characters."""
-    return _decode(path.read_bytes())
+    with _open_page(path) as handle:
+        return _decode(handle.read())
 
 
 def _verified_stamp() -> str:
@@ -2353,6 +2753,7 @@ def _end_of_local_day(moment: datetime) -> datetime:
 # ─────────────────────────────── search ───────────────────────────────
 
 
+@_public
 def query(
     root: str | os.PathLike[str],
     question: str,
@@ -2394,27 +2795,27 @@ def query(
             payload = _envelope(scope, ordered, vectors=vector_note, question=words)
             if stale:
                 payload["stale"] = stale
-            if id(connection) in _IMMUTABLE_IDS:
+            if is_read_only(connection):
                 payload["read_only"] = True
             return payload
         except sqlite3.Error as exc:
-            relative = _index_message_path(safe)
-            error = index_error(exc, path=relative)
-            if error.code == "index_protocol" and time.monotonic() < deadline:
-                raise error from exc
-            if error.code == "index_protocol":
-                raise protocol_spent(time.monotonic() - started, path=relative) from exc
-            raise error from exc
+            # ``index_protocol`` goes to the loop below, which alone decides whether time is left.
+            raise index_error(exc, path=_index_message_path(safe)) from exc
 
     while True:
         try:
             return _checked_read(safe, read)
         except MemoryForestError as exc:
-            if exc.code != "index_protocol" or time.monotonic() >= deadline:
+            if exc.code != "index_protocol":
                 raise
-        _retry_pause(min(RETRY_INTERVAL_SECONDS, max(0.0, deadline - time.monotonic())))
+            now = time.monotonic()
+            if now >= deadline:
+                raise protocol_spent(now - started, path=str(exc.details.get("path") or "")) from exc
+            remaining = deadline - now
+        _retry_pause(min(RETRY_INTERVAL_SECONDS, remaining))
 
 
+@_public
 def read(
     root: str | os.PathLike[str],
     spec: str,
@@ -2492,6 +2893,7 @@ def read(
     return payload
 
 
+@_public
 def navigate(
     root: str | os.PathLike[str],
     *,

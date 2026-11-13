@@ -909,19 +909,19 @@ class LintReport:
     def must_fix(self) -> list[Hit]:
         """What the run must fix before it completes: every violation without a baseline; with one, the
         violations and the upkeep kinds a run may not add that the run added."""
+        return [hit for hit in self.hits if self._must_fix(hit)]
+
+    def _must_fix(self, hit: Hit) -> bool:
         if self.against is None:
-            return self.violations
-        return [
-            hit for hit in self.hits
-            if hit.new and (hit.class_ == VIOLATION or hit.code in RUN_MAY_NOT_ADD
-                            or hit.code in _RUN_MAY_NOT_ADD_EXTRA)
-        ]
+            return hit.class_ == VIOLATION
+        return hit.new and (
+            hit.class_ == VIOLATION or hit.code in RUN_MAY_NOT_ADD or hit.code in _RUN_MAY_NOT_ADD_EXTRA
+        )
 
     @property
     def upkeep_run(self) -> list[Hit]:
         """The upkeep run's work: the rest of the violations and upkeep."""
-        fixed = {id(hit) for hit in self.must_fix}
-        return [hit for hit in self.hits if hit.class_ != DUE and id(hit) not in fixed]
+        return [hit for hit in self.hits if hit.class_ != DUE and not self._must_fix(hit)]
 
     @property
     def exit_code(self) -> int:

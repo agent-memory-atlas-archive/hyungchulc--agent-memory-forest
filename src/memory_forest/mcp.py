@@ -673,7 +673,12 @@ def record_turn(
     The role is ``agent``. The caller does not choose the role or the origin. A turn
     whose id the lane already holds is not written again.
     """
-    record = intake.append_owned(root, agent, text, role="agent", origin=origin, session=session or "mcp")
+    if not search.derived_writable(root):
+        raise _log_read_only(agent)
+    try:
+        record = intake.append_owned(root, agent, text, role="agent", origin=origin, session=session or "mcp")
+    except PermissionError as exc:
+        raise _log_read_only(agent) from exc
     indexed = False
     reason = ""
     try:
@@ -692,6 +697,18 @@ def record_turn(
     if not indexed:
         body["reason"] = reason
     return body
+
+
+def _log_read_only(agent: str) -> MemoryForestError:
+    """A turn that cannot be written: this account cannot write the forest. Nothing was written."""
+    return MemoryForestError(
+        "log_read_only",
+        "This account cannot write the forest's .forest folder or the agent's raw lane, so the turn was not "
+        f"written. An account that can write the forest keeps it with `forest log --as {agent}`, the turn on "
+        "stdin.",
+        details={"agent": agent},
+        next_step="report",
+    )
 
 
 def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: str) -> None:

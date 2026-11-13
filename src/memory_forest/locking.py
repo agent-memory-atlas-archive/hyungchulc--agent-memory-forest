@@ -143,10 +143,10 @@ def _lock_file(root: str | os.PathLike[str], name: str) -> Path:
         raise MemoryForestError("invalid_lock_name", "A lock name is a slug.", details={"name": name})
     folder = safe_join(root, LOCKS_RELATIVE)
     if not folder.exists():
-        state = safe_join(root, ".forest")
-        if not state.exists():
-            state.mkdir(mode=0o700)
-        folder.mkdir(mode=0o700)
+        # Make, then check: two processes that take their first lock at once both get the folder.
+        safe_join(root, ".forest").mkdir(mode=0o700, exist_ok=True)
+        folder.mkdir(mode=0o700, exist_ok=True)
+        safe_join(root, LOCKS_RELATIVE, must_exist=True)
     return safe_join(root, f"{LOCKS_RELATIVE}/{name}.lock")
 
 
@@ -348,13 +348,16 @@ def holds(root: str | os.PathLike[str], name: str = WRITER_LOCK) -> LockToken | 
 # ─────────────────────────────── writing files ───────────────────────────────
 
 
-def atomic_write(path: str | os.PathLike[str], data: bytes | str, *, mode: int | None = None) -> None:
+def atomic_write(
+    path: str | os.PathLike[str], data: bytes | str, *, mode: int | None = None, keep_mode: bool = True
+) -> None:
     """Write a whole file: a reader sees the old bytes or the new, never part of either.
 
     The new bytes go to a temporary file in the same folder, are flushed to
     disk, and replace the target with one rename; the folder is then synced.
     A symlink at the target is refused. The file keeps its mode, or gets
-    ``mode`` (0600 by default) when it is new.
+    ``mode`` (0600 by default) when it is new. With ``keep_mode`` false it
+    gets ``mode`` (0600 by default) whatever the file it replaces had.
     """
     target = Path(path)
     payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
@@ -369,7 +372,8 @@ def atomic_write(path: str | os.PathLike[str], data: bytes | str, *, mode: int |
             "The file to replace is a symlink or not a regular file.",
             details={"path": target.name},
         )
-    final_mode = stat.S_IMODE(info.st_mode) if info is not None else (0o600 if mode is None else mode)
+    wanted = 0o600 if mode is None else mode
+    final_mode = stat.S_IMODE(info.st_mode) if info is not None and keep_mode else wanted
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=folder)
     try:
         with os.fdopen(descriptor, "wb") as handle:

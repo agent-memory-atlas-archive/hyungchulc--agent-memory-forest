@@ -113,6 +113,7 @@ def languages(root: str | os.PathLike[str] | None = None) -> list[str]:
     return [str(table["language"]) for table in _tables(root)]
 
 
+@search._public
 def query(
     root: str | os.PathLike[str],
     phrase: str,
@@ -135,6 +136,7 @@ def query(
     return payload
 
 
+@search._public
 def subject(
     root: str | os.PathLike[str],
     subject_id: str,
@@ -182,7 +184,7 @@ def subject(
             payload["subject"] = subject_id
             if stale:
                 payload["stale"] = stale
-            if id(connection) in search._IMMUTABLE_IDS:
+            if search.is_read_only(connection):
                 payload["read_only"] = True
             return payload
         except sqlite3.Error as exc:
@@ -280,7 +282,7 @@ def _collect(
             payload = search._envelope(scope, ordered)
             payload["phrase"] = phrase
             payload["when"] = _when_dict(when)
-            if id(connection) in search._IMMUTABLE_IDS:
+            if search.is_read_only(connection):
                 payload["read_only"] = True
             return payload
         except sqlite3.Error as exc:

@@ -13,6 +13,22 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- One function reads the state of the derived folder (`sound`, `masking_changed`, `missing`,
+  `damaged`, `pointer_damaged`, `wal`, and whether the folder can be written), and every command
+  answers from it: `index status`, `build`, `reset`, `search`, the timeline and the MCP tools agree,
+  and a refusal names the state in `details.state`. In a folder this account cannot write, the next
+  move is `report` and the text names what an account that can write runs; a read-only forest with
+  no `.forest/` is one of them. A damaged pointer there, or a masking change, no longer says that
+  reading still answers. `memory_log` there is `log_read_only`, and nothing is written.
+- A reset publishes the pointer in mode 0600, so a pointer this account could not read is replaced by
+  one it can. Its answer's next move is `forest index build`.
+- `index status` says sound only when a query works: the probe runs what a query runs (a match on each
+  word index, a read of each table for the columns the code selects), every object of the schema is
+  there, and every table that held rows at the last commit still holds one. The schema is now 4.
+- An internal protocol code never leaves a public function. The index file, the pointer, a page and a
+  lane file are opened first, without following a link and without blocking, and then checked; a
+  file that goes away between two steps is `index_busy`.
+- Two processes that take their first lock at once both get the lock folder.
 - A test no longer stops a real process with an environment variable. A child that must stand at
   a point is started from a launcher under `tests/` that replaces the function, and every wait on a
   child or a fifo has a deadline and the child's stderr.

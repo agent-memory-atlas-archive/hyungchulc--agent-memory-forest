@@ -9,7 +9,6 @@ from __future__ import annotations
 import http.client
 import json
 import os
-import select
 import socket
 import sqlite3
 import stat
@@ -597,17 +596,25 @@ def _frame(payload: dict | list) -> bytes:
 
 
 def _read_frame(stream, proc: subprocess.Popen | None = None) -> dict | list:
-    ready, _, _ = select.select([stream], [], [], 30)
-    if not ready:
-        err = ""
-        code = None
-        if proc is not None and proc.stderr is not None:
-            code = proc.poll()
-            err = proc.stderr.read() if code is not None else ""
-        raise AssertionError(
-            f"timed out waiting for a server message (child exit {code}): {err}"
-        )
-    line = stream.readline()
+    """One line from the server, waited for with a deadline.
+
+    The read runs in a thread and the wait is on an event. ``select`` on the descriptor cannot see a
+    second reply that the buffered reader already took in with the first, so it is not used.
+    """
+    got: list[bytes] = []
+    done = threading.Event()
+
+    def read() -> None:
+        try:
+            got.append(stream.readline())
+        finally:
+            done.set()
+
+    threading.Thread(target=read, daemon=True).start()
+    if not done.wait(30):
+        code = proc.poll() if proc is not None else None
+        raise AssertionError(f"timed out waiting for a server message (child exit {code})")
+    line = got[0] if got else b""
     if not line:
         raise AssertionError("the server closed stdout without a message")
     self_check = line.decode("utf-8")

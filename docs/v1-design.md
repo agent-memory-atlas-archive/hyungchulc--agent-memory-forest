@@ -218,8 +218,9 @@ index. With no pointer the file is `.forest/index.sqlite`. The lanes themselves 
 The derived file does, so an hour that has not been filed can be found, and `forest index reset`
 followed by a build makes the same index.
 
-`forest index build` holds the `index` lock. A second build that finds the lock held, or a file another
-program holds, does not build: it refuses with `index_busy`, a non-zero exit, and next move `retry`.
+`forest index build` holds the `index` lock. A second build that finds the lock held, or finds the index
+file in use (SQLite says it is busy; the package does not tell which program holds it), does not build:
+it refuses with `index_busy`, a non-zero exit, and next move `retry`.
 A file whose size and time are unchanged is left, unless the build is `forest index build --verify` or
 the stored hash is more than a day old: then the file is hashed, and rewritten only when the hash has
 changed. That catches a restore that kept the size and the time.
@@ -235,13 +236,17 @@ then share a journal with a new one. A file that is still empty because the firs
 is no index yet, for a reader as before any build.
 
 **What SQLite refuses.** One function turns a SQLite error into a refusal, by its result code. Only a file
-that is corrupt or is not a database, or whose schema mark matches while a table or column is missing,
-is `index_unreadable`, and it is refused rather than replaced: its
+that is corrupt or is not a database, or whose schema mark matches while a table, an index or the rows
+of a table that held rows at the last commit are missing, is `index_unreadable`, and it is refused rather
+than replaced: its
 next move is `run` with the command `forest index reset`. The index file's name carries a generation.
 `.forest/index.current` names the current file; with no pointer, `.forest/index.sqlite` is current, so a
 forest made before this still opens. Reset holds the index lock, chooses a name that has not been used,
-and replaces the pointer by writing it and syncing it before the rename. Only then does it remove the old
-database and its `-wal` and `-shm` files, sidecars first, each if it is present. A file that cannot be
+and replaces the pointer by writing it and syncing it before the rename; the new pointer has mode 0600,
+whatever the file it replaces had. Only then does it remove the old database and its `-wal`, `-shm` and
+`-journal` files, sidecars first, each if it is present, and a temporary pointer file a killed reset
+left behind (`.index.current.` and eight letters, digits or underscores, then `.tmp`). Its answer's next
+move is `run` `forest index build`. A file that cannot be
 removed is an orphan nothing reads, named in the output, and not a failure. The next reset or build
 removes orphans of the index's own naming pattern in `.forest/`, never a symlink, a folder, or the
 current file. A call that already opened a file finishes on that file, so a server may be running. A
@@ -255,14 +260,30 @@ file or folder, a full disk, an I/O error and a path that cannot be opened have 
 `report`: no command helps, and resetting a working index on a full disk would only lose it. A
 protocol error is tried again only inside a query's reads and inside a write. `status`, the timeline
 and opening the file report it as I/O at once. A refusal that has already waited the whole stop time
-is reported at once and not tried again. A `.forest/` folder this process cannot write can still be
-searched when no write-ahead log stands beside the index: the open is SQLite's immutable mode, the
-answer says `read_only: true`, and pages changed since the build are reported as for any stale index.
-The file's size, time and inode are compared after the read; if they changed, the read is done once
-more, and if they changed again the answer is `index_busy` with `retry`. Immutable mode is never used
-on a folder this process can write. A write-ahead log in a folder that cannot be written, or no index
-there at all, is `index_read_only`: one `forest index build` by an account that can write the folder
-folds the log in, and a build needs a folder it can write. Publishing a
+is reported at once and not tried again.
+
+**One state of the derived folder.** One function reads what is true on disk and gives one state:
+`sound`, `masking_changed`, `missing`, `damaged`, `pointer_damaged` or `wal`, and whether this process
+can write the folder the index lives in (`.forest/`, or the forest root while there is no `.forest/`,
+because a build would make it there). The state gives the refusal of a read and of a write, their text
+and their next move, and `index status`, `index build`, `index reset`, `search`, the timeline and every
+MCP tool that reads or writes the index or a lane ask it, so no command meets a different check first.
+A refusal's `details.state` and the `state` of `index status` name it. Its text is made of fixed
+sentences, each a claim about the disk or about what a call does, and a test checks each by doing it.
+In a folder this process can write, a missing index or a masking change is built before a read
+answers, and a damaged index or pointer is `index_unreadable`, next `run` `forest index reset`. In a
+folder it cannot write, no command of this account cures anything: every state but `sound` is
+`index_read_only` for a read and for a write, next `report`, and the text names what an account that
+can write would run (`forest index build`, or `forest index reset` and then `forest index build` for a
+damaged index or pointer). A `sound` index there can still be searched: the open is SQLite's immutable
+mode, the answer says `read_only: true`, and a build or a reset is `index_read_only` whose text says
+reading still answers. Nothing on disk changes in such a folder. The index file is opened first,
+without following a link and without blocking, and that descriptor's size, time and inode, and the
+absence of a write-ahead log, are compared after the read; if they changed, the read is done once
+more, and if they changed again the answer is `index_busy` with `retry`. A file that went away between
+two steps is `index_busy` too. Immutable mode is never used on a folder this process can write.
+`memory_log` and `forest log` in a forest this account cannot write are `log_read_only`, next `report`:
+nothing is written, and the text names `forest log` for an account that can. Publishing a
 fresh copy by an atomic rename was the other model; it was not chosen because it copies the whole
 database for every appended line.
 
@@ -306,8 +327,11 @@ or not trigram is available. `forest index status` says which tokenizer was buil
 
 A search, a timeline query and a subject listing bring changed lane files and daily pages into the index
 first, by size and time, from one listing of the daily and lane folders per query. When another build
-holds the lock, the answer says `stale:` and how many of those files were left, and it reads the index
-that is already published.
+holds the lock, or the folder cannot be written, the answer says `stale:` and how many of those files
+were left, and it reads the index that is already published. A query does not walk the trees: a page
+of `02 ltm`, `03 mtm` or `04 stm` changed since the build is not counted in a query's `stale`, because
+counting it would cost a walk of every tree per query. `forest index status` lists it, with its next
+move, and `forest index build` brings it in.
 
 `forest search "<words>" [--as <reader>] [--limit N] [--json]` matches registry names and aliases first.
 A subject named in the question brings its home and the leaves that name it in `about:`. Word matches

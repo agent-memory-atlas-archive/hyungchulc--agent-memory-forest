@@ -506,9 +506,9 @@ What SQLite refuses is sorted by its result code:
 
 | Code | When | Next move |
 | --- | --- | --- |
-| `index_unreadable` | the file is corrupt, is not a database, or its schema mark matches but a table or column is missing | `run` `forest index reset` |
+| `index_unreadable` | the file or the pointer is damaged: the file is corrupt or is not a database, a table, an index or the rows of a table that held rows are missing, or the pointer does not name an index file | `run` `forest index reset` |
 | `index_busy` | the index lock is held, or the index file is in use | `retry` after `after_seconds`, stop at `stop_after_seconds` |
-| `index_read_only` | the index file cannot be written (reading it still answers), or `.forest/` cannot be written and a `-wal` file stands beside the index or there is no index to read | `report` |
+| `index_read_only` | the index file cannot be written; or the folder the index lives in (`.forest/`, or the forest root while there is no `.forest/`) cannot be written, and the call would build or reset, or the index is missing, damaged, its pointer damaged, its masking changed since the build, or a `-wal` file stands beside it. The text says whether reading still answers and names what an account that can write would run | `report` |
 | `index_disk_full` | the disk is full | `report` |
 | `index_io_error` | the disk returned an I/O error, or the locking protocol failed and this call's budget is spent | `report` |
 | `index_cannot_open` | the path cannot be opened or created (a folder in its place) | `report` |
@@ -527,18 +527,29 @@ inside a write. `status`, the timeline and opening the file turn it into an I/O 
 A search with the same masking answers `stale`. `report`
 means no command helps: the message says what a person has to do. Resetting a working index on a full
 disk would lose it and the rebuild would fail again. A file whose first build has not committed yet is
-not refused: it is no index yet. A `.forest/` folder this process cannot write can still be searched
-when the index is whole and no write-ahead log stands beside it: the answer says `read_only: true`
-and names pages changed since the build. A write-ahead log in that folder, or no index at all, is
-`index_read_only`. The cure is one `forest index build` by an account that can write the folder,
-which folds the log in. `build` and `reset` still refuse, because they need a folder they can write.
+not refused: it is no index yet.
+
+Every command reads one state of the derived folder: `sound`, `masking_changed`, `missing`, `damaged`,
+`pointer_damaged` or `wal` (design, section 10). A refusal names it in `details.state`, and `index
+status` in `state`. When there is something to do, `index status` also carries `next`, `command` and
+`message`, as a refusal does: `run` `forest index build` for a missing index, a masking change or
+files changed since the build, in a folder this account can write. A `.forest/` folder this process
+cannot write (or a forest root it cannot write, with no `.forest/` yet) can still be searched when the
+index is sound: the answer says `read_only: true`, and `stale` is the count of lane files and daily
+pages changed since the build. Every other state there is `index_read_only`, for a read and for a
+write: the text says nothing is answered and names what an account that can write runs, `forest index
+build`, or `forest index reset` and then `forest index build` for a damaged index or pointer. A build
+or a reset of a sound index there is `index_read_only` too, and its text says reading still answers.
+Nothing on disk changes in such a folder. A search never counts a page of a tree changed since the
+build: only `index status` lists those pages, with `next`, and a build brings them in.
 
 `forest index reset` is for an index that is corrupt or damaged. The index file's name carries a
 generation. `.forest/index.current` names the current file, and with no pointer `.forest/index.sqlite`
 is the current file, so a forest made before this still opens. Under the index lock the command chooses
-a name that has not been used, writes the pointer and syncs it, then renames it into place. Only then
-does it remove the old database and its `-wal` and `-shm` files, the sidecars first, each when it is
-present. A file that cannot be removed is named in the output and is not a failure: it is an orphan
+a name that has not been used, writes the pointer in mode 0600 and syncs it, then renames it into place.
+Only then does it remove the old database and its `-wal`, `-shm` and `-journal` files, the sidecars
+first, each when it is present, and a temporary pointer file (`.index.current.<8 characters>.tmp`) a
+killed reset left. Its answer says `next: run` and `command: forest index build`. A file that cannot be removed is named in the output and is not a failure: it is an orphan
 nothing reads. The next reset or build removes orphans, only files of the index's own naming pattern in
 `.forest/`, never a symlink, never a folder, and never the current file. A call that already has a file
 open finishes on that file, so a forest server may be running. The lock keeps a build or an update out.
@@ -564,8 +575,9 @@ forest index status
 ## `forest search` and `forest read`
 
 A search brings changed lane files and daily pages into the index first. When a build already holds the
-lock, the JSON answer includes `stale` and the count of those files, and the search reads the index that
-is already published.
+lock, or the folder cannot be written, the JSON answer includes `stale` and the count of those files,
+and the search reads the index that is already published. A changed page of a tree is not counted:
+a search does not walk the trees, `index status` lists the page, and a build brings it in.
 
 `forest search` tries registry names and aliases first. A subject named in the question brings its home
 and every leaf that names it in `about:`. Word matches come after that. A vector match is added only

@@ -22,8 +22,15 @@ def stderr_text(proc: subprocess.Popen[str]) -> str:
 
 
 def _fail(proc: subprocess.Popen[str], what: str, reason: str) -> None:
-    err = stderr_text(proc)
+    """End the child first, then read what it wrote: a live child's stderr has no end to read to."""
     code = proc.poll()
+    if code is None:
+        proc.kill()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            pass
+    err = stderr_text(proc)
     raise AssertionError(f"while waiting for {what}: {reason}. child exit {code}. stderr: {err}")
 
 
