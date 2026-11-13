@@ -171,7 +171,8 @@ two bots, two days of daily pages and a raw lane, about forty small files.
 ## Agents in five lines
 
 1. An agent (an orchestrator, a bot, a scheduled stage) is a subject that is a tree from its first day.
-   A turn it writes with `forest log` or `memory_log` makes the tree before the call returns.
+   A turn it writes with `forest log` or `memory_log` makes the tree, or leaves it pending for the next
+   write while another writer holds the lock. An agent is its name, in any script.
    `forest levels apply` makes a tree a settings entry or an intake lane left due.
 2. Its tree page holds its role, standing instructions, lessons, current state and branches.
 3. `subject-first` (default) files facts in the subject's home tagged `noted by <agent>`; `agent-first`

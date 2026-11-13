@@ -24,11 +24,14 @@ number, the setting that holds it is given with its default.
     when the forest keeps it, and is never copied upward.
     One turn is one JSON line in `06 istm/<agent>/<YYYY-MM-DD>.jsonl`. The day is the forest's time zone.
     The line has `id` (the turn's own id where that id is unique by itself, otherwise the session and
-    that id, or a hash of the turn's content and time where it has none; the agent is not in the id,
-    because the lane names the agent), `at` (with its offset), `session`, `role`
+    that id, or a hash of the turn's content and time where it has none, and an id of its own for every
+    call of `memory_log` or `forest log`; the agent is not in the id, because the lane names the agent),
+    `at` (with its offset), `session`, `role`
     (`owner`, `agent`, `tool`, `system`, or `other:<name>`), `text`, `origin` (`interactive`, `headless`,
     `subagent` or `unknown`) and `source` (the adapter, the transcript and the place in it). The transcript
-    in `source` is relative to that tool's own transcript root. A tool turn also has `name`. Where the tool
+    in `source` is relative to that tool's own transcript root. A turn an agent wrote itself also has
+    `sources`, where it came from (`group:<id>` or `door:<name>`) in the order it came, and `turn`, the
+    caller's own id for it when one was given. A tool turn also has `name`. Where the tool
     marks a span the owner pasted, attached or quoted, or a span the client wrote into the owner's side,
     `text` stays whole and `parts` names each span and its kind (`paste`, `file`, `quote` or `harness`).
     That span is evidence, not the owner's own words. A line the client wrote and the owner did not
@@ -173,7 +176,20 @@ number, the setting that holds it is given with its default.
      the person uses (an invented example: "Θάλεια Ρόδου" → `thaleia-rodou`).
   2. The aliases keep every script and every display-name spelling seen.
   3. A contact with no name gets a descriptive id (`unnamed-kiln-repair-contact`), never a phone number.
-  4. A name says who or what the subject is, never the words of what it sent set before digits: a sender
+  4. An agent's id is made once, when the agent is admitted, and stored beside its name; it is only a
+     handle. It is ASCII and made letter for letter, one table per script (`letters/` in the package):
+     a Latin letter with an accent becomes its base letter, a Hangul syllable the Revised Romanization of
+     its initial, vowel and final, kana by Hepburn, Greek and Cyrillic by one table each; not a
+     language's spelling, and no sound changes. A name with a letter, digit or symbol no table carries
+     (Han characters, a script with no table, a symbol) has the id `agent-` and the first six hexadecimal
+     digits of the SHA-256 of its key, and the rest of the name is not used (invented examples: "Kiln
+     Bot" → `kiln-bot`, "스카우트" → `seukauteu`, "スカウト" → `sukauto`, "Разведчик" → `razvedchik`,
+     "侦察兵" → `agent-` and six digits). Two agents are one agent only when their names have one key:
+     the name in NFKC, case-folded, with white space, hyphens, dashes and underscores taken out; never
+     because their ids or slugs agree. An id something else holds is followed by `-agent`, and one another
+     agent holds by the smallest free number from 2. An agent declared with an id and a name keeps that
+     id.
+  5. A name says who or what the subject is, never the words of what it sent set before digits: a sender
      is `Lowtide parcel sender`, not `Lowtide verification code 4821`. A name, id or alias that reads as a
      sign-in value (section 4) would be shown masked by every read, and `forest credentials fix` would
      take it off the subject's own pages. Such a name, and one that holds `[REDACTED]`, is the violation
@@ -1223,3 +1239,8 @@ words and the date.
   state: no search index, no embeddings, no audit. The search index holds their turns, and their vectors
   when an embedding provider is registered, so a search or a timeline read reaches the hours not yet
   filed. The sentence now says so.
+- **1.0.0 (unreleased), agents' ids.** Section 2, "Ids from names", gains the rule for agents: an agent's
+  id is made once from its name by one letter table per script, or from a hash of its key where no table
+  carries a character, and is stored beside the name. Two agents are one only when their names have one
+  key. Section 1 names `sources` and `turn` on a turn an agent wrote itself, and an id of its own for
+  every such call.

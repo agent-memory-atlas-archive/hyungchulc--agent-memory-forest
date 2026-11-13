@@ -208,8 +208,8 @@ Agent Memory Forest는 alpha 단계이며, 이 트리의 버전은 1.0.0a1입니
   각 도구의 대화 기록을 그 agent의 raw lane으로 받습니다. `forest index`가 `.forest/index.sqlite`를 만들고,
   `forest search`, `forest read`, `forest timeline`이 그 index에서 `agents.readable_trees` 범위로 답합니다.
   `forest mcp`는 search, read, timeline, navigate, `memory_log`를 제공합니다. `--as-group`은 에이전트
-  여럿이 연결 하나를 쓸 때입니다. 에이전트는 그 이름이고, 그룹은 서로를 막는 벽이 아닙니다. `forest log`는
-  그 쓰기의 명령입니다. 주인의 agent가 직접 하는
+  여럿이 연결 하나를 쓸 때입니다. 에이전트는 그 이름이고(어느 문자로 쓴 이름이든), 그룹은 서로를 막는 벽이
+  아닙니다. 호출 하나가 턴 하나이고, `forest log`는 그 쓰기의 명령입니다. 주인의 agent가 직접 하는
   설치(`forest setup`, `forest doctor`, 안내, plugin)는 아직 없습니다
   ([design 15장](docs/v1-design.md#15-connecting-agents)).
 - **Milestone 3, 자라기 (아직 없음):** 단계별 프로그램과 prompt, 야간 관리.

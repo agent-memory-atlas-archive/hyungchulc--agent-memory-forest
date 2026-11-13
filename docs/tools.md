@@ -235,7 +235,7 @@ path and its code; it exits 1 when there is one.
 | `structure` | page roles, frontmatter keys, sections and their order, up-links, leaves outside their subject's home, boards without folders, trees and agents without their pages or root lines |
 | `lists` | derived lists that differ from the pages: `board_leaves_stale`, `branch_list_stale` (also `## Trees` and `## Agents`), `board_pointers_stale` |
 | `pointers` | `board_pointer_stale`: a pointer to the board's own leaf, or a bare name instead of a path |
-| `agents` | `agent_id_invalid`: a lane folder or declared agent whose name cannot be an agent's id; with `agents.auto_create` false, `agent_lane_without_tree` |
+| `agents` | `agent_id_invalid`: a lane folder or declared agent whose name cannot be an agent's id; `agent_setting_invalid`: a value of the agents' tables wrong for one entry, which was left out; with `agents.auto_create` false, `agent_lane_without_tree` |
 | `levels` | `level_due`: what `forest levels apply` would carry out |
 | `categories` | `category_too_large`: a category branch over `limits.category_max_leaves` |
 
@@ -602,7 +602,9 @@ Results are one per page. Each matching section is printed as written, with why 
 to read. `--as` is the reader. Omit it and the reader is not an agent: shared trees only, and no raw
 lane. `--as-group` with `--agent` is the same read for the agent that name is (design, section 6). Pass
 one of `--as` and `--as-group`, not both. `--agent` without a group cannot change the reader.
-`--source` keeps one group or tool of that agent's turns. `--named` is an agent the task names when the
+`--source` keeps the turns that came through one source, written `group:<id>`, `door:<name>` or
+`adapter:<name>`; it is narrowed before `--limit`, a read keeps the file's line numbers, and a source no lane
+of the reader has is `source_unknown` with the reader's sources listed. `--named` is an agent the task names when the
 owner runs the command. On an agent's door it is refused, the same as the tools, which take no such
 argument. It does not open that agent's raw lane.
 
@@ -649,29 +651,42 @@ path the previous call showed. The scope is the reader's.
 
 ## `forest log`
 
-`forest log` is the command-line twin of `memory_log` in every bound. The turn is read from stdin, at
-most `MESSAGE_LIMIT` bytes (1,000,000), and a stdin that has not ended after 30 seconds is refused.
-Bytes that are not UTF-8 are refused, not repaired. An argument is refused, because arguments show in
-process lists, and the refusal names `forest log`. The command sets the role to `agent` and the origin
-to `interactive`, the same as `memory_log` on stdio. A caller-supplied role or origin is refused.
-`--session` names the session. The default session is `cli`. The turn goes through the one writer of the
-lane, with the same masking. The id is a hash of the session, the role and the stored text, so the same
-turn through both doors is one line. What can differ is `source` (the door, and the group when the call
-named one) and `at`. The first write makes that agent's tree.
+`forest log` is the command-line door of `memory_log`. The turn is read from stdin: its words are at most
+131,072 bytes, the same bound `memory_log` keeps on its `text`, and a piped stdin that has not ended after
+30 seconds is refused; a terminal has no deadline, since a person types there. Bytes that are not UTF-8
+are refused, not repaired. An argument is refused, because arguments show in process lists, and the
+refusal names `forest log`. The command sets the role to `agent` and the origin to `interactive`, the same
+as `memory_log` on stdio. A caller-supplied role or origin is refused. `--session` names the session. The
+default session is `cli`. The turn goes through the one writer of the lane, with the same masking.
+
+Each call is a turn of its own: the same words twice are two lines. `--turn-id` (the tool's `turn_id`) is
+the caller's own id for the turn: the same id in the same lane and session is stored once, and the second
+call answers `stored: already stored` with the stored id; the same id with other words is
+`turn_id_reused` (`fix`). The same words, role, lane and session through a different source within 120
+seconds are one line that carries both sources (`stored: joined`).
+
+The answer says what happened, in order: `wrote` and `stored` for the lane's line, then `tree` (`made`,
+`already there`, `pending`, `none`) and `index` (`updated`, `pending`, with `reason`). Once the line is
+stored, neither the tree nor the index turns the answer into a refusal. A tree is pending when another
+writer holds the writer lock for more than 2 seconds; the next write of that agent, or the level pass,
+makes it.
 
 ```sh
 forest log --as till-bot <<'EOF'
 the till counted the trays
 EOF
-forest log --as-group bakery-bots --agent "Till Bot"
+forest log --as-group bakery-bots --agent "Till Bot" --turn-id msg-0042
 ```
 
 ## `forest agents`
 
 `forest agents` lists each group, whether it is open, and each member: its id, its name, whether it has
-written a lane, the sources it has written through, and when it was last seen on a connection. Agents
-that are not in a group are listed after the groups. Pairs whose names differ by one edit or by one
-added word are a remark, with what the owner can do. A remark is not a refusal.
+written a lane, the sources it has written through (`group:<id>`, `door:<name>`, `adapter:<name>`), and
+when it was last seen on a connection. Agents that are not in a group are listed after the groups. For a
+group with a source of members it shows the names the last read left out and a source that failed. Pairs
+whose keys differ by one edit, or whose names by one added word, are a remark, with what the owner can do.
+A remark is not a refusal. The sources come from `.forest/intake/sources.json`, which the lane writer keeps;
+an agent whose lane files no longer have the sizes it records is read from its lanes once.
 
 ## `forest mcp`
 
@@ -682,7 +697,14 @@ set it, and cannot set the role or origin of `memory_log`. `forest mcp --as-grou
 server for several agents on one connection. Exactly one of `--as` and `--as-group` is given. On a
 group connection every tool requires `agent`, the caller's own name. The agent is its name (design,
 section 6). With neither `--as` nor `--as-group`, the refusal names both. Stdio and `--http` use the
-same token rule. Search, read and timeline also take `source`, one group or tool of that agent's turns.
+same token rule. Search, read and timeline also take `source`, one source of the turns
+(`group:<id>`, `door:<name>`, `adapter:<name>`). `memory_log` takes `turn_id`, the caller's own id for a
+turn it may send twice.
+
+A command door is the same scope and the same folded answers as the tools, for an agent its owner lets run
+commands: every flag of `search`, `read`, `timeline`, `navigate`, `log` and `mcp`, `--root` and `--json`
+included, is plain or refused (`--named` is refused). It is not a wall: an agent that can run commands can
+read files.
 
 `memory_navigate` starts at the root index and walks one level down. `memory_log` appends the caller's
 own turn through the intake writer. The server sets the role to `agent` and the origin from the
@@ -697,9 +719,12 @@ that is not a loopback name with this server's port. The body must be `applicati
 non-loopback port from outside the machine is the owner's own network decision; the server does not open
 that path itself.
 
-`memory_log` reports `indexed: true` or `indexed: false`. False means the line is in the lane and the
-index was not updated. `reason` names which refusal that was: the index lock was busy, or the index was
-read-only, damaged, or full, or another refusal from the table above.
+`memory_log` answers what the write did: `wrote` and `stored` (`written`, `already stored`, `joined`) for
+the lane's line, `tree` (`made`, `already there`, `pending`, `none`) and `index` (`updated` or `pending`,
+with `indexed` true or false). A pending index means the line is in the lane and the index was not
+updated; `reason` names which refusal that was: the index lock was busy, or the index was read-only,
+damaged, or full, or another refusal from the table above. A call on a group connection that admitted its
+caller and was then refused says so in `details.admitted`.
 
 Every refusal of a tool is a result with `isError: true` whose text is one JSON object, the same object
 `--json` prints under `error`:

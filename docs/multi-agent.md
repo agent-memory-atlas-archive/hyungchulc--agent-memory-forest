@@ -261,12 +261,6 @@ hooks, and no transcript on Juno's machine. The connection is a group. Inside a 
 it says it is, so any member can read what another member's own tree and lane hold by calling under that
 member's name. A group tells one owner's agents apart for memory's sake and is no wall between them.
 
-The agent is its name. A Crate Bot in two apps is one Crate Bot, with one lane and one tree. Where a turn
-came from (which group, which door) stays on the turn, so the two can still be told apart. `forest agents`
-shows the sources each agent has written through. Search, read and timeline take `--source` for one of
-them. Nothing is refused because of what an agent is called. A name one edit away, or one word longer, is
-only a remark on `forest agents`, for the owner who may want to give two bots one name.
-
 ```toml
 [agents.groups.studio-counter]
 members = ["kiln-bot", "ledger-bot"]
@@ -280,29 +274,148 @@ name = "Kiln Bot"
 forest mcp --as-group studio-counter
 ```
 
-Every tool on that connection takes `agent`, the name the app uses for the caller. `Kiln Bot`,
-`kiln-bot`, `kiln_bot` and `KilnBot` are Kiln Bot. The same letters apart from case, spaces, hyphens and
-underscores are the same agent, and nothing looser is. A name some agent already has is that agent,
-whichever group or tool it first came from: the caller reads and writes as that agent, and on an open
-group the agent becomes a member here as well. A name no agent has is a new agent. Its id is the slug of
-the name, unless that slug is already something that is not an agent (a subject, the owner's id or name
-or alias, a group's id, the system id, `none`, a collection id, the name of a shared tree). Then the id
-is the slug, a hyphen and `agent`, and a number if that is taken too. The name stays as given.
+Every tool on that connection takes `agent`, the name the app uses for the caller.
 
-An open group (`open = true`) does this at once for every new name a caller gives. There is no greatest
-number of agents unless the owner sets `max_members`. `forest agents` is where to see them. A closed
-group (`open = false`) refuses a name that is not a member, lists the members' ids and names, and the
-next move is to call again under the caller's own name as it is listed. It never says to call as some
-particular member. A group may name a `source` of members. When a name finds no member, the connection
-asks that source to read its list again, once, and resolves again. A name that is still on no list is
-refused the way a closed group refuses it.
+### The agent is its name
+
+Every agent comes in under the name its owner gave it, in any script, and gets its own lane and tree with
+no step by Juno. The same name is the same agent wherever it is used: a Kiln Bot in two apps is one Kiln
+Bot, with one lane and one tree. Nothing else makes two names one agent.
+
+**A name's key** decides. The key is the name in Unicode NFKC, case-folded, with white space, hyphens and
+dashes of every kind and underscores taken out. Every other character counts: a letter with an accent is
+another letter, and a dot, a plus sign or an exclamation mark is part of the name.
+
+| Names | One agent or two |
+| --- | --- |
+| `Kiln Bot`, `kiln_bot`, `KILN-BOT`, `Ｋｉｌｎ Ｂｏｔ` (full-width) | one: the key is `kilnbot` |
+| `Kiln Bot`, `Kiln.Bot` | two: the dot counts |
+| `Café Bot`, `Cafe Bot` | two: the accent counts |
+| `스카우트 봇`, `스카우트봇` | one: the key is `스카우트봇` |
+| `スカウト`, `ｽｶｳﾄ` (half-width) | one |
+| `Разведчик`, `РАЗВЕДЧИК` | one |
+
+A name finds an agent in two ways only: the text **is** the agent's id, character for character
+(`kiln-bot`), or its key is the key of the agent's stored name (an agent that has no name is named by its
+id). A name whose key no agent has is a new agent. The only names refused are empty text, text longer
+than 200 characters (counted in characters, not bytes), and text that holds a control character or a line
+break; the refusal is `agent_name_invalid` or `agent_unset`, with `fix`.
+
+### The id is only a handle
+
+A new agent's id is made once, when it is admitted, and stored beside its name in `forest.toml`
+(`[agents.known.<id>]`, `name = "…"`). Every later call finds the agent by its key among the stored
+names; the id is never made again, so a later change of a letter table moves nobody. The id is ASCII, made
+letter for letter, one table per script: not a language's spelling, and no sound changes.
+
+| Name | Id |
+| --- | --- |
+| `Kiln Bot` | `kiln-bot` |
+| `Crème Bot` | `creme-bot` (a letter with an accent becomes its base letter) |
+| `스카우트` | `seukauteu` (Revised Romanization of each syllable's initial, vowel and final) |
+| `スカウト` | `sukauto` (Hepburn) |
+| `Разведчик` | `razvedchik` |
+| `Θάλεια Ρόδου` | `thaleia-rodou` |
+| `侦察兵`, `★`, `Tea+Bot` | `agent-` and six hexadecimal digits of the SHA-256 of the key |
+
+Han characters, a script with no table, and symbols cannot be read letter for letter, and they are not
+guessed: when any letter, digit or symbol of the name is carried by no table, the id is `agent-` and the
+first six hexadecimal digits of the SHA-256 of the key, and the rest of the name is not used. An id longer
+than 200 characters is cut and ends in the same six digits.
+
+An id somebody already holds is never shared. Held by something that is not an agent (a subject, the
+owner's id or name or alias, a group's id, the system id, `none`, a collection id, a shared tree), the new
+id is the id and `-agent` (`bakery-agent`), then `-agent-2`. Held by an agent with another key (`Crate.Bot`
+was admitted as `crate-bot`, then `Crate Bot` comes), the new id is the id and the smallest free number from
+2 (`crate-bot-2`).
+
+To give an agent the id you want, declare it before its first turn: an agent declared with an id and a name
+is found by that name, whatever the tables would have made.
+
+```toml
+[agents.known.scout]
+name = "스카우트"
+```
+
+The agent that carries out setup can propose such a romanization for a name no table carries. After an
+agent's first turn its tree carries its id, and the package has no move that changes it: `forest move
+rename` refuses a tree's id (`rename_tree_unsupported`) and `forest intake rename-agent` moves the lane
+only.
+
+### Open, closed, and a source of members
+
+An open group (`open = true`) admits every new name a caller gives, at once. There is no greatest number
+of agents unless Juno sets `max_members`. A name some agent already has is that agent, whichever group or
+tool it first came from, and on an open group it becomes a member here as well. A closed group
+(`open = false`) refuses a name that is not a member, lists the members' ids and names, and the next move is
+to call again under the caller's own name as it is listed. It never says to call as some particular member.
+
+A group may name a `source` of members, a reader of the app's own list registered in the process. The
+source is then the list: a name on it is admitted, a name not on it is refused as a closed group refuses
+it, and `open` does not widen it. A read of the source has a deadline (5 seconds) and a greatest size
+(50,000 names), and for 60 seconds after a read the last list is used again, so a caller cannot make Juno
+pay for a read on every call. A source that fails, does not answer in time, lists too many names or has no
+reader in the process is `member_source_failed` with `report`, never "not a member". Names on the list
+that are not a name by the rule above are left out, and `forest agents` shows them.
 
 On a group connection a caller that names the main agent sees what the main agent sees. An orchestrator
-needs no entry in `members`, on an open group, on a closed one, or on a group fed by a source. `forest
-agents` shows the group, whether each member has written a lane, the sources it has written through, and
-when it was last seen on a connection. A second identical admission changes no byte of the settings.
+needs no entry in `members`, on an open group, on a closed one, or on a group fed by a source. A name that
+differs from the main agent's by a dot, a mark or an accent is another agent, with none of its reach.
 
-Three questions for a host of this kind:
+### What an admission writes
+
+A second identical admission changes no byte of `forest.toml`. Two calls that would both admit the same
+new name end as one member and one settings write. An admission adds the id to the group's `members` list
+and, for a new agent, one `[agents.known.<id>]` table at the end; every other byte of the file stays as it
+was, line endings, a byte-order mark and a missing last line ending included. A group written inline, with
+dotted keys, or under its parent table is not patched: the refusal `settings_unpatched` gives Juno the
+edits, as sentences and in `details.edits` (`{"add_to_list": "members", "table": "agents.groups.<id>",
+"value": "<id>"}` and `{"new_table": "agents.known.<id>", "values": {"name": "…"}}`), and so does
+`settings_unwritable` when the file cannot be written. A patch whose result would not parse, or would
+mean anything else, is caught before anything is written and answered the same way.
+
+### Where a turn came from
+
+A turn's source is a kind and a name: `group:<id>` for a turn through a group connection,
+`door:mcp` for `memory_log` on `forest mcp --as`, `door:cli` for `forest log --as`, and `adapter:<name>`
+for a turn `forest intake` read. A group called `mcp` is `group:mcp` and never the door. The turn carries
+its sources in `sources`; `forest agents` shows the sources each agent has written through, and search,
+read and timeline take `source` (a tool argument) or `--source` (a flag) in that form. A source no lane
+the reader may read has is `source_unknown` with `fix`, and the answer lists the reader's sources. A
+reading narrowed to a source keeps the file's own line numbers (a read names them in `kept_lines`), and it
+is narrowed before its limit. `forest agents` reads a small record the lane writer keeps,
+`.forest/intake/sources.json`, not the lanes: it holds each agent's sources and the size of each of its lane
+files. An agent whose lane files no longer have those sizes (a lane written another way) is read again from
+its lanes, every line of every lane file of that agent, once.
+
+### A call is a turn
+
+Every `memory_log` or `forest log` call is a turn of its own, with an id of its own: Kiln Bot saying
+"yes" twice in a session has said it twice. A caller that may send the same turn twice gives it its own
+id, `turn_id` (the tool's argument) or `--turn-id` (the command's flag): the same id in the same lane and
+session is the same turn, stored once, and the second call answers `stored: "already stored"` with the
+stored id. The same id with other words is `turn_id_reused` with `fix`. The id is looked for on the day of
+the call and the day before.
+
+Only one thing joins two writes without an id: the same words, by the same role, in the same lane and
+session, through **two different sources**, within 120 seconds of each other's own time. That is one
+turn that came in two ways, and its line carries both sources in the order they came
+(`"sources": ["group:studio-counter", "door:cli"]`); the second call answers `stored: "joined"`. Through
+one source, the same words again are another turn.
+
+### What a write answers
+
+Once the lane's line is stored, the call says so (`wrote`, and `stored`: `written`, `already stored` or
+`joined`), whatever comes after. The agent's tree and the index follow, and the answer names each:
+`tree` is `made`, `already there`, `pending` or `none` (the settings give this agent no tree), and
+`index` is `updated` or `pending`, with `reason`. Neither turns the answer into a refusal. The first write
+of an agent makes its tree in one step that accepts another process having made it; it waits up to 2
+seconds for the writer lock, and a lock held longer leaves the tree `pending`: the next write of that
+agent, or the level pass, makes it without anyone running a command. A pending index brings the lane in
+on the next read. A call on a group connection that admitted its caller and was then refused says so in
+`details.admitted`, since that write took effect.
+
+### Three questions for a host of this kind
 
 - **Who is calling.** The group, and the name on the call.
 - **How the forest is reached from a computer that is not Juno's.** `forest mcp --http` on Juno's
@@ -313,16 +426,21 @@ Three questions for a host of this kind:
 - **How turns get in.** Where a reader of the host's own records exists, that reader is the net.
   Otherwise the agent writes its own turn.
 
+A command door gives an agent its owner lets run commands the same scope and the same folded answers as
+the tools: every flag of those commands is either plain or refused, and `--named` is refused. It is not a
+wall: an agent that can run commands can read files.
+
 ## An agent you wrote yourself
 
 An agent Juno wrote, under a name Juno chose, uses the same doors.
 
 - Its own write: `forest log --as kiln-bot`, with the turn on stdin, never as an argument, or
-  `memory_log` on `forest mcp --as kiln-bot`. The door sets the role and the origin. A turn the lane
-  already holds is skipped. The same masking applies. This depends on the agent calling it, so where a
+  `memory_log` on `forest mcp --as kiln-bot`. The door sets the role and the origin. The same masking
+  applies, and the same rules of a turn: a call is a turn, and `--turn-id` makes a repeat one turn. The
+  words are at most 131,072 bytes through either door. This depends on the agent calling it, so where a
   reader of the host's records exists, the reader is the net and this write is the addition.
 - An export folder the `jsonl` adapter reads.
 - An adapter module for that agent's own records, outside the core.
 
-A turn written with `forest log` or `memory_log` makes that agent's tree before the call returns, through
-the level tool for that agent only. A lane that arrives by intake is still made by `forest levels apply`.
+A turn written with `forest log` or `memory_log` makes that agent's tree, or leaves it pending as above.
+A lane that arrives by intake is made by `forest levels apply`.

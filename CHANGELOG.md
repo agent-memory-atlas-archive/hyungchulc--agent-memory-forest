@@ -39,13 +39,44 @@ the version 1 commands replace it.
   carry. The MCP server's instructions state the four moves, and the help of every command an agent runs
   names `docs/refusals.md`. A time window that reaches past the year 9999 or before the year 1 is
   `time_phrase_unknown` with `fix`, not `internal_error`.
-- The agent is its name. A group does not refuse a name for being near another, or for already being an
-  agent somewhere else: the same name is the same agent, one lane and one tree, and where the turn came
-  from stays on the turn. An open group admits every new name. A closed group lists its members and the
-  caller retries under their own name. An orchestrator sees the whole forest through a group connection
-  without being listed. The first write through `memory_log` or `forest log` makes that agent's tree.
-  `forest log` uses the same size bound as `memory_log`, refuses a stdin that does not end, and refuses
-  bytes that are not UTF-8. One id the settings cannot place is reported and the level pass goes on.
+- The agent is its name, in any script. One function gives a name's key (NFKC, case folding, no white
+  space, hyphens, dashes or underscores), and it is the only comparison of agent names: a name finds an
+  agent only by being its id exactly or by the key of its stored name, never by a slug of the given text,
+  so whether two names are one agent no longer depends on what else holds a slug. A name in Hangul, kana,
+  Han characters, Cyrillic, Greek, Arabic or symbols is admitted like any other. A new agent's id is made
+  once, letter for letter by one table per script (kept as data in `letters/`), or `agent-` and six digits
+  of a hash of the key where no table carries a character, and stored beside the name; a taken id gets
+  `-agent` or the next free number, never another agent. The only bad names are empty, longer than 200
+  characters, or holding a control character or a line break, with `fix`. A group does not refuse a
+  name for being near another, or for already being an agent somewhere else. An open group admits every
+  new name; a closed group lists its members. An orchestrator sees the whole forest through a group
+  connection without being listed, and a name one mark from its name is another agent.
+- A turn said twice is two turns. Every `memory_log` and `forest log` call has an id of its own; a caller's
+  `turn_id` (`--turn-id`) makes a repeat one turn, and other words under it are `turn_id_reused`. The same
+  words through two different sources within 120 seconds are one line that carries both sources.
+- A write that happened says so. Once the lane's line is stored the answer says `wrote` and `stored`, and
+  names the tree (`made`, `already there`, `pending`, `none`) and the index (`updated`, `pending`); a
+  writer lock held by another process leaves the tree pending for the next write or the level pass instead
+  of answering that the call did not run. A refusal after an admission names it in `details.admitted`.
+- An admission patches `forest.toml` byte for byte: line endings, a byte-order mark and a missing last line
+  ending stay, a one-line list with a comma after its last value, a quoted `members` key and a literal
+  string that ends in a backslash are patched,
+  and the settings reader accepts a byte-order mark. A group written inline, with dotted keys or under its
+  parent table, a file that cannot be written, and a patch that would not parse or would mean anything
+  else are refused with the edits for the owner, in words and in `details.edits`.
+- A source is a kind and a name (`group:<id>`, `door:<name>`, `adapter:<name>`), on the turn, in
+  `forest agents` and in `source`/`--source`. An unknown source is `source_unknown` with the reader's
+  sources. A reading narrowed to a source keeps the file's line numbers and is narrowed before its limit.
+  `forest agents` reads the sources from a small record the lane writer keeps, not from every lane.
+- A source of members has a deadline, a greatest size and a 60-second interval, and its failure is
+  `member_source_failed` with `report`, never "not a member"; names on it that are not a name are left out
+  and shown by `forest agents`.
+- One bad value of the agents' tables never stops the forest: a member written twice, by id or by name, is
+  counted once, and a field of the wrong kind or an unknown field is left out; each is reported
+  (`agent_setting_invalid`) and everything else loads.
+- `memory_log` and `forest log` bound a turn's words by the same 131,072 bytes; the protocol line keeps its
+  own larger bound. `forest log` from a terminal has no deadline. Storing a long turn no longer takes time
+  quadratic in its length: the number masking finds addresses in one pass.
 - A build that meets a page gone between the listing and the read says so (`index_busy`, retry),
   instead of saying the index file is in use. A fifo put in the place of the pointer or the index is
   refused at once rather than waited on.
@@ -159,7 +190,7 @@ the version 1 commands replace it.
 
 - One connection can serve a group of the owner's agents. `forest mcp --as-group <group>` (stdio or
   `--http`, the same token rule as `--as`) requires `agent` on every tool. The agent is its name.
-  `--as` is unchanged: a tool argument cannot set the reader. A closed group refuses a name that is not
+  With `--as` a tool argument cannot set the reader. A closed group refuses a name that is not
   a member and lists the members. An open group admits every new name, keeps the given name, and a
   second admission changes no byte. `forest log` is the command-line twin of `memory_log` (the text is
   stdin). `forest search`, `forest read`, `forest timeline` and `forest navigate` take the same
