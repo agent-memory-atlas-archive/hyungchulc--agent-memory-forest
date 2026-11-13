@@ -1130,7 +1130,9 @@ def _attempt_write(
             if exc.code not in _BUSY_CODES and exc.code != "index_busy":
                 raise
             if exc.code != "index_busy" or wait_seconds <= 0 or remaining <= 0:
-                message = _LOCK_HELD_MESSAGE if exc.code in _BUSY_CODES else _FILE_HELD_MESSAGE
+                # The cause the refusal named (the file in use, a page that went away), without its wait.
+                cause = re.sub(r" This call waited [0-9.]+ seconds\.\Z", "", exc.message)
+                message = _LOCK_HELD_MESSAGE if exc.code in _BUSY_CODES else cause or _FILE_HELD_MESSAGE
                 return _busy_result(
                     message,
                     path=f"{layout.STATE_DIR}/{_current_index_name(root)}",
@@ -1627,7 +1629,8 @@ def _open_writer(published: Path, busy_seconds: float = WRITER_TIMEOUT_SECONDS) 
     return connection
 
 
-_WRITER_HELD = "The search index could not be opened for writing; another connection holds it."
+# A busy file when opening for writing is the same cause the build tells apart: the file is in use.
+_WRITER_HELD = _FILE_HELD_MESSAGE
 
 
 def _checkpoint(connection: sqlite3.Connection) -> None:

@@ -13,6 +13,9 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- A build that meets a page gone between the listing and the read says so (`index_busy`, retry),
+  instead of saying the index file is in use. A fifo put in the place of the pointer or the index is
+  refused at once rather than waited on.
 - Who reads decides what is folded. A command run with `--as`, or with `--as-group` and `--agent`,
   answers as the MCP tools do, through the same function: its refusals, as JSON and as text, carry no
   host, process, user, home folder or absolute path. Without those flags the owner's terminal output

@@ -759,3 +759,99 @@ class BoundaryTests(unittest.TestCase):
                         search.query(self.root, "trays", reader="till-bot")
                 self.assertEqual(refused.exception.code, "index_io_error")
                 self.assertEqual(attempts["n"], len(row) - 1)
+
+
+# ─────────────────────────── open first, then look ───────────────────────────
+
+
+class LookThenOpenTests(unittest.TestCase):
+    """What is opened is checked after it is opened. Nothing blocks on a fifo, and nothing that went away
+    between two steps leaves as a raw error."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary.name).resolve() / "forest"
+        _write(self.root, FILES)
+        search.build(self.root)
+        self.folder = self.root / ".forest"
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def _within(self, call: Callable[[], Any], seconds: float = 20) -> dict[str, Any]:
+        """Run ``call`` in a thread and wait for it on an event with a deadline."""
+        import threading
+
+        outcome: dict[str, Any] = {}
+        done = threading.Event()
+
+        def run() -> None:
+            outcome.update(_api(call))
+            done.set()
+
+        threading.Thread(target=run, daemon=True).start()
+        self.assertTrue(done.wait(seconds), "the call blocked on what was put in the file's place")
+        return outcome
+
+    def test_a_fifo_in_the_place_of_the_pointer_or_the_index_does_not_block(self) -> None:
+        pointer = self.folder / "index.current"
+        os.mkfifo(pointer)
+        try:
+            for name, call in (
+                ("status", lambda: search.status(self.root)),
+                ("query", lambda: search.query(self.root, "trays", reader="till-bot")),
+                ("reset", lambda: search.reset(self.root)),
+            ):
+                with self.subTest(place="pointer", call=name):
+                    self.assertEqual(self._within(call)["error"]["code"], "index_reset_refused")
+        finally:
+            pointer.unlink()
+        index = self.folder / "index.sqlite"
+        index.unlink()
+        os.mkfifo(index)
+        for name, call in (
+            ("status", lambda: search.status(self.root)),
+            ("query", lambda: search.query(self.root, "trays", reader="till-bot")),
+            ("build", lambda: search.build(self.root)),
+        ):
+            with self.subTest(place="index", call=name):
+                self.assertEqual(self._within(call)["error"]["code"], "index_cannot_open")
+
+    def test_an_index_file_that_goes_away_before_sqlite_opens_it_is_busy(self) -> None:
+        from unittest import mock
+
+        real = sqlite3.connect
+        index = self.folder / "index.sqlite"
+
+        def gone_first(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+            if index.exists():
+                index.unlink()
+            return real(*args, **kwargs)
+
+        with mock.patch.object(search.sqlite3, "connect", gone_first):
+            refused = _api(lambda: search.status(self.root))
+        self.assertEqual(refused["error"]["code"], "index_busy", refused)
+        self.assertEqual(refused["error"]["next"], "retry")
+        self.assertFalse(index.exists(), "no empty file was made where the index went away")
+
+    def test_a_page_that_goes_away_during_a_build_is_busy(self) -> None:
+        from unittest import mock
+
+        real = search._open_page
+        page = self.root / PAGE
+        (self.root / PAGE).write_text(page.read_text(encoding="utf-8") + "\nA new line.\n", encoding="utf-8")
+
+        def gone(path: Path) -> Any:
+            if path.name == page.name:
+                raise FileNotFoundError(str(path))
+            return real(path)
+
+        with mock.patch.object(search, "_open_page", gone):
+            answer = search.build(self.root)
+            code, out, err = _cli(["index", "build", "--root", str(self.root), "--json"])
+        self.assertTrue(answer["busy"], answer)
+        self.assertIn("A page went away", answer["message"])
+        refused = json.loads(out)["error"]
+        self.assertEqual((code, refused["code"], refused["next"]), (2, "index_busy", "retry"))
+        self.assertIn("A page went away", refused["message"])
+        self.assertEqual(search.status(self.root)["state"], "sound")
