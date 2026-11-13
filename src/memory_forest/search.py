@@ -219,7 +219,6 @@ def reset(root: str | os.PathLike[str], *, dry_run: bool = False) -> dict[str, A
     _refuse_unwritable_write(safe)
     try:
         with _index_writer(safe, 0):
-            _reset_barrier()
             result = _reset_held(safe, dry_run=dry_run)
     except MemoryForestError as exc:
         if exc.code not in _BUSY_CODES:
@@ -577,11 +576,6 @@ def require_index(root: str | os.PathLike[str]) -> sqlite3.Connection:
 # first, so a second thread waits like a second process instead of meeting ``lock_already_held``.
 _WRITERS = threading.Lock()
 _BUSY_CODES = frozenset({"lock_busy", "lock_already_held"})
-# Tests set this to a path. A build touches it inside the write transaction and waits until it is removed.
-_PAUSE_ENV = "MEMORY_FOREST_INDEX_PAUSE"
-# A reset writes one line to the first fifo once it holds the lock, then reads the second until a line arrives.
-_RESET_HELD_ENV = "MEMORY_FOREST_RESET_HELD"
-_RESET_RELEASE_ENV = "MEMORY_FOREST_RESET_RELEASE"
 _RESET_COMMAND = "forest index reset"
 
 
@@ -855,30 +849,6 @@ def _busy_seconds(remaining: float) -> float:
 def _retry_pause(seconds: float) -> None:
     """The pause between two attempts on a busy file. Tests replace it to release the holder."""
     threading.Event().wait(seconds)
-
-
-def _reset_barrier() -> None:
-    """Let a test observe a reset that holds the lock, then wait for the test to let it continue.
-
-    Ordinary runs set neither fifo. The held fifo is opened for write, which waits until the test opens
-    it for read, and the release fifo is opened for read, which waits until the test writes a line.
-    """
-    held = os.environ.get(_RESET_HELD_ENV)
-    if not held:
-        return
-    descriptor = os.open(held, os.O_WRONLY)
-    try:
-        os.write(descriptor, b"held\n")
-    finally:
-        os.close(descriptor)
-    release = os.environ.get(_RESET_RELEASE_ENV)
-    if not release:
-        return
-    descriptor = os.open(release, os.O_RDONLY)
-    try:
-        os.read(descriptor, 64)
-    finally:
-        os.close(descriptor)
 
 
 def _state_dir(root: Path) -> Path:
@@ -1184,20 +1154,6 @@ def _remove_pointer_temps(root: Path) -> list[str]:
     return removed
 
 
-def _pause_in_transaction() -> None:
-    """Touch the test marker, when one is set, and wait until the test removes it."""
-    raw = os.environ.get(_PAUSE_ENV)
-    if not raw:
-        return
-    path = Path(raw)
-    path.write_text("in-transaction\n", encoding="utf-8")
-    deadline = time.monotonic() + 60
-    while path.exists():
-        if time.monotonic() >= deadline:
-            return
-        time.sleep(0.02)
-
-
 @contextmanager
 def _index_writer(root: str | os.PathLike[str], wait_seconds: float) -> Iterator[None]:
     """Hold the right to write the index: this process's turn, then the ``index`` lock, within ``wait_seconds``."""
@@ -1293,7 +1249,6 @@ def _write_held(
         _set_meta(connection, "tokenizer", tokenizer)
         _set_meta(connection, "masking", masker.fingerprint)
         _set_meta(connection, "built_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-        _pause_in_transaction()
         connection.commit()
         files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         units = connection.execute("SELECT COUNT(*) FROM units").fetchone()[0]

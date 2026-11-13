@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import select
 import subprocess
 import sys
 import unittest
@@ -330,7 +331,9 @@ class WriterTests(IntakeTestCase):
         root = self.forest(self.tool(folder))
         self.turn_on(root)
         holder = (
-            "import sys\n"
+            "import signal, sys\n"
+            "signal.signal(signal.SIGALRM, lambda *_: sys.exit('timed out holding intake'))\n"
+            "signal.alarm(60)\n"
             "from memory_forest.locking import hold_lock\n"
             "with hold_lock(sys.argv[1], 'intake', label='held'):\n"
             "    sys.stdout.write('held\\n')\n"
@@ -343,10 +346,16 @@ class WriterTests(IntakeTestCase):
             [sys.executable, "-c", holder, str(root)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=env,
         )
         try:
-            self.assertEqual(proc.stdout.readline() if proc.stdout else b"", b"held\n")
+            assert proc.stdout is not None
+            ready, _, _ = select.select([proc.stdout], [], [], 30)
+            if not ready:
+                err = proc.stderr.read() if proc.stderr is not None else b""
+                self.fail(f"timed out waiting for the holder (exit {proc.poll()}): {err!r}")
+            self.assertEqual(proc.stdout.readline(), b"held\n")
             code, out, err = self.invoke(root, "--from", "jsonl", "--once")
             self.assertEqual(code, 0, err)
             self.assertIn("left its cursor", out)

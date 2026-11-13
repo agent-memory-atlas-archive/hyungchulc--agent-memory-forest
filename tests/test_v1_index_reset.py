@@ -18,14 +18,11 @@ from memory_forest.errors import MemoryForestError
 
 from test_v1_find import FILES
 from v1_support import ForestTestCase
+from wait_child import read_fifo, write_fifo
 
 
 TILL = "06 istm/till-bot/2051-03-02.jsonl"
-_CHILD = (
-    "import json, sys\n"
-    "from memory_forest import search\n"
-    "print(json.dumps(search.reset(sys.argv[1])), flush=True)\n"
-)
+_HOLD_RESET = Path(__file__).resolve().parent / "launchers" / "hold_index_reset.py"
 
 
 def _turn(text: str) -> str:
@@ -182,21 +179,14 @@ class IndexResetTests(ForestTestCase):
         os.mkfifo(held)
         os.mkfifo(release)
         proc = subprocess.Popen(
-            [sys.executable, "-c", _CHILD, str(self.root)],
-            env={
-                **os.environ,
-                "PYTHONPATH": os.pathsep.join(sys.path),
-                search._RESET_HELD_ENV: str(held),
-                search._RESET_RELEASE_ENV: str(release),
-            },
+            [sys.executable, str(_HOLD_RESET), str(self.root), str(held), str(release)],
+            env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
         try:
-            descriptor = os.open(held, os.O_RDONLY)
-            os.read(descriptor, 16)
-            os.close(descriptor)
+            read_fifo(proc, str(held), what="the reset to hold the lock")
             self.assertTrue(self.index.is_file())
             self.assertFalse(self.pointer.exists())
             with self.assertRaises(MemoryForestError) as busy:
@@ -205,21 +195,13 @@ class IndexResetTests(ForestTestCase):
             self.assertEqual(busy.exception.next_step, "retry")
             self.assertTrue(self.index.is_file())
             self.assertFalse(self.pointer.exists())
-            descriptor = os.open(release, os.O_WRONLY)
-            os.write(descriptor, b"go\n")
-            os.close(descriptor)
-            code = proc.wait()
+            write_fifo(proc, str(release), b"go\n", what="the reset to take the release")
+            code = proc.wait(timeout=30)
             out, err = proc.communicate()
         finally:
             if proc.poll() is None:
-                try:
-                    descriptor = os.open(release, os.O_WRONLY | os.O_NONBLOCK)
-                except OSError:
-                    proc.kill()
-                else:
-                    os.write(descriptor, b"go\n")
-                    os.close(descriptor)
-                proc.wait()
+                proc.kill()
+                proc.wait(timeout=30)
         self.assertEqual(code, 0, err)
         body = json.loads(out)
         self.assertTrue(body["ok"])

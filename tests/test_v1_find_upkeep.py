@@ -26,6 +26,9 @@ from memory_forest.locking import hold_lock
 
 from test_v1_find import FILES, SETTINGS, _cli, _initialize, _http, _read_frame, _rpc, _stdio, held_in_thread
 from v1_support import ForestTestCase
+from wait_child import read_fifo, write_fifo
+
+_HOLD_BUILD = Path(__file__).resolve().parent / "launchers" / "hold_index_build.py"
 
 
 LOCKER = "04 stm/bakery/ovens/floor.md"
@@ -348,22 +351,18 @@ class PublishingTests(ForestTestCase):
         self.assertIsNotNone(cursor.fetchone())  # a read transaction is open across the build
         lane = self.root / TILL
         lane.write_text(lane.read_text(encoding="utf-8").replace("went out", "came back"), encoding="utf-8")
-        marker = self.root / layout.STATE_DIR / "index-pause"
+        held = self.base / "build-held"
+        release = self.base / "build-release"
+        os.mkfifo(held)
+        os.mkfifo(release)
         builder = subprocess.Popen(
-            [sys.executable, "-c",
-             "import sys; from memory_forest import search; search.build(sys.argv[1], wait_seconds=30)",
-             str(self.root)],
-            env={
-                **os.environ,
-                "PYTHONPATH": os.pathsep.join(sys.path),
-                search._PAUSE_ENV: str(marker),
-            },
+            [sys.executable, str(_HOLD_BUILD), str(self.root), str(held), str(release)],
+            env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+            stderr=subprocess.PIPE,
+            text=True,
         )
         try:
-            deadline = time.monotonic() + 60
-            while not marker.is_file() and time.monotonic() < deadline and builder.poll() is None:
-                time.sleep(0.02)
-            self.assertTrue(marker.is_file(), "the build did not reach its transaction")
+            read_fifo(builder, str(held), what="the build to reach its transaction")
             failures: list[BaseException] = []
             answered = 0
             try:
@@ -371,14 +370,14 @@ class PublishingTests(ForestTestCase):
                 answered += 1
             except BaseException as exc:  # the assertion is that nothing is raised
                 failures.append(exc)
-            marker.unlink()
-            self.assertEqual(builder.wait(timeout=60), 0)
+            write_fifo(builder, str(release), b"go\n", what="the build to take the release")
+            code = builder.wait(timeout=60)
+            _out, err = builder.communicate()
+            self.assertEqual(code, 0, err)
         finally:
-            if marker.exists():
-                marker.unlink()
             if builder.poll() is None:
                 builder.kill()
-                builder.wait()
+                builder.wait(timeout=30)
         self.assertEqual(failures, [])
         self.assertGreater(answered, 0)
         self.assertTrue(cursor.fetchall())
@@ -491,18 +490,18 @@ class SqliteErrorClassTests(ForestTestCase):
 
     def test_a_build_paused_in_its_transaction_is_no_index_yet_for_a_second_reader(self) -> None:
         self.assertFalse(self.index.exists())
-        marker = self.base / "index-pause"
+        held = self.base / "index-held"
+        release = self.base / "index-release"
+        os.mkfifo(held)
+        os.mkfifo(release)
         builder = subprocess.Popen(
-            [sys.executable, "-c",
-             "import sys; from memory_forest import search; search.build(sys.argv[1], wait_seconds=30)",
-             str(self.root)],
-            env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), search._PAUSE_ENV: str(marker)},
+            [sys.executable, str(_HOLD_BUILD), str(self.root), str(held), str(release)],
+            env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+            stderr=subprocess.PIPE,
+            text=True,
         )
         try:
-            deadline = time.monotonic() + 120
-            while not marker.is_file() and builder.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertTrue(marker.is_file(), "the build did not reach its transaction")
+            read_fifo(builder, str(held), what="the build to reach its transaction")
             self.assertTrue(self.index.is_file())
             self.assertIsNone(search.connect(self.root))
             state = search.status(self.root)
@@ -517,14 +516,14 @@ class SqliteErrorClassTests(ForestTestCase):
             self.assertIsNone(held.exception.command)
             self.assertNotIn("fingerprint", held.exception.message.casefold())
             self.assertIn("not committed", held.exception.message.casefold())
-            marker.unlink()
-            self.assertEqual(builder.wait(timeout=120), 0)
+            write_fifo(builder, str(release), b"go\n", what="the build to take the release")
+            code = builder.wait(timeout=120)
+            _out, err = builder.communicate()
+            self.assertEqual(code, 0, err)
         finally:
-            if marker.exists():
-                marker.unlink()
             if builder.poll() is None:
                 builder.kill()
-                builder.wait()
+                builder.wait(timeout=30)
         found = search.query(self.root, "trays", reader="till-bot")
         self.assertIn(TILL, [page["path"] for page in found["results"]])
 
@@ -747,14 +746,14 @@ class ProtocolTests(ForestTestCase):
         with _stdio(self.root) as proc:
             proc.stdin.write(b"{not json\n")
             proc.stdin.flush()
-            before = _read_frame(proc.stdout)
+            before = _read_frame(proc.stdout, proc)
             self.assertEqual(before["error"]["code"], -32700)
             self.assertIn("id", before)
             self.assertIsNone(before["id"])
             _rpc(proc, _initialize("2025-11-25"))
             proc.stdin.write(b"{not json\n")
             proc.stdin.flush()
-            newest = _read_frame(proc.stdout)
+            newest = _read_frame(proc.stdout, proc)
             self.assertEqual(newest["error"]["code"], -32700)
             self.assertNotIn("id", newest)
             null_id = _rpc(proc, {"jsonrpc": "2.0", "id": None, "method": "ping"})
@@ -764,7 +763,7 @@ class ProtocolTests(ForestTestCase):
             _rpc(proc, _initialize("2025-06-18"))
             proc.stdin.write(b"[1, 2\n")
             proc.stdin.flush()
-            older = _read_frame(proc.stdout)
+            older = _read_frame(proc.stdout, proc)
             self.assertIsNone(older["id"])
         token = mcp.ensure_token(self.root).decode("ascii")
         server = mcp.serve_http(self.root, "till-bot", "127.0.0.1", 0, token=token.encode("ascii"), read_timeout=0.4)
@@ -783,9 +782,9 @@ class ProtocolTests(ForestTestCase):
                              + b'"}}\n')
             proc.stdin.write(b'{"jsonrpc":"2.0","id":6,"method":"ping"}\n')
             proc.stdin.flush()
-            refused = _read_frame(proc.stdout)
+            refused = _read_frame(proc.stdout, proc)
             self.assertEqual(refused["error"]["code"], -32600)
-            following = _read_frame(proc.stdout)
+            following = _read_frame(proc.stdout, proc)
             self.assertEqual(following["id"], 6)
             self.assertEqual(following["result"], {})
 

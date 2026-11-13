@@ -13,6 +13,9 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- A test no longer stops a real process with an environment variable. A child that must stand at
+  a point is started from a launcher under `tests/` that replaces the function, and every wait on a
+  child or a fifo has a deadline and the child's stderr.
 - A `.forest/` folder this process cannot write can still be searched when no write-ahead log stands
   beside the index. The answer says `read_only: true`. A log there, or no index at all, is
   `index_read_only`, and the cure is one `forest index build` by an account that can write.

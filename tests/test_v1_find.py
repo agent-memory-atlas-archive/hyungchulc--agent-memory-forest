@@ -9,6 +9,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import select
 import socket
 import sqlite3
 import stat
@@ -595,7 +596,17 @@ def _frame(payload: dict | list) -> bytes:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
 
 
-def _read_frame(stream) -> dict | list:
+def _read_frame(stream, proc: subprocess.Popen | None = None) -> dict | list:
+    ready, _, _ = select.select([stream], [], [], 30)
+    if not ready:
+        err = ""
+        code = None
+        if proc is not None and proc.stderr is not None:
+            code = proc.poll()
+            err = proc.stderr.read() if code is not None else ""
+        raise AssertionError(
+            f"timed out waiting for a server message (child exit {code}): {err}"
+        )
     line = stream.readline()
     if not line:
         raise AssertionError("the server closed stdout without a message")
@@ -609,7 +620,7 @@ def _rpc(proc: subprocess.Popen, payload: dict | list) -> dict | list:
     assert proc.stdin is not None and proc.stdout is not None
     proc.stdin.write(_frame(payload))
     proc.stdin.flush()
-    return _read_frame(proc.stdout)
+    return _read_frame(proc.stdout, proc)
 
 
 def _post(
@@ -680,7 +691,7 @@ class ReviewPathTests(ForestTestCase):
             _rpc(proc, _initialize("2025-03-26"))
             proc.stdin.write(b"this is not json\n")
             proc.stdin.flush()
-            broken = _read_frame(proc.stdout)
+            broken = _read_frame(proc.stdout, proc)
             self.assertEqual(broken["error"]["code"], -32700)
             unknown = _rpc(proc, {"jsonrpc": "2.0", "id": 7, "method": "no/such"})
             self.assertEqual(unknown["error"]["code"], -32601)
@@ -698,7 +709,7 @@ class ReviewPathTests(ForestTestCase):
             proc.stdin.write(_frame({"jsonrpc": "2.0", "id": 1, "result": {"ignored": True}}))
             proc.stdin.write(_frame({"jsonrpc": "2.0", "id": 9, "method": "ping"}))
             proc.stdin.flush()
-            ping = _read_frame(proc.stdout)
+            ping = _read_frame(proc.stdout, proc)
             self.assertEqual(ping["id"], 9)
             self.assertEqual(ping["result"], {})
             batch = _rpc(
@@ -1277,7 +1288,8 @@ def held_in_thread(holder):
         try:
             with holder():
                 started.set()
-                release.wait()
+                if not release.wait(120):
+                    raise AssertionError("the hold was never released")
         except BaseException as exc:  # reported to the test below
             failures.append(exc)
             started.set()

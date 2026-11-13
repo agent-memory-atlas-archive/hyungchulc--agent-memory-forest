@@ -22,18 +22,23 @@ from memory_forest.locking import hold_lock
 
 from test_v1_find import FILES, _http, _log_call, held_in_thread
 from v1_support import ForestTestCase
+from wait_child import read_fifo, write_fifo
 
 
 _HOLD = (
-    "import os, sys\n"
+    "import os, signal, sys\n"
+    "signal.signal(signal.SIGALRM, lambda *_: sys.exit('timed out holding the lock'))\n"
+    "signal.alarm(60)\n"
     "from memory_forest.locking import hold_lock\n"
     "with hold_lock(sys.argv[1], sys.argv[2], wait_seconds=0, label='holder'):\n"
     "    ready = os.open(sys.argv[3], os.O_WRONLY)\n"
     "    os.write(ready, b'held\\n')\n"
     "    os.close(ready)\n"
+    "    signal.alarm(60)\n"
     "    release = os.open(sys.argv[4], os.O_RDONLY)\n"
     "    os.read(release, 8)\n"
     "    os.close(release)\n"
+    "    signal.alarm(0)\n"
 )
 
 
@@ -62,28 +67,18 @@ def _held(root: Path, name: str, directory: Path) -> Iterator[tuple[subprocess.P
         text=True,
     )
     try:
-        descriptor = os.open(ready, os.O_RDONLY)
-        os.read(descriptor, 16)
-        os.close(descriptor)
+        read_fifo(proc, str(ready), what=f"the child to hold {name}")
         record = json.loads((root / ".forest" / "locks" / f"{name}.lock").read_text(encoding="utf-8"))
         yield proc, record
-        descriptor = os.open(release, os.O_WRONLY)
-        os.write(descriptor, b"go\n")
-        os.close(descriptor)
-        code = proc.wait()
+        write_fifo(proc, str(release), b"go\n", what=f"the child holding {name} to take the release")
+        code = proc.wait(timeout=30)
         _out, err = proc.communicate()
         if code != 0:
             raise AssertionError(err)
     finally:
         if proc.poll() is None:
-            try:
-                descriptor = os.open(release, os.O_WRONLY | os.O_NONBLOCK)
-            except OSError:
-                proc.kill()
-            else:
-                os.write(descriptor, b"go\n")
-                os.close(descriptor)
-            proc.wait()
+            proc.kill()
+            proc.wait(timeout=30)
 
 
 class ToolBoundaryTests(ForestTestCase):
