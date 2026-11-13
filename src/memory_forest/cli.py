@@ -21,6 +21,7 @@ from . import registry as forest_registry
 from .config import CONFIG_FILENAME, DEFAULT_CONFIG, Config, find_root, load_config
 from .core import audit_forest, doctor_forest, initialize_forest, validate_forest
 from .errors import MemoryForestError
+from .leaving import Masking, body as leaving_body
 from .index import index_forest, route_index, search_index
 from .model import SCHEMA_VERSION
 from .safety import require_real_root
@@ -400,19 +401,27 @@ def forest_root(arguments: argparse.Namespace) -> Path:
 # The settings of the forest a `forest` command works on, so that everything it prints shows a sign-in
 # value masked and a number starred, as the write door would have written them (contract, section 4).
 _SHOWN_CONFIG: Config | None = None
+_MASKING: Masking | None = None
+_READER = "owner"
+_ANSWER_ROOT: str | None = None
 
 
 def _shown(value: Any) -> Any:
-    return forest_credentials.shown(value, config=_SHOWN_CONFIG) if _SHOWN_CONFIG is not None else value
+    """Mask with the ledger read before the command. Nothing here opens the ledger again."""
+    if _MASKING is None:
+        return value
+    return forest_credentials.shown(value, config=_MASKING.config, ledger=_MASKING.ledger)
 
 
 def _print_json(value: Any) -> None:
-    sys.stdout.write(json.dumps(_shown(value), ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    payload = leaving_body(value, reader=_READER, masking=_MASKING, root=_ANSWER_ROOT)
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
 
 def _print_lines(lines: Iterable[str]) -> None:
     # One ledger for every line: the forest's judged values are read once per answer, not once per line.
-    sys.stdout.write("".join(f"{line}\n" for line in _shown(list(lines))))
+    shown = leaving_body(list(lines), reader=_READER, masking=_MASKING, root=_ANSWER_ROOT)
+    sys.stdout.write("".join(f"{line}\n" for line in shown))
 
 
 def cmd_init(arguments: argparse.Namespace) -> int:
@@ -733,14 +742,32 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
         raise
     finally:
         ForestArgumentParser.quiet_errors = False
-    global _SHOWN_CONFIG
+    global _SHOWN_CONFIG, _MASKING, _READER, _ANSWER_ROOT
     _SHOWN_CONFIG = None
+    _MASKING = None
+    _READER = _reader_of(arguments)
+    _ANSWER_ROOT = None
     try:
         # Resolve the forest before the command runs, so a new command cannot write into a folder that
         # is not one. `init` is the only command registered with uses_root false.
         if getattr(arguments, "_uses_root", True):
-            forest_root(arguments)
-        _SHOWN_CONFIG = _config_for_output(arguments)
+            chosen = getattr(arguments, "root", None)
+            if chosen:
+                _ANSWER_ROOT = str(chosen)
+            root = forest_root(arguments)
+            _ANSWER_ROOT = str(root)
+            loaded = _masking_for(root)
+            if isinstance(loaded, MemoryForestError):
+                # The ledger could not be had. The state's refusal leaves in fixed words; the command
+                # does not run, and nothing it would have printed is shown.
+                if hook:
+                    return _silent_hook_failure(raw, loaded.code)
+                _show_refusal(arguments, loaded, fixed=True)
+                return 2
+            _MASKING = loaded
+            _SHOWN_CONFIG = loaded.config
+        else:
+            _SHOWN_CONFIG = _config_for_output(arguments)
         return arguments._run(arguments)
     except MemoryForestError as exc:
         if hook:
@@ -781,29 +808,63 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
         return 2
 
 
-def _show_refusal(arguments: argparse.Namespace, exc: MemoryForestError) -> None:
+def _reader_of(arguments: argparse.Namespace) -> str:
+    """Who reads this command: the owner at the terminal, an agent, or a group."""
+    if getattr(arguments, "reader", None):
+        return "agent"
+    if getattr(arguments, "group", None):
+        return "group"
+    return "owner"
+
+
+def _masking_for(root: Path) -> Masking | MemoryForestError:
+    """The ledger, read through the door before the command. A failure is the state's refusal."""
+    try:
+        config = load_config(root)
+        from . import credential_ledger
+
+        return Masking(config, credential_ledger.for_config(config))
+    except MemoryForestError as exc:
+        return exc
+    except OSError as exc:
+        from . import search
+
+        return search.edge_refusal(exc, root)
+
+
+def _show_refusal(arguments: argparse.Namespace, exc: MemoryForestError, *, fixed: bool = False) -> None:
     """A refusal on stdout as JSON with ``--json``, otherwise as lines on stderr.
 
-    Who reads decides what is folded. A command run as an agent (``--as``, or ``--as-group`` with
-    ``--agent``) answers as the MCP tools do, through ``mcp.agent_refusal``: no host, process, user,
-    home folder or absolute forest path. Without those flags the owner reads it at the terminal, paths
-    and the lock's owner included.
+    The body is ``leaving.body``. With ``fixed``, the ledger could not be had, so only the fixed words
+    leave. A failure while building that body is itself a refusal, written without touching the disk.
     """
-    body = exc.as_dict()
-    if getattr(arguments, "reader", None) or getattr(arguments, "group", None):
-        from .mcp import agent_refusal
-
-        body = agent_refusal(exc, _fold_root(arguments))
-    if getattr(arguments, "json", False):
-        _print_json({"error": body, "ok": False})
-        return
-    told = [f"forest: {body['code']}: {body['message']}\n"]
-    told += [f"  {key}: {value}\n" for key, value in sorted(body["details"].items())]
-    told += [f"  {key}: {body[key]}\n" for key in ("next", "command") if body.get(key)]
-    sys.stderr.write("".join(_shown(told)))
-    for key in ("after_seconds", "waited_seconds", "stop_after_seconds"):
-        if body.get(key) is not None:
-            sys.stderr.write(f"  {key}: {body[key]:g}\n")
+    try:
+        payload = leaving_body(
+            exc,
+            reader=_reader_of(arguments),
+            masking=None if fixed else _MASKING,
+            root=_ANSWER_ROOT,
+            plain=not fixed and _MASKING is None,
+        )
+        if not isinstance(payload, dict):
+            raise MemoryForestError("internal_error", "The package met a fault in its own code.")
+        if getattr(arguments, "json", False):
+            text = json.dumps({"error": payload, "ok": False}, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            sys.stdout.write(text)
+            return
+        told = [f"forest: {payload['code']}: {payload['message']}\n"]
+        details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+        told += [f"  {key}: {details[key]}\n" for key in sorted(details)]
+        told += [f"  {key}: {payload[key]}\n" for key in ("next", "command") if payload.get(key)]
+        for key in ("after_seconds", "waited_seconds", "stop_after_seconds"):
+            if payload.get(key) is not None:
+                told.append(f"  {key}: {payload[key]:g}\n")
+        sys.stderr.write("".join(told))
+    except Exception:
+        sys.stderr.write(
+            "forest: internal_error: The package met a fault in its own code. "
+            "Tell the owner the class the details name.\n  next: report\n"
+        )
 
 
 if __name__ == "__main__":

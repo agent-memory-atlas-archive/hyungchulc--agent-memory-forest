@@ -121,7 +121,12 @@ class PagePathTests(unittest.TestCase):
 
     def test_the_reader_is_one_function_with_a_stated_length(self) -> None:
         self.assertEqual(layout.caller_page_path(" ./04 stm//bakery/./ovens/floor.md/ "), "04 stm/bakery/ovens/floor.md")
-        self.assertEqual(layout.caller_page_path("a" * layout.MAX_CALLER_PATH), "a" * layout.MAX_CALLER_PATH)
+        self.assertEqual(layout.caller_page_path("a" * 255), "a" * 255)
+        with self.assertRaises(MemoryForestError) as caught:
+            layout.caller_page_path("a" * 256)
+        self.assertEqual((caught.exception.code, caught.exception.next_step), ("invalid_path", "fix"))
+        long = "/".join(["ab"] * 200)
+        self.assertEqual(layout.caller_page_path(long), long)
         with self.assertRaises(MemoryForestError) as caught:
             layout.caller_page_path("a" * (layout.MAX_CALLER_PATH + 1))
         self.assertEqual((caught.exception.code, caught.exception.next_step), ("invalid_path", "fix"))

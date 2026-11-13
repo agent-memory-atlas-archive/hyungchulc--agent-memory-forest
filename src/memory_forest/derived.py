@@ -16,6 +16,7 @@ not remove and checks every claim's condition.
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -42,18 +43,20 @@ RESET_COMMAND: Final = "forest index reset"
 
 # Every step and the values its fact can take, in the order the walk reads them.
 STEPS: Final[dict[str, tuple[str, ...]]] = {
-    "root_enter": ("ok", "denied"),
-    "root_list": ("ok", "denied"),
-    "root_write": ("yes", "no"),
+    # What the root's own look found, before any enter or list. ``folder`` is the only value the walk continues from.
+    "root": ("folder", "absent", "above_file", "above_denied", "not_a_folder"),
+    "root_enter": ("ok", "denied", NR),
+    "root_list": ("ok", "denied", NR),
+    "root_write": ("yes", "no", NR),
     "settings": ("ok", "absent", "invalid", "denied", "not_a_file", "link", "busy", "other", NR),
     "folder": ("folder", "absent", "link", "not_a_folder", "denied", "other", NR),
     "folder_enter": ("ok", "denied", NR),
     "folder_list": ("ok", "denied", NR),
     "folder_write": ("yes", "no", NR),
     "pointer": ("absent", "name", "damaged", "denied", "link", "not_a_file", "busy", "other", NR),
-    "generation": ("absent", "file", "link", "not_a_file", "denied", "other", NR),
-    "beside": ("none", "wal", "journal", "not_a_file", "failed", NR),
-    "open": ("ok", "denied", "busy", "changed", "other", NR),
+    "generation": ("absent", "file", "link", "not_a_file", "denied", "enter_denied", "other", NR),
+    "beside": ("none", "wal", "journal", "not_a_file", "unreadable", "failed", NR),
+    "open": ("ok", "denied", "busy", "deadline", "abandoned", "in_progress", "changed", "other", NR),
     "metadata": (
         "equal", "masking_changed", "masking_missing", "other_version", "not_committed", "damaged",
         "busy", "locked", "read_only", "io", "full", "cannot_open", "protocol", "other", NR,
@@ -68,6 +71,7 @@ class Facts:
     """One value per step (``STEPS``). ``error`` names the system's error of an ``other`` outcome and
     ``count`` how many files changed; neither is part of the walk."""
 
+    root: str = "folder"
     root_enter: str = "ok"
     root_list: str = "ok"
     root_write: str = "yes"
@@ -85,12 +89,20 @@ class Facts:
     lock: str = NR
     error: str = field(default="", compare=False)
     count: int = field(default=0, compare=False)
+    # The name a sentence fills in (a path part, a beside file, a moment). Not a step of the walk.
+    part: str = field(default="", compare=False)
+    # The access the act that failed asked for (``enter``, ``read``, ``list``, ``write``). Not a step.
+    access: str = field(default="", compare=False)
+    # Seconds a deadline was given. Not a step.
+    seconds: float = field(default=0.0, compare=False)
 
 
 def _reached(facts: Facts, step: str) -> str:
     """``always``, ``never`` or ``maybe``: whether the walk reaches ``step`` after the facts before it."""
-    if step in ("root_enter", "root_list", "root_write"):
+    if step == "root":
         return "always"
+    if step in ("root_enter", "root_list", "root_write"):
+        return "always" if facts.root == "folder" else "never"
     if step == "settings":
         return "always" if facts.root_enter == "ok" and facts.root_list == "ok" else "never"
     if step == "folder":
@@ -192,7 +204,8 @@ def _inside(facts: Facts) -> bool:
 
 def _busy(facts: Facts) -> bool:
     return (
-        facts.settings == "busy" or facts.pointer == "busy" or facts.open in ("busy", "changed")
+        facts.settings == "busy" or facts.pointer == "busy"
+        or facts.open in ("busy", "changed", "deadline", "in_progress")
         or facts.metadata == "busy"
     )
 
@@ -204,12 +217,24 @@ _FOLDER_FAULTS = ("link", "not_a_folder", "denied", "other")
 CLAIMS: Final[dict[str, Claim]] = {
     claim.key: claim
     for claim in (
+        Claim("root_absent", "There is nothing at the path named for the forest folder.",
+              lambda f: f.root == "absent"),
+        Claim("root_above_file", "A part of the path is a file ({part}), so the forest folder is not there.",
+              lambda f: f.root == "above_file"),
+        Claim("root_above_denied",
+              "This account cannot enter the folder above the forest folder, so the forest folder cannot be read.",
+              lambda f: f.root == "above_denied"),
+        Claim("give_root_above_enter",
+              "The owner gives this account enter (x) access to the folder above the forest folder.",
+              lambda f: f.root == "above_denied", ("give", "above", "enter")),
+        Claim("root_not_folder", "The forest folder is not a folder.",
+              lambda f: f.root == "not_a_folder"),
         Claim("root_unenterable", "This account cannot enter the forest folder, so nothing in it can be read.",
-              lambda f: f.root_enter == "denied"),
+              lambda f: f.root == "folder" and f.root_enter == "denied"),
         Claim("give_root_enter", "The owner gives this account enter (x) access to the forest folder.",
-              lambda f: f.root_enter == "denied", ("give", "root", "enter")),
+              lambda f: f.root == "folder" and f.root_enter == "denied", ("give", "root", "enter")),
         Claim("root_unlistable", "This account cannot list the forest folder.",
-              lambda f: f.root_enter == "ok" and f.root_list == "denied"),
+              lambda f: f.root == "folder" and f.root_enter == "ok" and f.root_list == "denied"),
         Claim("give_root_list", "The owner gives this account read (r) access to the forest folder.",
               lambda f: f.root_list == "denied", ("give", "root", "list")),
         Claim("settings_denied", "This account cannot read forest.toml.", lambda f: f.settings == "denied"),
@@ -260,7 +285,13 @@ CLAIMS: Final[dict[str, Claim]] = {
         Claim("index_denied", "This account cannot read the index file.",
               lambda f: f.generation == "denied" or f.open == "denied"),
         Claim("give_index_read", "The owner gives this account read access to the index file.",
-              lambda f: f.generation == "denied" or f.open == "denied", ("give", "index", "read")),
+              lambda f: (f.generation == "denied" or f.open == "denied") and f.access != "enter",
+              ("give", "index", "read")),
+        Claim("index_enter_denied",
+              "This account cannot enter {part}, so the index file cannot be read.",
+              lambda f: f.generation == "enter_denied"),
+        Claim("give_index_enter", "The owner gives this account enter (x) access to {part}.",
+              lambda f: f.generation == "enter_denied", ("give", "index", "enter")),
         Claim("index_failed", "The index file could not be opened ({error}).",
               lambda f: f.generation == "other" or f.open == "other"),
         Claim("beside_not_a_file",
@@ -270,6 +301,11 @@ CLAIMS: Final[dict[str, Claim]] = {
               "A name SQLite keeps beside the index (-wal, -shm or -journal) could not be looked at: the system "
               "answered {error}.",
               lambda f: f.beside == "failed"),
+        Claim("beside_unreadable",
+              "This account cannot read {part}, a file SQLite keeps beside the index.",
+              lambda f: f.beside == "unreadable"),
+        Claim("give_beside_read", "The owner gives this account read access to {part}.",
+              lambda f: f.beside == "unreadable" and f.folder_write == "no", ("give", "beside", "read")),
         Claim("wal", "A write-ahead log stands beside the index, so the index cannot be read safely.",
               lambda f: f.beside == "wal" and not writable(f)),
         Claim("journal", "A rollback journal stands beside the index, so the index cannot be read safely.",
@@ -281,7 +317,14 @@ CLAIMS: Final[dict[str, Claim]] = {
               lambda f: f.metadata == "masking_changed"),
         Claim("masking_missing", "The index has no masking fingerprint.", lambda f: f.metadata == "masking_missing"),
         Claim("pages_changed", "{count} files changed since the build.", lambda f: f.changes == "some"),
-        Claim("index_busy", "The index file is in use.", lambda f: f.open == "busy" or f.metadata == "busy"),
+        Claim("index_busy", "The index file is in use.",
+              lambda f: f.open == "busy" or f.metadata == "busy" or f.open == "in_progress"),
+        Claim("index_deadline", "The open of the index did not come back in {seconds}.",
+              lambda f: f.open == "deadline"),
+        Claim("index_abandoned",
+              "An earlier open of the index has not come back since {part}; the process that answers must be "
+              "started again.",
+              lambda f: f.open == "abandoned"),
         Claim("index_changed", "The index file changed while it was opened.", lambda f: f.open == "changed"),
         Claim("lock_held", "The index lock is held by another process, so a build or a reset now would be refused.",
               lambda f: f.lock == "held"),
@@ -304,10 +347,12 @@ CLAIMS: Final[dict[str, Claim]] = {
               or f.generation == "other" or f.open == "other" or f.beside == "failed"
               or f.folder in ("denied", "other") or f.settings == "other" or f.pointer == "other", ("owner", "index")),
         Claim("folder_unwritable",
-              "The .forest folder cannot be written, so the index cannot be built, updated or reset here.",
+              "The system says the .forest folder cannot be written, so the index cannot be built, updated or "
+              "reset here.",
               lambda f: f.folder == "folder" and f.folder_write == "no"),
         Claim("root_unwritable",
-              "The forest folder cannot be written, so .forest cannot be made and no index can be built here.",
+              "The system says the forest folder cannot be written, so .forest cannot be made and no index can "
+              "be built here.",
               lambda f: f.folder == "absent" and f.root_write == "no"),
         Claim("reads_answer", "Reading the index still answers.", lambda f: decide(f, "read").code is None),
         Claim("reads_refused", "Nothing is answered from it.", lambda f: decide(f, "read").code is not None),
@@ -332,14 +377,20 @@ CLAIMS: Final[dict[str, Claim]] = {
 
 STATES: Final = (
     "sound", "missing", "masking_changed", "damaged", "pointer_damaged", "wal", "index_unusable",
+    "root_absent", "root_above_file", "root_above_denied", "root_not_folder",
     "root_unenterable", "root_unlistable", "settings_unreadable", "settings_invalid", "folder_unusable",
-    "folder_unenterable", "folder_unlistable", "pointer_unreadable", "pointer_unusable", "busy", "failed",
+    "folder_unenterable", "folder_unlistable", "pointer_unreadable", "pointer_unusable", "busy", "abandoned",
+    "failed",
 )
 COMMANDS: Final = ("status", "read", "build", "update", "reset")
 MOVES: Final = ("fix", "retry", "run", "report")
 # Every code a decision gives, with the move it always carries (``index_busy`` waits; the rest are a person's).
 CODES: Final[dict[str, tuple[str, ...]]] = {
     "access_denied": ("report",),
+    "root_not_found": ("fix",),
+    "root_not_directory": ("fix",),
+    "root_above_file": ("fix",),
+    "index_open_abandoned": ("report",),
     "settings_invalid": ("report",),
     "symlink_forbidden": ("report",),
     "index_cannot_open": ("report",),
@@ -372,6 +423,14 @@ class Decision:
 def state_of(facts: Facts) -> str:
     """The state of the derived folder: one of ``STATES``, whatever command asks."""
     f = facts
+    if f.root == "absent":
+        return "root_absent"
+    if f.root == "above_file":
+        return "root_above_file"
+    if f.root == "above_denied":
+        return "root_above_denied"
+    if f.root == "not_a_folder":
+        return "root_not_folder"
     if f.root_enter == "denied":
         return "root_unenterable"
     if f.root_list == "denied":
@@ -400,13 +459,17 @@ def state_of(facts: Facts) -> str:
         return "busy"
     if f.generation == "absent":
         return "missing"
-    if f.generation in ("link", "not_a_file", "denied", "other") or f.beside in ("not_a_file", "failed"):
+    if f.generation in ("link", "not_a_file", "denied", "enter_denied", "other") or f.beside in (
+        "not_a_file", "unreadable", "failed"
+    ):
         return "index_unusable"
     if f.beside in ("wal", "journal") and not writable(f):
         return "wal"
     if f.open == "denied" or f.open == "other":
         return "index_unusable"
-    if f.open in ("busy", "changed") or f.metadata == "busy":
+    if f.open == "abandoned":
+        return "abandoned"
+    if f.open in ("busy", "changed", "deadline", "in_progress") or f.metadata == "busy":
         return "busy"
     if f.metadata in ("other_version", "not_committed"):
         return "missing"
@@ -425,9 +488,9 @@ def _first(facts: Facts, keys: Sequence[str]) -> str:
 
 
 _WHAT = (
-    "pointer_damaged", "pointer_denied", "index_link", "index_not_a_file", "index_denied", "index_failed",
-    "beside_not_a_file", "beside_failed", "damaged", "no_index", "other_version", "not_committed", "masking_missing",
-    "masking_changed", "wal", "journal",
+    "pointer_damaged", "pointer_denied", "index_link", "index_not_a_file", "index_enter_denied", "index_denied",
+    "index_failed", "beside_not_a_file", "beside_unreadable", "beside_failed", "damaged", "no_index",
+    "other_version", "not_committed", "masking_missing", "masking_changed", "wal", "journal",
 )
 _FAILED = {
     "locked": ("index_failed", "sqlite_locked"),
@@ -451,6 +514,16 @@ def decide(facts: Facts, command: str) -> Decision:
         raise ValueError(command)
     f = facts
     state = state_of(f)
+    if state == "root_absent":
+        return Decision(state, "root_not_found", "fix", None, ("root_absent",))
+    if state == "root_above_file":
+        return Decision(state, "root_above_file", "fix", None, ("root_above_file",))
+    if state == "root_above_denied":
+        return Decision(state, "access_denied", "report", None, ("root_above_denied", "give_root_above_enter"))
+    if state == "root_not_folder":
+        return Decision(state, "root_not_directory", "fix", None, ("root_not_folder",))
+    if state == "abandoned":
+        return Decision(state, "index_open_abandoned", "report", None, ("index_abandoned",))
     if state in ("root_unenterable", "root_unlistable", "folder_unenterable", "folder_unlistable",
                  "settings_unreadable"):
         what = {
@@ -476,7 +549,7 @@ def decide(facts: Facts, command: str) -> Decision:
         tail = ("owner_moves_pointer", "tell_owner") if f.pointer == "other" else ("owner_moves_pointer",)
         return Decision(state, code, "report", None, (what, *tail))
     if state == "busy":
-        what = _first(f, ("settings_busy", "pointer_busy", "index_changed", "index_busy"))
+        what = _first(f, ("settings_busy", "pointer_busy", "index_changed", "index_deadline", "index_busy"))
         return Decision(state, "index_busy", "retry", None, (what, "ask_later"))
     if state == "failed":
         code, what = _FAILED[f.metadata]
@@ -484,6 +557,10 @@ def decide(facts: Facts, command: str) -> Decision:
     folder_claim = "folder_unwritable" if f.folder == "folder" else "root_unwritable"
     if state in ("pointer_unreadable", "pointer_damaged", "index_unusable", "damaged"):
         what = _first(f, _WHAT)
+        if f.generation == "enter_denied":
+            return Decision(state, "access_denied", "report", None, ("index_enter_denied", "give_index_enter"))
+        if f.beside == "unreadable" and not writable(f):
+            return Decision(state, "access_denied", "report", None, ("beside_unreadable", "give_beside_read"))
         if writable(f):
             if command == "reset":
                 return Decision(state)
@@ -531,6 +608,18 @@ def decide(facts: Facts, command: str) -> Decision:
     return Decision(state, "index_read_only", "report", None, (folder_claim, "reads_answer", cure))
 
 
+_PART: Final[dict[str, str]] = {
+    "root_above_file": "a file above the forest folder",
+    "root_above_denied": "a folder above the forest folder",
+    "give_root_above_enter": "a folder above the forest folder",
+    "index_enter_denied": "the folder that holds the index file",
+    "give_index_enter": "the folder that holds the index file",
+    "beside_unreadable": "the file SQLite keeps beside the index",
+    "give_beside_read": "the file SQLite keeps beside the index",
+    "index_abandoned": "it was started",
+}
+
+
 def sentences(decision: Decision, facts: Facts) -> str:
     """The message a decision's claims make, in order, with the error's name and the count filled in."""
     said = []
@@ -540,6 +629,13 @@ def sentences(decision: Decision, facts: Facts) -> str:
             text = "1 file changed since the build." if facts.count == 1 else text.format(count=facts.count)
         elif "{error}" in text:
             text = text.format(error=facts.error or "an error the system did not name")
+        elif "{part}" in text:
+            text = text.format(part=facts.part or _PART.get(key, "the place the look named"))
+        elif "{seconds}" in text:
+            seconds = facts.seconds or system.OPEN_DEADLINE_SECONDS
+            shown = int(seconds) if float(seconds).is_integer() else seconds
+            unit = "second" if shown == 1 else "seconds"
+            text = text.format(seconds=f"{shown} {unit}")
         said.append(text)
     return " ".join(said)
 
@@ -601,6 +697,81 @@ def read_pointer(folder: Path) -> tuple[str, str | None, str]:
     return ("name", name, "") if name is not None else ("damaged", None, "")
 
 
+def _root_place(root: Path) -> tuple[str, str]:
+    """What the root's own look found, and the part a sentence names.
+
+    ``folder`` when the path is a folder. Otherwise the look decides, and the walk stops.
+    """
+    try:
+        seen = system.look(root)
+    except system.Absent:
+        return "absent", ""
+    except system.NotAFolder:
+        return "above_file", _file_part(root)
+    except system.Denied as exc:
+        folder = Path(exc.folder) if exc.folder else Path(exc.path)
+        if folder != root and folder != Path(root):
+            # The door's name for a folder outside the forest. Its own directory name is a path of the machine.
+            return "above_denied", ""
+        return "folder", ""
+    except system.Outcome:
+        raise
+    if seen.kind == "link":
+        return "not_a_folder", ""
+    if seen.kind != "folder":
+        return "not_a_folder", seen.kind
+    return "folder", ""
+
+
+def _file_part(path: Path) -> str:
+    """The path part that is a file, so a folder cannot stand under it."""
+    current = path
+    while True:
+        parent = current.parent
+        if parent == current:
+            return current.name or "a file above the forest folder"
+        try:
+            info = system.look(parent)
+        except system.Outcome:
+            current = parent
+            continue
+        if info.kind != "folder":
+            return parent.name or "a file above the forest folder"
+        return current.name or "a file above the forest folder"
+
+
+def _entered(path: Path) -> tuple[bool, str]:
+    """Whether this account entered ``path``, and the access a denial asked for."""
+    try:
+        system.enter_folder(path)
+    except system.Denied as exc:
+        return False, exc.access or "enter"
+    return True, ""
+
+
+def _listed(path: Path) -> tuple[bool, str]:
+    """Whether this account listed ``path``, and the access a denial asked for."""
+    try:
+        system.listing(path)
+    except system.Denied as exc:
+        return False, exc.access or "list"
+    return True, ""
+
+
+def _moment(since: float | None) -> str:
+    """A UTC moment for the sentence of an open that has not come back, or words when the time is unknown."""
+    if since is None:
+        return ""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+
+
+def _apply_beside(found: dict[str, Any], looked: system.Beside) -> None:
+    """A second look at the names beside the index replaces what the open had said."""
+    found["beside"] = looked.kind if looked.kind in STEPS["beside"] else "failed"
+    found["open"] = NR
+    found["metadata"] = NR
+
+
 def read_facts(
     root: Path,
     *,
@@ -621,12 +792,30 @@ def read_facts(
     """
     found: dict[str, Any] = {}
     error = ""
+    part = ""
+    access = ""
+    seconds = 0.0
 
     def done(path: str, **extra: Any) -> Reading:
-        return Reading(Facts(**found, error=error, count=len(extra.get("changed", ()))), path, **extra)
+        return Reading(
+            Facts(**found, error=error, count=len(extra.get("changed", ())), part=part, access=access,
+                  seconds=seconds),
+            path, **extra,
+        )
 
-    found["root_enter"] = "ok" if system.may(root, "enter") else "denied"
-    found["root_list"] = "ok" if system.may(root, "list") else "denied"
+    place, part = _root_place(root)
+    found["root"] = place
+    if place != "folder":
+        found["root_enter"] = NR
+        found["root_list"] = NR
+        found["root_write"] = NR
+        return done(".")
+    entered, access = _entered(root)
+    found["root_enter"] = "ok" if entered else "denied"
+    listed, listed_access = _listed(root)
+    found["root_list"] = "ok" if listed else "denied"
+    if not entered:
+        access = access or listed_access
     found["root_write"] = "yes" if found["root_enter"] == "ok" and system.may(root, "write") else "no"
     if found["root_enter"] == "denied" or found["root_list"] == "denied":
         return done(".")
@@ -658,13 +847,20 @@ def read_facts(
     if found["folder"] != "folder":
         return done(layout.STATE_DIR if found["folder"] != "absent" else f"{layout.STATE_DIR}/{INDEX_FILENAME}",
                     config=config)
-    found["folder_enter"] = "ok" if system.may(folder, "enter") else "denied"
-    found["folder_list"] = "ok" if system.may(folder, "list") else "denied"
+    entered, access = _entered(folder)
+    found["folder_enter"] = "ok" if entered else "denied"
+    listed, listed_access = _listed(folder)
+    found["folder_list"] = "ok" if listed else "denied"
+    if not entered:
+        access = access or listed_access
     found["folder_write"] = "yes" if found["folder_enter"] == "ok" and system.may(folder, "write") else "no"
     if found["folder_enter"] == "denied" or found["folder_list"] == "denied":
         return done(layout.STATE_DIR, config=config)
     if check_lock:
-        found["lock"] = "free" if system.lock_free(root / LOCK_RELATIVE) else "held"
+        try:
+            found["lock"] = "free" if system.lock_free(root / LOCK_RELATIVE) else "held"
+        except system.Outcome:
+            found["lock"] = NR
     found["pointer"], name, error = read_pointer(folder)
     if found["pointer"] not in ("absent", "name"):
         return done(POINTER_RELATIVE, config=config)
@@ -674,8 +870,11 @@ def read_facts(
     try:
         seen = system.look(path)
     except system.Outcome as exc:
-        found["generation"] = _outcome(exc, STEPS["generation"])
+        found["generation"] = "enter_denied" if exc.access == "enter" else _outcome(exc, STEPS["generation"])
         error = exc.error
+        access = exc.access
+        if exc.folder:
+            part = Path(exc.folder).name or "the folder that holds the index file"
     else:
         found["generation"] = {"file": "file", "link": "link"}.get(seen.kind, "not_a_file")
     if found["generation"] != "file":
@@ -691,6 +890,13 @@ def read_facts(
             break
         if there.kind != "file":
             beside = "not_a_file"
+            part = Path(f"{path}{suffix}").name
+            break
+        # The mode from the look: opening a live write-ahead log here would disturb a writer.
+        if not (there.mode & 0o444):
+            beside = "unreadable"
+            part = Path(f"{path}{suffix}").name
+            access = "read"
             break
         if suffix != "-shm":
             beside = suffix[1:]
@@ -703,12 +909,43 @@ def read_facts(
     try:
         index, (verdict, meta) = system.open_index(path, immutable=not write, first=prepare)
     except system.Outcome as exc:
-        found["open"] = exc.kind if exc.kind in ("denied", "busy") else (
-            "changed" if exc.kind in ("absent", "link", "not_a_file", "changed") else "other"
-        )
+        looked = system.relook_beside(path)
+        if looked is not None and looked.kind in ("not_a_file", "unreadable", "failed"):
+            _apply_beside(found, looked)
+            part = looked.name or part
+            access = looked.access or access
+            error = looked.error or exc.error
+            return done(relative, name=name, config=config)
+        if exc.kind == "changed":
+            found["open"] = "changed"
+        elif exc.note == "deadline":
+            found["open"] = "deadline"
+            seconds = float(exc.seconds or system.OPEN_DEADLINE_SECONDS)
+        elif exc.note == "abandoned":
+            found["open"] = "abandoned"
+            since = system.abandoned_since(path)
+            part = _moment(since)
+        elif exc.note == "in_progress":
+            found["open"] = "in_progress"
+        elif exc.kind == "busy":
+            found["open"] = "busy"
+        elif exc.kind == "denied":
+            found["open"] = "denied"
+            access = exc.access or "read"
+        elif exc.kind in ("absent", "link", "not_a_file", "changed"):
+            found["open"] = "changed"
+        else:
+            found["open"] = "other"
         error = exc.error
         return done(relative, name=name, config=config)
     except sqlite3.Error as exc:
+        looked = system.relook_beside(path)
+        if looked is not None and looked.kind in ("not_a_file", "unreadable", "failed"):
+            _apply_beside(found, looked)
+            part = looked.name or part
+            access = looked.access or access
+            error = looked.error
+            return done(relative, name=name, config=config)
         found["open"] = "ok"
         found["metadata"] = sqlite_kind(exc, ("corrupt",))
         return done(relative, name=name, config=config)

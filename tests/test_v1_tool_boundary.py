@@ -366,7 +366,7 @@ class ToolBoundaryTests(ForestTestCase):
                     held_text = call(name, arguments)
                 clean(held_text)
                 if name == "memory_log":
-                    self.assertIn("lock_busy", held_text)
+                    self.assertIn("lock_already_held", held_text)
             toml = spaced / "forest.toml"
             saved = toml.read_text(encoding="utf-8")
             toml.unlink()

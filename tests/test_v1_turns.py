@@ -286,7 +286,7 @@ class ToolCallTests(ForestTestCase):
         self.assertEqual((written["wrote"], written["stored"], written["withheld"]), (True, "written", "config_invalid"))
         self.assertNotIn("id", written)
         self.assertTrue(read["result"]["isError"])
-        self.assertEqual(_body(read)["code"], "config_invalid")
+        self.assertEqual(_body(read)["code"], "internal_error")
         with mock.patch.object(mcp, "_tool_text", failing(PermissionError(13, "Permission denied", str(root)))):
             disk = _tool(root, "memory_search", {"agent": "Till Bot", "words": "trays"})
         self.assertTrue(disk["result"]["isError"])

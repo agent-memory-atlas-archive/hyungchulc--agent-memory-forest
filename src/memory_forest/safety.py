@@ -119,6 +119,15 @@ def require_real_root(path: str | os.PathLike[str]) -> Path:
             "The selected forest root does not exist.",
             details={"path": str(root)},
         ) from exc
+    except (system.NotAFolder, system.Denied) as exc:
+        # The root's own look decides before any fact that says this account can enter it.
+        from . import derived
+
+        reading = derived.read_facts(root, prepare=None, fingerprint=lambda _config: "")
+        decision = derived.decide(reading.facts, "status")
+        if decision.code is not None:
+            raise derived.refusal(decision, reading) from exc
+        raise
     if info.kind == "link":
         raise MemoryForestError(
             "symlink_forbidden",

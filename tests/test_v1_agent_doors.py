@@ -104,7 +104,7 @@ class AgentDoorFoldTests(ForestTestCase):
                     code, out, err = self._run(["log", *door], "the till counted while the lock was held\n")
                 self.assertEqual(code, 2, out + err)
                 self._clean(out + err)
-                self.assertIn("lock_busy", out + err)
+                self.assertIn("lock_already_held", out + err)
         pointer = self.root / ".forest" / "index.current"
         pointer.write_bytes(b"\xff\xfe")
         try:

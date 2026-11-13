@@ -154,7 +154,11 @@ def internal_error(exc: BaseException) -> MemoryForestError:
 # States the facts give before the index is reached. When an outcome no code decided on meets one of them,
 # that state's refusal is the answer, so every door tells a root or a .forest it cannot use the same way.
 _EDGE_STATES = frozenset(
-    {"root_unenterable", "root_unlistable", "settings_unreadable", "folder_unenterable", "folder_unlistable"}
+    {
+        "root_absent", "root_above_file", "root_above_denied", "root_not_folder",
+        "root_unenterable", "root_unlistable", "settings_unreadable", "folder_unenterable",
+        "folder_unlistable",
+    }
 )
 
 
@@ -553,14 +557,33 @@ def _changed(reading: derived.Reading) -> MemoryForestError:
     return derived.refusal(derived.decide(facts, "read"), dataclasses.replace(reading, facts=facts))
 
 
+def _beside_now(reading: derived.Reading) -> MemoryForestError | None:
+    """After an error or a deadline, the names beside the index are looked at again and the decision follows."""
+    index = reading.index
+    if index is None:
+        return None
+    looked = system.relook_beside(index.path)
+    if looked is None or looked.kind not in ("not_a_file", "unreadable", "failed"):
+        return None
+    facts = dataclasses.replace(
+        reading.facts, beside=looked.kind, open=derived.NR, metadata=derived.NR, changes=derived.NR,
+        part=looked.name, access=looked.access, error=looked.error,
+    )
+    return derived.refusal(derived.decide(facts, "read"), dataclasses.replace(reading, facts=facts))
+
+
 def _failed_read(reading: derived.Reading, exc: sqlite3.Error) -> MemoryForestError:
     """An error SQLite raised while a read used the index: what that error is, decided as a fact.
 
-    A file that changed meanwhile is busy. Otherwise the error's class is the metadata step's value, so a
-    damaged index in a folder this account cannot write is told as that, never as a reset it cannot run.
+    A file that changed meanwhile is busy. Otherwise the names beside the index are looked at again, and
+    only then is the error's class the metadata step's value, so a damaged index in a folder this account
+    cannot write is told as that, never as a reset it cannot run.
     """
     if reading.index is not None and not reading.index.same():
         return _changed(reading)
+    beside = _beside_now(reading)
+    if beside is not None:
+        return beside
     facts = dataclasses.replace(reading.facts, metadata=derived.sqlite_kind(exc), changes=derived.NR)
     error = derived.refusal(derived.decide(facts, "read"), dataclasses.replace(reading, facts=facts))
     name = str(getattr(exc, "sqlite_errorname", "") or "")
@@ -615,6 +638,9 @@ def _checked_read(root: Path, fn: Any) -> Any:
         except sqlite3.Error as exc:
             if index is not None and not index.same():
                 raise _changed(reading) from exc
+            beside = _beside_now(reading)
+            if beside is not None:
+                raise beside from exc
             if derived.sqlite_error_kind(exc) == "protocol":
                 raise index_error(exc, path=reading.path) from exc
             raise _failed_read(reading, exc) from exc
@@ -2489,17 +2515,12 @@ def read(
     safe = require_real_root(root)
     config = config or load_config(safe)
     path, _, address = spec.partition("#")
-    path = layout.caller_page_path(path)
+    path = layout.caller_page_path(path, folder=safe)
     address = address.strip()
     info = layout.classify(path)
     built = registry_mod.build(safe, config=config)
     scope = for_reader(config, built, reader, named=named, root=safe)
-    if not scope.allows(info):
-        raise MemoryForestError(
-            "out_of_scope",
-            "That path is outside this reader's trees and lane.",
-            details={"path": path},
-        )
+    _refuse_scope(path, info, scope)
     wanted = source_for(safe, scope, source)
     file_text, undecodable = _read_text(layout.resolve(safe, path, must_exist=True))
     start, end, body, heading = _addressed(path, file_text, address, config)
@@ -2585,12 +2606,7 @@ def navigate(
     scope = for_reader(config, built, reader, named=named, root=safe)
     target = _navigate_target(path, built, scope)
     info = layout.classify(target)
-    if not scope.allows(info):
-        raise MemoryForestError(
-            "out_of_scope",
-            "That path is outside this reader's trees and lane.",
-            details={"path": target},
-        )
+    _refuse_scope(target, info, scope)
     file_text, undecodable = _read_text(layout.resolve(safe, target, must_exist=True))
     kept = [
         {"line": number, "text": line}
@@ -2627,6 +2643,28 @@ def navigate(
         payload["status"] = f"undecodable: {target}"
         payload["undecodable"] = [target]
     return payload
+
+
+def _refuse_scope(path: str, info: layout.PathInfo, scope: Scope) -> None:
+    """A path in the reader's own folders whose last part names no page is ``path_not_found``.
+
+    ``out_of_scope`` is only for folders that are not the reader's, and then nothing is said about
+    whether a page is there.
+    """
+    if info.role is layout.PageRole.UNKNOWN and layout.in_reader_folders(path, scope):
+        raise MemoryForestError(
+            "path_not_found",
+            "There is no page at that path.",
+            details={"path": path},
+            next_step="fix",
+        )
+    if not scope.allows(info):
+        raise MemoryForestError(
+            "out_of_scope",
+            "That path is outside this reader's trees and lane.",
+            details={"path": path},
+            next_step="fix",
+        )
 
 
 def _navigate_target(path: str | None, built: registry_mod.Registry, scope: Scope) -> str:
@@ -3023,9 +3061,15 @@ def _addressed(path: str, text: str, address: str, config: Config) -> tuple[int,
     )
 
 
-def mask_result(value: Any, *, config: Config) -> Any:
-    """What a command or the MCP server returns: sign-in values masked, numbers starred."""
-    return show_text(value, config=config)
+def mask_result(value: Any, *, config: Config, ledger: Any = show_text) -> Any:
+    """What a command or the MCP server returns: sign-in values masked, numbers starred.
+
+    ``ledger`` is the one already read through the door, including None when the forest has no ledger.
+    When the argument is left out, the ledger is read again.
+    """
+    if ledger is show_text:
+        return show_text(value, config=config)
+    return show_text(value, config=config, ledger=ledger)
 
 
 def parse_lines(text: str | None) -> tuple[int, int] | None:

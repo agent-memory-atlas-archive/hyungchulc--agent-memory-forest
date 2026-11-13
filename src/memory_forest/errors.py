@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import functools
 import os
 import shlex
@@ -118,6 +119,7 @@ REFUSALS: dict[str, tuple[str, str]] = {
     "index_leaf_without_references": ("report", ""),
     "index_missing": ("run", "forest index build"),
     "index_not_found": ("run", ""),
+    "index_open_abandoned": ("report", ""),
     "index_permissions": ("report", ""),
     "index_read_only": ("report", ""),
     "index_schema_mismatch": ("run", ""),
@@ -277,6 +279,7 @@ REFUSALS: dict[str, tuple[str, str]] = {
     "repeats_removal_unsafe": ("report", ""),
     "role_set": ("report", ""),
     "rollback_failed": ("report", ""),
+    "root_above_file": ("fix", ""),
     "root_exists": ("fix", ""),
     "root_not_directory": ("fix", ""),
     "root_not_empty": ("fix", ""),
@@ -472,6 +475,15 @@ def door_refusal(exc: OSError, *, root: str | os.PathLike[str] | None = None) ->
     from . import system
 
     outcome = exc if isinstance(exc, system.Outcome) else system.outcome_of(exc)
+    if outcome.errno in {errno.ENAMETOOLONG, getattr(errno, "EILSEQ", 0), errno.EINVAL} or outcome.error in {
+        "ENAMETOOLONG", "EILSEQ", "EINVAL",
+    }:
+        return MemoryForestError(
+            "invalid_path",
+            "That path is not a path this system can name.",
+            details={"kind": outcome.kind, "error": outcome.error},
+            next_step="fix",
+        )
     place = shown_place(outcome.where(), root)
     kind = outcome.kind
     details: dict[str, Any] = {"kind": kind, "path": place}

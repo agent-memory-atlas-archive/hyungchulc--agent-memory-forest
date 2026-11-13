@@ -646,7 +646,9 @@ class ReviewRowTests(unittest.TestCase):
         finally:
             os.chmod(self.root, mode)
         self.assertEqual(snapshot(self.root), before)
-        facts = derived.Facts(root_enter="denied", root_list="ok", root_write="no")
+        # Opening the folder follows the read bit on this system, so 0444 is entered and then
+        # forest.toml cannot be read. The execute bit alone is not what the act of entering asks.
+        facts = derived.Facts(root_enter="ok", root_list="ok", root_write="no", settings="denied")
         self.assertGreater(len(answers), 20)
         for name, answer in answers.items():
             self._expect(answer, name, facts)
@@ -668,8 +670,8 @@ class ReviewRowTests(unittest.TestCase):
         finally:
             os.chmod(folder, mode)
         self.assertEqual(snapshot(self.root), before)
-        facts = derived.Facts(settings="ok", folder="folder", folder_enter="ok", folder_list="denied",
-                              folder_write="yes")
+        facts = derived.Facts(settings="ok", folder="folder", folder_enter="denied", folder_list="denied",
+                              folder_write="no")
         for name, answer in answers.items():
             self._expect(answer, name, facts)
 

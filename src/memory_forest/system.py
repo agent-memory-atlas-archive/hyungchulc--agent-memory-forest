@@ -76,6 +76,7 @@ class Outcome(OSError):
         folder: str | os.PathLike[str] = "",
         found: str = "",
         note: str = "",
+        seconds: float | None = None,
     ) -> None:
         number = _DEFAULT_NUMBER.get(self.kind, errno.EIO) if number is None else number
         super().__init__(number, os.strerror(number), os.fspath(path))
@@ -84,6 +85,7 @@ class Outcome(OSError):
         self.folder = os.fspath(folder) if folder else ""
         self.found = found
         self.note = note
+        self.seconds = seconds
 
     @property
     def error(self) -> str:
@@ -164,6 +166,10 @@ CAN: dict[str, tuple[str, ...]] = {
     "set_mode": ("absent", "denied", "link", "other"),
     "sync_folder": ("absent", "denied", "other"),
     "may": (),
+    "enter_folder": ("absent", "denied", "not_a_folder", "link", "other"),
+    "name_limit": ("absent", "denied", "not_a_folder", "other"),
+    "path_limit": ("absent", "denied", "not_a_folder", "other"),
+    "relook_beside": ("absent", "denied", "not_a_folder", "other"),
     "real_path": (),
     "lock": ("absent", "denied", "not_a_file", "link", "other"),
     "lock_free": ("denied", "not_a_file", "link", "other"),
@@ -190,6 +196,8 @@ class Watch:
 
     fail_calls: Mapping[int, str] = field(default_factory=dict)
     fail_statements: Mapping[int, str] = field(default_factory=dict)
+    # Every call whose path is this path, or a path under it, answers that outcome from the first touch on.
+    fail_under: tuple[tuple[str, str], ...] = ()
     calls: list[tuple[str, str]] = field(default_factory=list)
     bytes_read: int = 0
     statements: int = 0
@@ -204,14 +212,22 @@ _POINTS: dict[str, Callable[..., None]] = {}
 
 @contextmanager
 def watching(
-    *, fail_calls: Mapping[int, str] | None = None, fail_statements: Mapping[int, str] | None = None
+    *,
+    fail_calls: Mapping[int, str] | None = None,
+    fail_statements: Mapping[int, str] | None = None,
+    fail_under: Mapping[str, str] | None = None,
 ) -> Iterator[Watch]:
     """Count what the door does inside the block; with ``fail_calls`` the Nth call (from 1) answers that kind,
-    and with ``fail_statements`` the Nth SQLite statement fails with that class (``SQLITE_FAULTS``)."""
+    and with ``fail_statements`` the Nth SQLite statement fails with that class (``SQLITE_FAULTS``).
+
+    ``fail_under`` names a path and an outcome: every call on that path and on any path under it answers
+    that outcome, from the first touch on.
+    """
     global _WATCH
     if _WATCH is not None:
         raise RuntimeError("the door is already watched")
-    watch = Watch(dict(fail_calls or {}), dict(fail_statements or {}))
+    under = tuple((os.fspath(path), kind) for path, kind in (fail_under or {}).items())
+    watch = Watch(dict(fail_calls or {}), dict(fail_statements or {}), under)
     _WATCH = watch
     try:
         yield watch
@@ -246,10 +262,17 @@ def _enter(name: str, path: str | os.PathLike[str], access: str) -> None:
     watch = _WATCH
     if watch is None:
         return
+    text = os.fspath(path)
     with watch.lock:
-        watch.calls.append((name, os.fspath(path)))
+        watch.calls.append((name, text))
         number = len(watch.calls)
         kind = watch.fail_calls.get(number)
+        if kind is None:
+            for prefix, under in watch.fail_under:
+                base = prefix.rstrip("/")
+                if text == prefix or text == base or text.startswith(base + os.sep):
+                    kind = under
+                    break
         if kind is not None:
             watch.injected.append((number, name, kind))
     if kind is not None:
@@ -437,16 +460,146 @@ def kind(path: str | os.PathLike[str]) -> str | None:
 
 
 def may(path: str | os.PathLike[str], access: str) -> bool:
-    """Whether this account may ``read``, ``list``, ``enter`` or ``write`` (create and remove in) ``path``, or
-    ``change`` the file at it.
+    """Whether the system says this account may ``write`` (create and remove in) ``path``, or ``change`` the file.
 
-    The system's own access check, for the real user. A folder is written when it can be written and entered.
+    This is the system's own check, and only for a write: doing the write would write. A fact that this
+    account can enter, list or read is the outcome of doing that through the door (``enter_folder``,
+    ``listing``, ``read_bytes``), never this check. The other names stay so a caller can ask what the
+    system would say; a fact of the index does not.
     """
     _enter("may", path, "")
     flags = {
         "read": os.R_OK, "list": os.R_OK, "enter": os.X_OK, "write": os.W_OK | os.X_OK, "change": os.W_OK,
     }[access]
     return os.access(path, flags)
+
+
+def enter_folder(path: str | os.PathLike[str]) -> None:
+    """Open ``path`` as a folder and close it. That is the act of entering it.
+
+    Success means this account entered. A denial names enter, and ``folder`` is the folder that could not
+    be entered when a folder above ``path`` is the cause.
+    """
+    _enter("enter_folder", path, "enter")
+    try:
+        descriptor = os.open(os.fspath(path), _DIRECTORY_FLAGS)
+    except OSError as exc:
+        raise _classify(exc, path, "enter") from None
+    os.close(descriptor)
+
+
+def name_limit(folder: str | os.PathLike[str]) -> int:
+    """The longest name, in bytes, the system allows in ``folder``. 255 when the system will not say."""
+    _enter("name_limit", folder, "enter")
+    return _path_constant(folder, "PC_NAME_MAX", 255)
+
+
+def path_limit(folder: str | os.PathLike[str]) -> int:
+    """The longest path, in bytes, the system allows under ``folder``. 1024 when the system will not say."""
+    _enter("path_limit", folder, "enter")
+    return _path_constant(folder, "PC_PATH_MAX", 1024)
+
+
+def _path_constant(folder: str | os.PathLike[str], name: str, default: int) -> int:
+    try:
+        value = os.pathconf(os.fspath(folder), name)
+    except (OSError, ValueError):
+        return default
+    if isinstance(value, int) and value > 0:
+        return value
+    return default
+
+
+# One abandoned open of an index, per path, in this process. While it has not come back, no second thread
+# is started: the next call answers at once.
+_ABANDONED: dict[str, float] = {}
+_LIVE_OPEN: set[str] = set()
+_ABANDONED_LOCK = threading.Lock()
+
+
+def abandoned_since(path: str | os.PathLike[str]) -> float | None:
+    """The monotonic time an open of ``path`` was abandoned, or None when none is still out."""
+    with _ABANDONED_LOCK:
+        return _ABANDONED.get(os.fspath(path))
+
+
+def _note_abandoned(path: str | os.PathLike[str], since: float) -> None:
+    with _ABANDONED_LOCK:
+        _ABANDONED.setdefault(os.fspath(path), since)
+
+
+def _clear_abandoned(path: str | os.PathLike[str]) -> None:
+    with _ABANDONED_LOCK:
+        _ABANDONED.pop(os.fspath(path), None)
+
+
+@dataclass(frozen=True, slots=True)
+class Beside:
+    """What a second look found at a name SQLite opens beside the index."""
+
+    kind: str
+    name: str
+    access: str = ""
+    error: str = ""
+
+
+_BESIDE_SUFFIXES = ("-journal", "-wal", "-shm")
+
+
+def relook_beside(path: str | os.PathLike[str]) -> Beside | None:
+    """Look again at the three names beside the index, after an error or a deadline.
+
+    None when each name is absent or a regular file this account can read. A fifo, a folder or a link is
+    ``not_a_file``. A regular file this account cannot read is ``unreadable``. A look that failed is
+    ``failed``. The name is the file's own name, not a path of the machine.
+    """
+    target = os.fspath(path)
+    _enter("relook_beside", target, "read")
+    for suffix in _BESIDE_SUFFIXES:
+        name = target + suffix
+        try:
+            there = look(name)
+        except Absent:
+            continue
+        except Outcome as exc:
+            return Beside("failed", Path(name).name, exc.access, exc.error)
+        if there.kind != "file":
+            return Beside("not_a_file", Path(name).name, "", there.kind)
+        try:
+            descriptor = os.open(name, _READ_FLAGS)
+        except OSError as exc:
+            outcome = _classify(exc, name, "read")
+            if outcome.kind == "denied":
+                return Beside("unreadable", Path(name).name, outcome.access or "read", outcome.error)
+            continue
+        else:
+            os.close(descriptor)
+    return None
+
+
+def _release_fifos(path: str | os.PathLike[str]) -> bool:
+    """Open each fifo beside the index for writing, without blocking, and close it.
+
+    A thread blocked in its open of that fifo then returns. The result of that open is thrown away by
+    the caller. True when at least one fifo was opened.
+    """
+    released = False
+    flags = os.O_WRONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    for suffix in _BESIDE_SUFFIXES:
+        name = os.fspath(path) + suffix
+        try:
+            there = look(name)
+        except Outcome:
+            continue
+        if there.kind != "fifo":
+            continue
+        try:
+            descriptor = os.open(name, flags)
+        except OSError:
+            continue
+        os.close(descriptor)
+        released = True
+    return released
 
 
 @dataclass(frozen=True, slots=True)
@@ -1120,6 +1273,8 @@ def open_index(
     """
     target = Path(path)
     deadline = OPEN_DEADLINE_SECONDS if deadline_seconds is None else deadline_seconds
+    if abandoned_since(target) is not None:
+        raise Busy(target, note="abandoned", seconds=deadline)
     _enter("open_index", target, "write" if write else "read")
     if write:
         flags = (
@@ -1175,19 +1330,45 @@ def open_index(
                     except sqlite3.Error:
                         pass
                 os.close(descriptor)
+                _clear_abandoned(target)
+                with _ABANDONED_LOCK:
+                    _LIVE_OPEN.discard(os.fspath(target))
 
-    threading.Thread(target=run, name="memory-forest index open", daemon=True).start()
-    finished = done.wait(deadline)
-    with guard:
-        if not finished and not done.is_set():
-            state["abandoned"] = True
+    key = os.fspath(target)
+    opener = threading.Thread(target=run, name="memory-forest index open", daemon=True)
+    with _ABANDONED_LOCK:
+        if key in _ABANDONED:
+            os.close(descriptor)
+            raise Busy(target, note="abandoned", seconds=deadline)
+        _LIVE_OPEN.add(key)
+    opener.start()
+    try:
+        finished = done.wait(deadline)
+        with guard:
+            late = not finished and not done.is_set()
+            if late:
+                state["abandoned"] = True
+        if late:
             try:
                 named = os.lstat(target)
             except OSError:
                 named = None
-            if named is None or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
-                raise Changed(target, note="deadline")
-            raise Busy(target, note="deadline")
+            moved = named is None or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)
+            if not moved:
+                _release_fifos(target)
+            if not done.is_set():
+                done.wait(1.0)
+            # A path that changed is the swap the caller retries. Only an open that is still blocked on
+            # the same file is abandoned, so a later call does not start a second thread.
+            if not done.is_set() and not moved:
+                _note_abandoned(target, time.time())
+            if moved:
+                raise Changed(target, note="deadline", seconds=deadline)
+            raise Busy(target, note="deadline", seconds=deadline)
+    finally:
+        if abandoned_since(target) is None:
+            with _ABANDONED_LOCK:
+                _LIVE_OPEN.discard(key)
     opened = IndexFile(
         handle_box.get("connection"), descriptor, target, info, immutable=immutable, through=through  # type: ignore[arg-type]
     )

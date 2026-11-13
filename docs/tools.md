@@ -516,8 +516,12 @@ open and the metadata. What a state refuses with:
 | `index_failed` | SQLite refused for a reason this package does not classify, a lock conflict inside this connection, or SQLite answered that the index cannot be written | `report` |
 | `index_io_error` | the disk returned an I/O error, or the locking protocol failed and this call's budget is spent | `report` |
 | `index_missing` | there is no index and none could be built yet | `run` `forest index build` |
+| `index_open_abandoned` | an earlier open of the index has not come back; the process that answers must be started again | `report` |
 | `index_read_only` | the folder the index lives in (`.forest/`, or the forest root while there is no `.forest/`) cannot be written, and the index is missing, built by another version, damaged, its pointer damaged, its masking changed since the build, or a write-ahead log or a journal stands beside it; or the call would build, update or reset. The text says whether reading still answers and names what an account that can write that folder would run | `report` |
 | `index_unreadable` | in a folder this account can write: the index is corrupt or not a database, a table, a column, an index or the rows of a table that held rows are missing, the pointer does not name an index file, the pointer or the index cannot be read, or a link, a folder or another thing stands where the index or a file SQLite keeps beside it would be | `run` `forest index reset` |
+| `root_above_file` | a part of the path above the forest folder is a file. The text names that part | `fix` |
+| `root_not_directory` | the path named for the forest folder is not a folder | `fix` |
+| `root_not_found` | there is nothing at the path named for the forest folder | `fix` |
 | `settings_invalid` | `forest.toml` is a link, not a regular file, larger than any settings file needs to be, not UTF-8 or not valid settings | `report` |
 | `symlink_forbidden` | a link stands where `.forest/` or the pointer would be | `report` |
 

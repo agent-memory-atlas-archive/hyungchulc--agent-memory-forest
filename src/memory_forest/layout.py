@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path, PurePosixPath
-from typing import Final
+from typing import Any, Final
 
 from . import system
 from .config import CONFIG_FILENAME, DEFAULT_CONFIG, Config, render_config
@@ -248,18 +248,21 @@ MAX_CALLER_PATH: Final[int] = 1024
 _CALLER_CONTROL_RE: Final = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def caller_page_path(text: str) -> str:
+def caller_page_path(text: str, *, folder: str | os.PathLike[str] | None = None) -> str:
     """The one spelling of a page path a caller gave: the scope check and the read both use it.
 
     Surrounding blanks, ``.`` parts and empty parts are dropped (``./a/b``, ``a//b``, ``a/./b`` and ``a/b/``
     are ``a/b``), and the text is put in NFC. A parent step (``..``) or an absolute path is ``path_escape``;
-    a control character, a backslash, a path longer than :data:`MAX_CALLER_PATH`, or no part at all is
-    ``invalid_path``. Every one of these is the caller's to fix.
+    a control character, a backslash, a path longer than :data:`MAX_CALLER_PATH` or than the system allows,
+    a part longer than a name may be, or no part at all is ``invalid_path``. Every one of these is the
+    caller's to fix. The name and path limits are what the system says for ``folder`` when one is given,
+    and 255 and :data:`MAX_CALLER_PATH` when it is not.
     """
     raw = str(text)
-    if len(raw) > MAX_CALLER_PATH:
+    name_max, path_max = _caller_limits(folder)
+    if len(raw) > MAX_CALLER_PATH or len(raw.encode("utf-8")) > path_max:
         raise MemoryForestError(
-            "invalid_path", f"A page path is at most {MAX_CALLER_PATH} characters.", next_step="fix"
+            "invalid_path", f"A page path is at most {min(MAX_CALLER_PATH, path_max)} bytes.", next_step="fix"
         )
     if _CALLER_CONTROL_RE.search(raw) or "\\" in raw:
         raise MemoryForestError(
@@ -276,7 +279,50 @@ def caller_page_path(text: str) -> str:
         )
     if not parts:
         raise MemoryForestError("invalid_path", "Name a page: the path has no part.", next_step="fix")
+    for part in parts:
+        if len(part.encode("utf-8")) > name_max:
+            raise MemoryForestError(
+                "invalid_path",
+                f"A part of a page path is at most {name_max} bytes.",
+                next_step="fix",
+            )
     return "/".join(parts)
+
+
+def _caller_limits(folder: str | os.PathLike[str] | None) -> tuple[int, int]:
+    """The system's name and path limits for ``folder``, or 255 and :data:`MAX_CALLER_PATH`."""
+    if folder is None:
+        return 255, MAX_CALLER_PATH
+    try:
+        return system.name_limit(folder), system.path_limit(folder)
+    except system.Outcome:
+        return 255, MAX_CALLER_PATH
+
+
+def in_reader_folders(path: str, scope: Any) -> bool:
+    """Whether the folders of ``path`` are a tree or a lane ``scope`` may see.
+
+    The last part is not consulted: a page that is not a page, inside the reader's own folders, is
+    still inside the reader's scope.
+    """
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 2:
+        return parts[:1] == [DAILY] or parts[:1] == [XLTM]
+    head, second = parts[0], parts[1]
+    if head == STM and scope.sees_tree(second):
+        return True
+    if head == MTM and scope.sees_tree(second):
+        return True
+    if head == LTM:
+        tree = second[:-len("_LTM.md")] if second.endswith("_LTM.md") else second
+        return scope.sees_tree(tree)
+    if head == ISTM and scope.sees_lane(second):
+        return True
+    if head == DAILY:
+        return True
+    if head == XLTM:
+        return True
+    return False
 
 
 def relative_to_root(root: str | os.PathLike[str], path: str | os.PathLike[str]) -> str:

@@ -1247,6 +1247,12 @@ _add(FIX_ROWS, {
     "root_not_empty": Fix("bakery", forest("init", "{root}"), forest("init", "{base}/second-shop")),
     # A folder with no forest.toml: the corrected call names the forest.
     "no_forest": Fix("find", forest("agents", "--root", "{base}"), forest("agents")),
+    "root_above_file": Fix(
+        "find",
+        forest("index", "status", "--root", "{base}/blocker/forest"),
+        forest("index", "status"),
+        make=lambda _root, base: (base / "blocker").write_text("not a folder\n", encoding="utf-8"),
+    ),
     # The holder of a lock enters it again with its token.
     "lock_already_held": Fix("find", api("hold_lock inside its own hold, without the token", _nested_hold(False)),
                              api("hold_lock inside its own hold, with the token", _nested_hold(True))),

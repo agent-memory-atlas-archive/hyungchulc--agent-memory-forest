@@ -601,7 +601,7 @@ def _call(
     except (MemoryForestError, OSError) as exc:
         if name != "memory_log":
             refusal = exc if isinstance(exc, MemoryForestError) else search.edge_refusal(exc, root)
-            return _tool_error(refusal, root)
+            return _tool_error(refusal, root, fixed=True)
         text = json.dumps(withheld(payload, exc), indent=2, sort_keys=True)
     except Exception:
         return _tool_error(MemoryForestError("tool_failed", "The tool could not answer."), root)
@@ -1310,20 +1310,19 @@ def _fold_refusal(value: Any, root: str | os.PathLike[str]) -> Any:
     return fold(value)
 
 
-def _tool_body(refusal: MemoryForestError) -> dict[str, Any]:
-    """The refusal a tool sends. Two lock codes are one busy refusal, and its next move is to retry."""
-    if refusal.code in _LOCK_BUSY:
-        details = {key: value for key, value in refusal.details.items() if key != "token"}
-        return {
-            "after_seconds": search.RETRY_AFTER_SECONDS,
-            "code": "lock_busy",
-            "details": details,
-            "message": "The lock is held, so this call did not run. Ask again.",
-            "next": "retry",
-            "stop_after_seconds": search.RETRY_STOP_SECONDS,
-            "waited_seconds": 0.0 if refusal.waited_seconds is None else refusal.waited_seconds,
-        }
-    return refusal.as_dict()
+def _masking(root: str | os.PathLike[str]):
+    """The ledger, already read, or the state's refusal when it cannot be had."""
+    from .leaving import Masking
+
+    try:
+        config = load_config(root)
+        from . import credential_ledger
+
+        return Masking(config, credential_ledger.for_config(config))
+    except MemoryForestError as exc:
+        return exc
+    except OSError as exc:
+        return search.edge_refusal(exc, root)
 
 
 def _tool_text(
@@ -1334,43 +1333,47 @@ def _tool_text(
     drop_details: bool = False,
     refusal: bool = False,
 ) -> str:
-    """The one door a tool answer leaves through.
+    """The form of a tool answer. The body itself is ``leaving.body``."""
+    from .leaving import body as present
 
-    Mask it. A success result is then returned exactly, whatever a line looks like. A refusal is folded
-    so the server's own text carries no machine identity and no absolute forest path.
-    """
-    try:
-        masked = search.mask_result(body, config=load_config(root))
-    except Exception:
-        if not drop_details or not isinstance(body, dict):
-            raise
-        # The masking could not be read (an unreadable ledger or settings): the details' values are dropped,
-        # but the words a program acts on stay, each from a fixed vocabulary.
-        masked = dict(body)
-        details = body.get("details") if isinstance(body.get("details"), dict) else {}
-        masked["details"] = {key: details[key] for key in _KEPT_DETAILS if key in details}
-    if refusal:
-        masked = _fold_refusal(masked, root)
-    return json.dumps(masked, ensure_ascii=False, indent=indent, sort_keys=True)
+    loaded = _masking(root)
+    if isinstance(loaded, MemoryForestError):
+        if not drop_details and not refusal:
+            raise loaded
+        payload = present(loaded, reader="agent", masking=None, root=str(root))
+    else:
+        payload = present(body, reader="agent", masking=loaded, root=str(root))
+    return json.dumps(payload, ensure_ascii=False, indent=indent, sort_keys=True)
 
 
 def agent_refusal(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dict[str, Any]:
-    """A refusal as an agent reads it: masked, folded, and carrying no machine identity.
+    """A refusal as an agent reads it. The body is the same function the command line uses."""
+    from .leaving import body as present
 
-    The one function for every answer an agent reads: the MCP tools, and the command-line doors an
-    agent uses (``--as``, ``--as-group`` with ``--agent``). Its strings are masked like every answer;
-    when the settings cannot be read for that, the details go.
-    """
-    return json.loads(_tool_text(_tool_body(refusal), root, drop_details=True, refusal=True))
+    loaded = _masking(root)
+    if isinstance(loaded, MemoryForestError):
+        return present(loaded, reader="agent", masking=None, root=str(root))
+    return present(refusal, reader="agent", masking=loaded, root=str(root))
 
 
 # The details a refusal keeps when its values cannot be masked: words of a fixed vocabulary, never a value.
 _KEPT_DETAILS = ("access", "kind", "state")
 
 
-def _tool_error(refusal: MemoryForestError, root: str | os.PathLike[str]) -> dict[str, Any]:
-    """Every refusal of a tool is one JSON object with its next move, as ``agent_refusal`` makes it."""
-    text = json.dumps(agent_refusal(refusal, root), ensure_ascii=False, sort_keys=True)
+def _tool_error(
+    refusal: MemoryForestError, root: str | os.PathLike[str], *, fixed: bool = False
+) -> dict[str, Any]:
+    """Every refusal of a tool is one JSON object with its next move, as ``leaving.body`` makes it.
+
+    ``fixed`` is a refusal whose masking could not be read: only the fixed words leave.
+    """
+    if fixed:
+        from .leaving import body as present
+
+        payload = present(refusal, reader="agent", masking=None, root=str(root))
+    else:
+        payload = agent_refusal(refusal, root)
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
