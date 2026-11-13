@@ -52,8 +52,11 @@ busy refusal, next ``retry``. Threads of this server wait their turn for
 ``memory_log``.
 
 The reader's id is ``--as``. A tool argument cannot set it, and cannot set the
-role or origin of ``memory_log``. The first tool call of each agent is recorded
-under ``.forest/mcp/seen.json`` so a later doctor can prove the server was used.
+role or origin of ``memory_log``. ``--as-group`` is the other connection: one
+group of agents, and every tool then requires ``agent``, the caller's own name,
+resolved only to a member of that group. The first tool call of each agent is
+recorded under ``.forest/mcp/seen.json``, and each later call records when the
+agent was last seen, so a later doctor can prove the server was used.
 """
 
 from __future__ import annotations
@@ -72,7 +75,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from . import __version__, intake, layout, search, timeline
+from . import __version__, groups, intake, layout, search, timeline
 from .config import load_config
 from .errors import MemoryForestError
 from .locking import atomic_write
@@ -105,6 +108,11 @@ INSTRUCTIONS = (
     "one level at a time.\n"
     "memory_log: this session has no transcript hook and a turn should be kept. Send the text only. "
     "The server sets who spoke and where the turn came from."
+)
+GROUP_INSTRUCTIONS = (
+    INSTRUCTIONS
+    + "\nThis connection is one group. Pass agent, your own name, on every call. "
+    "That name is a member of the group."
 )
 _FORBIDDEN = {"agent", "as", "named", "origin", "reader", "role"}
 _TOOLS: tuple[dict[str, Any], ...] = (
@@ -187,6 +195,25 @@ _TOOLS: tuple[dict[str, Any], ...] = (
 )
 
 
+def _with_caller(tool: dict[str, Any]) -> dict[str, Any]:
+    """The same tool, with the caller's own name required. Used only on a group connection."""
+    schema = tool["inputSchema"]
+    properties = {"agent": {"description": "Your own name, as this app calls you.", "type": "string"}}
+    properties.update(schema["properties"])
+    return {
+        **tool,
+        "inputSchema": {
+            "additionalProperties": False,
+            "properties": properties,
+            "required": ["agent", *schema.get("required", ())],
+            "type": "object",
+        },
+    }
+
+
+_GROUP_TOOLS: tuple[dict[str, Any], ...] = tuple(_with_caller(tool) for tool in _TOOLS)
+
+
 class _BadArguments(Exception):
     """The tool name or the arguments do not match the tool. This is JSON-RPC -32602."""
 
@@ -206,20 +233,45 @@ _PARSE = _ParseError()
 _OVERSIZE = _Oversize()
 
 
-def run(root: str | os.PathLike[str], reader: str, http: str | None = None) -> int:
-    """Serve until the client disconnects (stdio) or the process is stopped (HTTP)."""
+def run(
+    root: str | os.PathLike[str],
+    reader: str | None = None,
+    http: str | None = None,
+    *,
+    group: str | None = None,
+) -> int:
+    """Serve until the client disconnects (stdio) or the process is stopped (HTTP).
+
+    Exactly one of ``reader`` (``--as``) and ``group`` (``--as-group``) is set.
+    """
     safe = require_real_root(root)
-    if not layout.is_slug(reader):
+    if reader and group:
+        raise MemoryForestError(
+            "mcp_reader_conflict",
+            "Pass --as or --as-group, not both. A tool argument cannot change which one it is.",
+            next_step="run",
+            command="forest mcp --as <agent>",
+        )
+    if group is not None:
+        if not layout.is_slug(group):
+            raise MemoryForestError(
+                "mcp_group_invalid",
+                "Name the group with --as-group. The group id is a slug.",
+                next_step="run",
+                command="forest mcp --as-group <group>",
+            )
+        groups.require_group(load_config(safe), group)
+    elif not reader or not layout.is_slug(reader):
         raise MemoryForestError(
             "mcp_agent_unset",
             "Name the agent with --as. The reader id comes from the connection, not from a tool argument.",
         )
     if http is None:
-        serve_stdio(safe, reader)
+        serve_stdio(safe, reader, group=group)
         return 0
     host, port = parse_bind(http)
     token = ensure_token(safe)
-    server = _server((host, port), _handler(safe, reader, token, READ_TIMEOUT_SECONDS))
+    server = _server((host, port), _handler(safe, reader or "", token, READ_TIMEOUT_SECONDS, group=group))
     bound = server.server_address
     sys.stderr.write(f"forest mcp: listening on {bound[0]}:{bound[1]}\n")
     try:
@@ -229,7 +281,14 @@ def run(root: str | os.PathLike[str], reader: str, http: str | None = None) -> i
     return 0
 
 
-def serve_stdio(root: str | os.PathLike[str], reader: str, *, stdin: Any = None, stdout: Any = None) -> None:
+def serve_stdio(
+    root: str | os.PathLike[str],
+    reader: str | None = None,
+    *,
+    stdin: Any = None,
+    stdout: Any = None,
+    group: str | None = None,
+) -> None:
     """Read one JSON-RPC message per line and write replies the same way. One bad line does not end the server."""
     incoming = sys.stdin.buffer if stdin is None else stdin
     outgoing = sys.stdout.buffer if stdout is None else stdout
@@ -252,7 +311,7 @@ def serve_stdio(root: str | os.PathLike[str], reader: str, *, stdin: Any = None,
                 return
             continue
         try:
-            response, negotiated = handle_message(root, reader, message, "stdio", negotiated)
+            response, negotiated = handle_message(root, reader or "", message, "stdio", negotiated, group=group)
         except Exception as exc:
             _log(f"forest mcp: one request failed ({exc.__class__.__name__}) and the next will be read")
             response = _reply_error(message, -32603, "The request could not be answered.", negotiated, "stdio")
@@ -268,13 +327,15 @@ def serve_http(
     *,
     token: bytes | None = None,
     read_timeout: float = READ_TIMEOUT_SECONDS,
+    group: str | None = None,
 ) -> ThreadingHTTPServer:
     """Bind and serve in a daemon thread. The caller stops the returned server.
 
     ``token`` None creates or reads ``.forest/mcp/token``. The token is not printed.
+    ``group`` set means this connection is that group: each call names its agent.
     """
     token_bytes = token if token is not None else ensure_token(root)
-    handler = _handler(root, reader, token_bytes, read_timeout)
+    handler = _handler(root, reader, token_bytes, read_timeout, group=group)
     server = _server((host, port), handler)
     server.daemon_threads = True
     import threading
@@ -290,11 +351,13 @@ def handle_message(
     message: Any,
     transport: str,
     negotiated: str | None,
+    *,
+    group: str | None = None,
 ) -> tuple[Any, str | None]:
     """One stdio or HTTP payload. A notification or a client response returns None.
 
     ``negotiated`` is the revision agreed by ``initialize`` on stdio (None before it), or the one an HTTP request
-    states.
+    states. ``group`` set means the reader of a tool call is the member named by ``agent``.
     """
     if isinstance(message, list):
         refusal = _batch_refusal(negotiated, message)
@@ -302,13 +365,13 @@ def handle_message(
             return _unread_error(-32600, refusal, negotiated, transport), negotiated
         replies: list[dict[str, Any]] = []
         for item in message:
-            reply, _ignored = _dispatch_one(root, reader, item, transport, negotiated)
+            reply, _ignored = _dispatch_one(root, reader, item, transport, negotiated, group=group)
             if reply is not None:
                 replies.append(reply)
         if not replies:
             return None, negotiated
         return replies, negotiated
-    return _dispatch_one(root, reader, message, transport, negotiated)
+    return _dispatch_one(root, reader, message, transport, negotiated, group=group)
 
 
 def parse_bind(value: str) -> tuple[str, int]:
@@ -432,6 +495,8 @@ def _dispatch_one(
     message: Any,
     transport: str,
     negotiated: str | None,
+    *,
+    group: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(message, dict):
         return _unread_error(-32600, "The request is not a JSON-RPC object.", negotiated, transport), negotiated
@@ -448,25 +513,26 @@ def _dispatch_one(
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
     try:
         if method == "initialize":
-            result = _initialize(params)
+            result = _initialize(params, group=group is not None)
             return _result(msg_id, result), str(result["protocolVersion"])
         if method == "ping":
             return _result(msg_id, {}), negotiated
         if method == "tools/list":
-            return _result(msg_id, {"tools": [dict(tool) for tool in _TOOLS]}), negotiated
+            tools = _GROUP_TOOLS if group else _TOOLS
+            return _result(msg_id, {"tools": [dict(tool) for tool in tools]}), negotiated
         if method == "tools/call":
-            return _result(msg_id, _call(root, reader, params, transport, negotiated)), negotiated
+            return _result(msg_id, _call(root, reader, params, transport, negotiated, group=group)), negotiated
     except _BadArguments as exc:
         return _error(msg_id, -32602, exc.message), negotiated
     return _error(msg_id, -32601, "Method not found."), negotiated
 
 
-def _initialize(params: Mapping[str, Any]) -> dict[str, Any]:
+def _initialize(params: Mapping[str, Any], *, group: bool = False) -> dict[str, Any]:
     asked = params.get("protocolVersion")
     version = asked if isinstance(asked, str) and asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
     return {
         "capabilities": {"tools": {}},
-        "instructions": INSTRUCTIONS,
+        "instructions": GROUP_INSTRUCTIONS if group else INSTRUCTIONS,
         "protocolVersion": version,
         "serverInfo": {"name": "memory-forest", "version": __version__},
     }
@@ -478,10 +544,12 @@ def _call(
     params: Mapping[str, Any],
     transport: str,
     version: str | None = None,
+    *,
+    group: str | None = None,
 ) -> dict[str, Any]:
     name = params.get("name")
     arguments = params.get("arguments", {})
-    known = {tool["name"]: tool for tool in _TOOLS}
+    known = {tool["name"]: tool for tool in (_GROUP_TOOLS if group else _TOOLS)}
     if not isinstance(name, str) or name not in known:
         raise _BadArguments("Name a tool this server serves.")
     if not isinstance(arguments, dict):
@@ -493,6 +561,9 @@ def _call(
             return _tool_error(MemoryForestError("arguments_invalid", exc.message), root)
         raise
     try:
+        if group:
+            reader = groups.resolve_caller(root, group, str(arguments["agent"])).id
+            arguments = {key: value for key, value in arguments.items() if key != "agent"}
         payload = _invoke(root, reader, name, arguments, transport)
     except _BadArguments:
         raise
@@ -519,6 +590,10 @@ def _check_arguments(name: str, arguments: Mapping[str, Any], tool: Mapping[str,
     required = set(schema.get("required") or ())
     if any(key not in arguments for key in required):
         raise _BadArguments("A required argument is missing.")
+    if "agent" in schema["properties"]:
+        caller = arguments.get("agent")
+        if not isinstance(caller, str) or not caller.strip():
+            raise _BadArguments("The agent is the caller's own name.")
     if name == "memory_search":
         if not isinstance(arguments.get("words"), str):
             raise _BadArguments("The words are a string.")
@@ -575,60 +650,83 @@ def _invoke(
         path = arguments.get("path")
         return search.navigate(root, reader=reader, path=str(path) if path else None)
     if name == "memory_log":
-        record = intake.append_owned(
+        return record_turn(
             root,
             reader,
             str(arguments.get("text") or ""),
-            role="agent",
             origin="interactive" if transport == "stdio" else "headless",
             session=str(arguments.get("session") or "mcp"),
         )
-        indexed = False
-        reason = ""
-        try:
-            outcome = search.update_files(root, [record["path"]], wait_seconds=0)
-            indexed = bool(outcome.get("indexed"))
-            if not indexed:
-                reason = str(outcome.get("reason") or "index_busy")
-        except MemoryForestError as exc:
-            reason = exc.code
-            indexed = False
-        except Exception:
-            _log("forest mcp: the turn was written and the index was not updated")
-            reason = "index_failed"
-            indexed = False
-        body = {"id": record["id"], "indexed": indexed, "path": record["path"], "wrote": bool(record["wrote"])}
-        if not indexed:
-            body["reason"] = reason
-        return body
     raise _BadArguments("That tool is not served.")
 
 
+def record_turn(
+    root: str | os.PathLike[str],
+    agent: str,
+    text: str,
+    *,
+    origin: str,
+    session: str,
+) -> dict[str, Any]:
+    """Append one turn through the lane's one writer, then the same index update ``memory_log`` does.
+
+    The role is ``agent``. The caller does not choose the role or the origin. A turn
+    whose id the lane already holds is not written again.
+    """
+    record = intake.append_owned(root, agent, text, role="agent", origin=origin, session=session or "mcp")
+    indexed = False
+    reason = ""
+    try:
+        outcome = search.update_files(root, [record["path"]], wait_seconds=0)
+        indexed = bool(outcome.get("indexed"))
+        if not indexed:
+            reason = str(outcome.get("reason") or "index_busy")
+    except MemoryForestError as exc:
+        reason = exc.code
+        indexed = False
+    except Exception:
+        _log("forest: the turn was written and the index was not updated")
+        reason = "index_failed"
+        indexed = False
+    body = {"id": record["id"], "indexed": indexed, "path": record["path"], "wrote": bool(record["wrote"])}
+    if not indexed:
+        body["reason"] = reason
+    return body
+
+
 def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: str) -> None:
+    """Record the first call, and when this agent was last seen. The question is not stored."""
     safe = require_real_root(root)
     layout.ensure_folder(safe, f"{layout.STATE_DIR}/mcp")
     path = layout.resolve(safe, SEEN_FILE)
-    current: dict[str, Any] = {}
-    if path.is_file() and not path.is_symlink():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            loaded = {}
-        if isinstance(loaded, dict):
-            current = loaded
-    if reader in current:
-        return
-    current[reader] = {
-        "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "tool": tool,
-        "transport": transport,
-    }
-    atomic_write(path, json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-    os.chmod(path, 0o600)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with groups.exclusive(safe, "mcp-seen", wait_seconds=2, label="mcp seen"):
+        current: dict[str, Any] = {}
+        if path.is_file() and not path.is_symlink():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                loaded = {}
+            if isinstance(loaded, dict):
+                current = loaded
+        entry = current.get(reader)
+        if not isinstance(entry, dict):
+            current[reader] = {"at": now, "last": now, "tool": tool, "transport": transport}
+        else:
+            entry["last"] = now
+            entry.setdefault("at", now)
+            entry.setdefault("tool", tool)
+            entry.setdefault("transport", transport)
+        atomic_write(path, json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        os.chmod(path, 0o600)
 
 
 def _handler(
-    root: str | os.PathLike[str], reader: str, token: bytes, read_timeout: float
+    root: str | os.PathLike[str],
+    reader: str,
+    token: bytes,
+    read_timeout: float,
+    group: str | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -699,7 +797,7 @@ def _handler(
                 )
                 return
             try:
-                response, _negotiated = handle_message(root, reader, message, "http", version)
+                response, _negotiated = handle_message(root, reader, message, "http", version, group=group)
             except Exception as exc:
                 _log(f"forest mcp: one request failed ({exc.__class__.__name__}) and the server is still listening")
                 response = _reply_error(message, -32603, "The request could not be answered.", version, "http")

@@ -227,6 +227,19 @@ class KnownAgent:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentGroup:
+    """Several agents behind one connection, ``[agents.groups.<id>]``.
+
+    ``members`` are agent ids. ``open`` is false until a new name the caller
+    gives may become a member by itself. The group's id is not an agent.
+    """
+
+    id: str
+    members: tuple[str, ...] = ()
+    open: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class AgentSettings:
     policy: str = "subject-first"
     orchestrators: tuple[str, ...] = ()
@@ -238,9 +251,14 @@ class AgentSettings:
     folded_type: str = "component"
     # The agents declared in the settings, by id.
     known: tuple[KnownAgent, ...] = ()
+    # One connection that several of the owner's agents share, by group id.
+    groups: tuple[AgentGroup, ...] = ()
 
     def declared(self, agent_id: str) -> KnownAgent | None:
         return next((item for item in self.known if item.id == agent_id), None)
+
+    def group(self, group_id: str) -> AgentGroup | None:
+        return next((item for item in self.groups if item.id == group_id), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -500,6 +518,38 @@ def _known_agents(key: str, raw: Any, source: str | None) -> tuple[KnownAgent, .
     return tuple(sorted(found, key=lambda item: item.id))
 
 
+def _agent_groups(key: str, raw: Any, source: str | None) -> tuple[AgentGroup, ...]:
+    """``[agents.groups.<id>]`` tables: member ids, and whether a new name may join."""
+    if not isinstance(raw, Mapping):
+        raise _error(key, "must be a table of groups, one `[agents.groups.<id>]` each", source)
+    found = []
+    for group_id, table in raw.items():
+        dotted = f"{key}.{group_id}"
+        if _SLUG_RE.fullmatch(group_id) is None:
+            raise _error(dotted, f"{group_id!r} is not a slug", source)
+        if not isinstance(table, Mapping):
+            raise _error(dotted, "must be a table with `members` and `open`", source)
+        members: tuple[str, ...] = ()
+        open_group = False
+        for field_name, value in table.items():
+            item_key = f"{dotted}.{field_name}"
+            if field_name == "members":
+                members = _strings(item_key, value, source)
+                for item in members:
+                    if _SLUG_RE.fullmatch(item) is None:
+                        raise _error(item_key, f"{item!r} is not a slug", source)
+            elif field_name == "open":
+                if not isinstance(value, bool):
+                    raise _error(item_key, "must be true or false", source)
+                open_group = value
+            else:
+                raise _error(item_key, "is not a known setting", source)
+        if group_id in members:
+            raise _error(dotted, "the group's own id is not a member", source)
+        found.append(AgentGroup(group_id, members, open_group))
+    return tuple(sorted(found, key=lambda item: item.id))
+
+
 _INTAKE_FIELDS: Final[tuple[str, ...]] = ("enabled", "agent", "include", "exclude", "import_earlier", "path")
 
 
@@ -555,6 +605,8 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
             )
         elif name == "agents" and key == "known":
             values[key] = _known_agents(dotted, value, source)
+        elif name == "agents" and key == "groups":
+            values[key] = _agent_groups(dotted, value, source)
         elif name == "intake" and key == "tools":
             values[key] = _intake_tools(dotted, value, source)
         elif isinstance(default, bool):
@@ -722,7 +774,7 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
         lines.append("")
         lines.append(f"[{name}]")
         for item in fields(section):
-            if name == "agents" and item.name == "known":
+            if name == "agents" and item.name in {"known", "groups"}:
                 continue
             if name == "intake" and item.name == "tools":
                 continue
@@ -740,4 +792,9 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
                 for key in ("name", "role"):
                     if getattr(agent, key):
                         lines.append(f"{key} = {_toml_value(getattr(agent, key))}")
+            for group in section.groups:
+                lines.append("")
+                lines.append(f"[agents.groups.{group.id}]")
+                lines.append(f"members = {_toml_value(group.members)}")
+                lines.append(f"open = {_toml_value(group.open)}")
     return "\n".join(lines) + "\n"
