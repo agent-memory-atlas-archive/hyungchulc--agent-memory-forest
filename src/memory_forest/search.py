@@ -82,6 +82,8 @@ INDEX_RELATIVE = f"{layout.STATE_DIR}/{INDEX_FILENAME}"
 # ``.forest/index.current`` names the current index file. Absent, the legacy name above is current.
 POINTER_FILENAME = "index.current"
 _INDEX_NAME = re.compile(r"index(?:-[0-9a-f]{16})?\.sqlite\Z")
+# A pointer is one short name. A longer file is damaged and is not read whole.
+_POINTER_BYTES = 64
 SCHEMA = "3"
 LOCK_NAME = "index"
 # When the masking changed, a query waits this long for another build before it refuses to answer.
@@ -713,12 +715,35 @@ def _state_dir(root: Path) -> Path:
     return folder
 
 
+def _pointer_name(blob: bytes) -> str | None:
+    """The index file name in ``blob``, or None when the bytes are not exactly that name.
+
+    A name is the file ``_publish_pointer`` writes: the name, or the name and one trailing newline.
+    Anything else a regular file can hold is damaged, including bytes that are not UTF-8, a NUL, an
+    empty file, white space, more than one line, a name outside the pattern, ``..`` and an absolute path.
+    """
+    if len(blob) > _POINTER_BYTES or b"\x00" in blob:
+        return None
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if text.endswith("\n"):
+        text = text[:-1]
+    if "\n" in text or "\r" in text:
+        return None
+    if _INDEX_NAME.fullmatch(text) is None:
+        return None
+    return text
+
+
 def _read_pointer(root: Path) -> tuple[str | None, bool]:
-    """The current index file's name, and whether the pointer's text is not a name.
+    """The current index file's name, and whether the pointer is damaged.
 
     No pointer means the legacy name. A symlink pointer, or a pointer that is not a file, is refused
-    before a reset writes anything. Text that is not an index name is ``(None, True)``: a reset can
-    replace it, and every other caller refuses it.
+    before a reset writes anything. A regular file is a name or it is damaged. Damaged never raises
+    from here: it is ``(None, True)``, a reset replaces it, and every other caller refuses it. The
+    read stops after ``_POINTER_BYTES``, so a longer file is damaged without being read whole.
     """
     path = _state_dir(root) / POINTER_FILENAME
     relative = f"{layout.STATE_DIR}/{POINTER_FILENAME}"
@@ -741,17 +766,20 @@ def _read_pointer(root: Path) -> tuple[str | None, bool]:
             next_step="report",
         )
     try:
-        text = path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise MemoryForestError(
-            "index_cannot_open",
-            "The index pointer could not be read.",
-            details={"path": relative},
-            next_step="report",
-        ) from exc
-    if _INDEX_NAME.fullmatch(text) is None:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
         return None, True
-    return text, False
+    try:
+        try:
+            blob = os.read(descriptor, _POINTER_BYTES + 1)
+        except OSError:
+            return None, True
+    finally:
+        os.close(descriptor)
+    name = _pointer_name(blob)
+    if name is None:
+        return None, True
+    return name, False
 
 
 def _current_index_name(root: Path) -> str:
