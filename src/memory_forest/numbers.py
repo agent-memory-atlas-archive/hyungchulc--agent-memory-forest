@@ -59,7 +59,6 @@ KINDS: Final[tuple[str, ...]] = ("account", "iban", "card", "identity", "phone")
 # this pattern finds, in one pass: the pattern tried at every letter of a long word reads the rest of the word
 # each time, which is quadratic in the length of a turn.
 _URL_RE: Final[re.Pattern[str]] = re.compile(r"[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
-_SCHEME_CHARACTERS: Final[frozenset[str]] = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
 _SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(r"://")
 _SPACE_RE: Final[re.Pattern[str]] = re.compile(r"\s")
 _IBAN_RE: Final[re.Pattern[str]] = re.compile(
@@ -185,21 +184,36 @@ def _keep_whole(number: str, config: Config) -> bool:
     )
 
 
+@lru_cache(maxsize=1)
+def url_character_classes() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """The pattern's first, continuing and excluded tail characters, over all Unicode.
+
+    Ask the actual classes, with the pattern's flags. In particular IGNORECASE
+    on [a-z] is broader than ASCII. Store the complement of the tail class,
+    which is small, rather than a set containing nearly all Unicode.
+    """
+    first, continuing, tail = re.findall(r"\[[^]]+\]|\\[sS]", _URL_RE.pattern)
+    unicode = "".join(map(chr, range(0x110000)))
+    return tuple(frozenset(match.group() for match in re.finditer(pattern, unicode, _URL_RE.flags | re.DOTALL))
+                 for pattern in (first, continuing, f"(?!{tail})."))
+
+
 def url_spans(text: str) -> list[tuple[int, int]]:
     """The spans ``_URL_RE.finditer`` gives, in time linear in the text: each ``://`` is looked at once."""
     spans: list[tuple[int, int]] = []
+    first, continuing, excluded = url_character_classes()
     end = 0
     for found in _SEPARATOR_RE.finditer(text):
         separator = found.start()
         if separator < end:
             continue
         start = separator
-        while start > end and text[start - 1] in _SCHEME_CHARACTERS:
+        while start > end and text[start - 1] in continuing:
             start -= 1
-        while start < separator and not text[start].isalpha():  # the scheme begins with its first letter
+        while start < separator and text[start] not in first:
             start += 1
         after = found.end()
-        if start == separator or after >= len(text) or text[after].isspace():
+        if start == separator or after >= len(text) or text[after] in excluded:
             continue
         space = _SPACE_RE.search(text, after)
         end = len(text) if space is None else space.start()
