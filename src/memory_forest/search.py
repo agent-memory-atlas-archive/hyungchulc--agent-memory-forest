@@ -2445,8 +2445,11 @@ def source_for(root: str | os.PathLike[str], scope: Scope, source: str | None) -
     if source is None:
         return None
     known: list[str] = []
-    for listed in sources_mod.listed(root, _readable_lanes(root, scope), keep=False).values():
+    lanes = _readable_lanes(root, scope)
+    for listed in sources_mod.listed(root, lanes).values():
         known.extend(listed)
+    if source not in known:
+        known = [label for labels in sources_mod.listed(root, lanes, verify=True).values() for label in labels]
     return sources_mod.require(source, known)
 
 
@@ -2522,7 +2525,7 @@ def query(
         vector_note = _add_vector_hits(connection, pages, words, config, scope)
         found = list(pages.values()) if wanted is None else narrow(safe, pages.values(), wanted)
         ordered = sorted(found, key=lambda item: (item["tier"], -item["score"], item["path"]))[:limit]
-        payload = _envelope(scope, ordered, vectors=vector_note, question=words)
+        payload = _envelope(scope, ordered, vectors=vector_note, question=words, root=safe)
         if stale:
             payload["stale"] = stale
         if is_read_only(connection):
@@ -2603,7 +2606,6 @@ def read(
         [
             {
                 "path": path,
-                "score": 1,
                 "sections": [
                     {
                         "address": f"{path}#{address}" if address else path,
@@ -2613,11 +2615,9 @@ def read(
                         "line_end": end,
                         "line_start": start,
                         "text": body,
-                        "tree": tree if info.role is not layout.PageRole.RAW_FILE else "",
                         "why": ["read"],
                     }
                 ],
-                "tier": 0,
                 "tree": tree if tree in scope.trees else "",
                 "why": ["read"],
             }
@@ -2629,7 +2629,7 @@ def read(
     if undecodable:
         payload["status"] = f"undecodable: {path}"
         payload["undecodable"] = [path]
-    return payload
+    return _provenance(safe, payload)
 
 
 @_public
@@ -2970,6 +2970,7 @@ def _envelope(
     *,
     vectors: str = "off",
     question: str | None = None,
+    root=None,
 ) -> dict[str, Any]:
     lanes = sorted({section["agent"] for page in pages for section in page["sections"] if section.get("agent")})
     trees = sorted({page["tree"] for page in pages if page.get("tree")})
@@ -3004,6 +3005,31 @@ def _envelope(
     }
     if question is not None:
         payload["question"] = question
+    return _provenance(root, payload) if root is not None else payload
+
+
+def _provenance(root, payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach each selected turn's ordered arrivals from the lane, one read per selected file."""
+    masking = None
+    for page in payload["results"]:
+        path = page["path"]
+        if not _is_lane(path):
+            continue
+        if masking is None:
+            masking = _Masker(load_config(root))
+        lines = system.read_text(layout.resolve(root, path), errors="replace").split("\n")
+        for section in page["sections"]:
+            first, last = section["lines"]
+            arrivals = []
+            for number in section.get("kept_lines", range(first, last + 1)):
+                raw = lines[number - 1]
+                try:
+                    record = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    arrivals.extend(sources_mod.arrivals(record))
+            section["arrivals"] = forest_credentials.shown(arrivals, config=masking.config, ledger=masking.ledger)
     return payload
 
 

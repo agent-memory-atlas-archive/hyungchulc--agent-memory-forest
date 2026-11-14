@@ -186,6 +186,10 @@ def _print_credentials(found: list[forest_credentials.PageCredentials], *, json_
         if lane.get("kept"):
             line += f"; {lane['kept']} kept as written (not in the writer's encoding)"
         lines.append(line)
+        if lane.get("stored"):
+            lines.append(f"stored: {lane['stored']}; ids: {', '.join(lane.get('ids', []))}")
+        for name, status in lane.get("derived", {}).items():
+            lines.append(f"{name}: {status['state']}" + (f" ({status['reason']})" if status.get("reason") else ""))
     _print_lines(lines)
 
 

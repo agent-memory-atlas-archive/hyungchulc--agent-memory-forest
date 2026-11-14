@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from memory_forest import intake, levels, mcp, sources
+from memory_forest import turn_keys, intake, levels, mcp, sources
 from memory_forest.cli import forest_main
 from memory_forest import cli_find
 from memory_forest.errors import MemoryForestError
@@ -120,7 +120,7 @@ class TurnTests(ForestTestCase):
         with self.assertRaises(MemoryForestError) as bad:
             _log(root, "x", at=NOON, turn_id="msg\n42")
         self.assertEqual(bad.exception.code, "arguments_invalid")
-        kept = [line for line in _lines(root, first["path"]) if line.get("turn") == "msg-0042"]
+        kept = [line for line in _lines(root, first["path"]) if line.get("turn_digest") == turn_keys.digest(root, "msg-0042")]
         self.assertEqual(len(kept), 2)  # the first, and the one of the other session
 
     def test_both_doors_take_the_turn_id(self) -> None:
@@ -190,7 +190,7 @@ class LaneWriterTests(ForestTestCase):
         sources.listed(root, ["till-bot"])  # the fixture's lane came by hand: the listing records it
         record = root / sources.RECORD
         kept = (record.read_bytes(), record.stat().st_ino)
-        self.assertEqual(_log(root, "Done.", at=NOON + timedelta(seconds=9), turn_id="a")["stored"], "already stored")
+        self.assertEqual(_log(root, "Done.", at=NOON, turn_id="a")["stored"], "already stored")
         self.assertEqual((record.read_bytes(), record.stat().st_ino), kept)
         path = root / first["path"]
         with path.open("a", encoding="utf-8") as handle:
@@ -286,8 +286,9 @@ class ToolCallTests(ForestTestCase):
         with mock.patch.object(mcp, "_tool_text", unreadable):
             written = _body(_tool(root, "memory_log", {"agent": "Till Bot", "text": "masked later"}))
             read = _tool(root, "memory_search", {"agent": "Till Bot", "words": "trays"})
-        self.assertEqual((written["wrote"], written["stored"], written["withheld"]), (True, "written", "config_invalid"))
-        self.assertNotIn("id", written)
+        # This invented code is outside the closed refusal vocabulary, including in a withheld success.
+        self.assertEqual((written["wrote"], written["stored"], written["withheld"]), (True, "written", "internal_error"))
+        self.assertTrue(written["id"])  # the durable turn remains addressable even if masking settings fail
         self.assertTrue(read["result"]["isError"])
         self.assertEqual(_body(read)["code"], "internal_error")
         with mock.patch.object(mcp, "_tool_text", failing(PermissionError(13, "Permission denied", str(root)))):
@@ -297,7 +298,7 @@ class ToolCallTests(ForestTestCase):
             failed = _tool(root, "memory_search", {"agent": "Till Bot", "words": "trays"})
         self.assertEqual(_body(failed)["code"], "tool_failed")
         self.assertEqual(sorted(mcp.withheld({"wrote": True, "id": "x", "path": "p"}, OSError(5, "I/O error"))),
-                         ["withheld", "wrote"])
+                         ["id", "withheld", "wrote"])
 
     def test_a_forest_this_account_cannot_write_refuses_the_turn_as_unwritten_and_names_the_index(self) -> None:
         root = self._forest()

@@ -126,7 +126,7 @@ class TurnOnceTests(IntakeTestCase):
             code, _out, _err = self.invoke(root, *args, stdin=stdin)
         finally:
             intake._CHECKPOINT = None
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2 if step == "append" and not bounded else 0)
         wrote = 0 if step == "append" else 2
         self.assertIn(f"{wrote} turns, then failed", self.invoke(root, "status")[1])
         self.invoke(root, *args, stdin=stdin)
@@ -260,8 +260,9 @@ class OwnershipTests(IntakeTestCase):
 
         intake._CHECKPOINT = boom
         try:
-            with self.assertRaises(Interrupted):
-                intake.rename_agent(root, "kiln-bot", "glaze-bot")
+            result = intake.rename_agent(root, "kiln-bot", "glaze-bot")
+            self.assertEqual(result.data["stored"], "renamed")
+            self.assertTrue(any(item["state"] == "pending" for item in result.data["derived"].values()))
         finally:
             intake._CHECKPOINT = None
         intake.rename_agent(root, "kiln-bot", "glaze-bot")

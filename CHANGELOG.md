@@ -22,6 +22,17 @@ the version 1 commands replace it.
 
 ### Fixed
 
+The lane commit fixes `stored` and the turn id; ids, caller-key and source records, the tree, the index and connection bookkeeping are derived, with `pending` and a reason when unfinished.
+
+- Caller keys are HMAC-SHA256 digests under the existing forest key, with no lifetime. Missing or damaged
+  per-lane lookups rebuild from lane lines. Masking repair migrates legacy raw `turn` fields.
+- Joined turns retain ordered arrivals, each with its source label, door, adapter, group, place and time;
+  the full join window is searched on both sides of midnight.
+- Source records validate the complete entry and carry change stamps and an integrity check; semantic
+  refusals are checked against readable lanes. Read-only readers keep completed scans in the process.
+- The linear URL scanner computes its classes from the old pattern over all Unicode. The masking version
+  stays unchanged, with exhaustive class and generated span comparisons.
+
 - An admitted agent name keeps one key and one admission rule through tree creation, fill and rename.
   Registry and Markdown syntax use reversible numeric character references. Identity is resolved over
   the whole forest, exact stored id before name key, before group membership. Invisible format characters

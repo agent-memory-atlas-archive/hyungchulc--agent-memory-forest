@@ -167,12 +167,12 @@ class ToolBoundaryTests(ForestTestCase):
             def locked(self) -> bool:
                 return original_turn.locked()
 
-        def append(root: Path, relative: str, payload: str) -> None:
+        def append(root: Path, relative: str, payload: str, **options) -> None:
             if not entered.is_set():
                 entered.set()
                 if not release.wait(30):
                     raise AssertionError("the first memory_log was never released")
-            real_append(root, relative, payload)
+            real_append(root, relative, payload, **options)
 
         def call(name: str, text: str) -> None:
             try:
@@ -231,11 +231,11 @@ class ToolBoundaryTests(ForestTestCase):
         found: dict[str, object] = {}
         real_append = intake._append
 
-        def append(root: Path, relative: str, payload: str) -> None:
+        def append(root: Path, relative: str, payload: str, **options) -> None:
             entered.set()
             if not release.wait(30):
                 raise AssertionError("the stalled memory_log was never released")
-            real_append(root, relative, payload)
+            real_append(root, relative, payload, **options)
 
         def call(name: str, text: str) -> None:
             try:

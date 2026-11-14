@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import credentials, layout, names, numbers, sources, system
+from . import credentials, layout, names, numbers, sources, system, turn_keys
 from .config import AGENT_TEXT_MAX
 from . import adapters as adapter_loader
 from .adapters.common import (
@@ -187,17 +187,25 @@ def run(
     if dry_run:
         return _execute(root, config, adapter, settings, chosen, discovered, sweep=sweep,
                         bounded=hook is not None, dry_run=True)
-    with _intake_lock(root) as held:
-        if held is None:
-            if hook is not None:
-                _mark_busy(root, adapter_name, discovered[0].key)
-            message = "another intake holds the lock; this one left its cursor"
-            return Result(
-                (message,),
-                {"adapter": adapter_name, "lock": "busy", "message": message, "ok": True, "wrote": 0},
-            )
-        return _execute(root, config, adapter, settings, chosen, discovered, sweep=sweep,
-                        bounded=hook is not None, dry_run=False)
+    result = None
+    try:
+        with _intake_lock(root) as held:
+            if held is None:
+                if hook is not None:
+                    _mark_busy(root, adapter_name, discovered[0].key)
+                message = "another intake holds the lock; this one left its cursor"
+                return Result(
+                    (message,),
+                    {"adapter": adapter_name, "lock": "busy", "message": message, "ok": True, "wrote": 0},
+                )
+            result = _execute(root, config, adapter, settings, chosen, discovered, sweep=sweep,
+                              bounded=hook is not None, dry_run=False)
+    except Exception as exc:
+        if result is None or not result.data.get("stored"):
+            raise
+        result.data["derived"]["lock"] = _pending(exc)
+        result = Result((*result.lines, f"lock: pending ({_pending(exc)['reason']})"), result.data)
+    return result
 
 
 def _discover(adapter: Any, settings: IntakeToolSettings) -> list[Transcript]:
@@ -291,8 +299,7 @@ def append_owned(
     """Append one turn to ``agent``'s raw lane. The caller has already chosen role and origin.
 
     Every call is a turn of its own, with an id of its own: the same words twice are two lines. ``turn_id`` is
-    the caller's own id for the turn: the same id in the same lane and session (looked for on the day of the
-    call and the day before) is the same turn, stored once, and the call answers ``already stored`` with the
+    the caller's own id for the turn: the same id in the same lane and session, with no lifetime, is the same turn, stored once, and the call answers ``already stored`` with the
     stored id; the same id with other words is ``turn_id_reused``. Without one, a turn that came through a
     **different source** (``sources.of_call``), with the same role and words in the same lane and session,
     within :data:`TURN_JOIN_SECONDS` of the line's own time, is that line's turn: the line gains this source
@@ -342,42 +349,104 @@ def append_owned(
             source["group"] = group
     label = sources.of_call(door_name, group)
     record["sources"] = [label]
-    if turn_id is not None:
-        record["turn"] = turn_id
+    record.pop("arrivals", None)
+    record["arrivals"] = sources.arrivals(record)
     record["id"] = secrets.token_hex(10)
-    day = _day(record["at"], config)
-    with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="memory_log"):
-        before = sources.lanes_before(root, agent)
-        found = _same_turn(root, agent, record, config)
-        if found is not None:
-            found_day, number, stored = found
-            if turn_id is not None and _words(stored.get("text")) != _words(record["text"]):
-                raise MemoryForestError(
-                    "turn_id_reused",
-                    "That turn id is already a turn of this session with other words. Give this turn its own "
-                    "turn id, or send the same words again.",
-                    details={"id": str(stored.get("id") or ""), "turn": turn_id},
-                    next_step="fix",
-                )
-            had = sources.of_record(stored)
-            joined = label not in had
-            if joined:
-                _add_source(root, agent, found_day, number, stored, [*had, label])
-            sources.note(root, agent, [label], before)
-            kept = dict(stored)
-            kept["sources"] = [*had, label] if joined else had
-            kept["path"] = f"{layout.ISTM}/{agent}/{found_day}.jsonl"
-            kept["wrote"] = False
-            kept["stored"] = "already stored" if turn_id is not None else "joined"
-            return kept
-        relative = f"{layout.ISTM}/{agent}/{day}.jsonl"
-        _append(root, relative, _encode(record))
-        _note_ids(root, agent, day, [record["id"]])
-        sources.note(root, agent, [label], before)
-    record["path"] = relative
-    record["wrote"] = True
-    record["stored"] = "written"
-    return record
+    committed = False
+    result: dict[str, Any] = {}
+
+    def mark() -> None:
+        nonlocal committed
+        committed = True
+        _checkpoint("lane-committed")
+
+    try:
+        with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="memory_log"):
+            if turn_id is not None:
+                record["turn_digest"] = turn_keys.digest(root, turn_id)
+            before = sources.lanes_before(root, agent)
+            found = _same_turn(root, agent, record, config)
+            if found is not None:
+                day, number, stored = found
+                if turn_id is not None and _words(stored.get("text")) != _words(record["text"]):
+                    raise MemoryForestError(
+                        "turn_id_reused",
+                        "That turn id is already a turn of this session with other words. Give this turn its own "
+                        "turn id, or send the same words again.",
+                        details={"id": str(stored.get("id") or ""), "turn": turn_id},
+                        next_step="fix",
+                    )
+                had = sources.of_record(stored)
+                joined = label not in had or (turn_id is not None and record["arrivals"][0] not in sources.arrivals(stored))
+                result = dict(stored)
+                token = turn_keys.of_record(root, stored)
+                result.pop("turn", None)
+                if token is not None:
+                    result["turn_digest"] = token
+                result.update(path=f"{layout.ISTM}/{agent}/{day}.jsonl", wrote=False,
+                              stored="already stored" if turn_id is not None else "joined")
+                if joined:
+                    result["arrivals"] = [*sources.arrivals(stored), *record["arrivals"]]
+                    result["sources"] = sources.of_record(result)
+                    _add_source(root, agent, day, number, result, committed=mark)
+                else:
+                    mark()  # the lane already holds this exact keyed turn
+            else:
+                day = _day(record["at"], config)
+                result = {**record, "path": f"{layout.ISTM}/{agent}/{day}.jsonl", "wrote": True, "stored": "written"}
+                _append(root, result["path"], _encode(record), committed=mark)
+            result["derived"] = _repair_derived(root, agent, before, sources.of_record(result))
+            renames = _finish_renames(root)
+            if renames:
+                result["derived"]["renames"] = renames
+    except Exception as exc:
+        if not committed:
+            raise
+        result.setdefault("derived", {name: _pending(exc) for name in ("ids", "turns", "sources")})["bookkeeping"] = _pending(exc)
+    return result
+
+
+def _pending(exc: Exception) -> dict[str, str]:
+    """A derived failure is data in the successful write answer, with no private exception text."""
+    from .errors import REFUSALS, door_refusal
+    code = exc.code if isinstance(exc, MemoryForestError) else door_refusal(exc).code if isinstance(exc, OSError) else "internal_error"
+    if code not in REFUSALS:
+        code = "internal_error"
+    return {"state": "pending", "reason": code}
+
+
+def _repair_derived(root, agent: str, before: Mapping[str, Any], labels=()) -> dict[str, Any]:
+    """Each rebuildable record follows the commit independently; the next write tries each again."""
+    def ids() -> None:
+        _checkpoint("ids")
+        for name in sources.lanes_before(root, agent):
+            _day_ids(root, agent, name[:-6])
+
+    done: dict[str, Any] = {}
+    for name, repair in (("ids", ids), ("turns", lambda: turn_keys.save(root, agent)),
+                         ("sources", lambda: sources.note(root, agent, labels, before))):
+        try:
+            repair()
+            done[name] = {"state": "updated"}
+        except Exception as exc:
+            done[name] = _pending(exc)
+            try:
+                _clear_derived_obstruction(root, agent, name)
+            except (OSError, MemoryForestError):
+                pass  # the pending reason remains; never traverse a link or remove a nonempty folder
+    return done
+
+
+def _clear_derived_obstruction(root, agent: str, name: str) -> None:
+    """Clear only a wrong-kind object at an exact disposable-record name, ready for the next write."""
+    if name == "ids":
+        path = _id_dir(root, agent)
+        if system.kind(path) == "file":
+            system.remove(path)
+    else:
+        path = turn_keys.path(root, agent) if name == "turns" else layout.resolve(root, sources.RECORD)
+        if system.kind(path) == "folder":
+            system.remove_folder(path)  # only an empty folder; preserve any unexpected contents
 
 
 def _words(text: object) -> str:
@@ -405,18 +474,37 @@ def _same_turn(
 ) -> tuple[str, int, dict[str, Any]] | None:
     """The stored line that is the turn ``record`` is, or None (:func:`append_owned`)."""
     moment = datetime.fromisoformat(str(record["at"]))
-    keyed = isinstance(record.get("turn"), str)
-    earliest = moment - (timedelta(days=1) if keyed else timedelta(seconds=TURN_JOIN_SECONDS))
-    days = list(dict.fromkeys([_day(earliest.isoformat(), config), _day(moment.isoformat(), config)]))
+    keyed = isinstance(record.get("turn_digest"), str)
+    if keyed:
+        keys = turn_keys.load(root, agent)
+        address = keys.get(record["session"], {}).get(record["turn_digest"])
+        if address is not None:
+            day = address[0]
+            for line, stored in _lane_records(root, agent, day):
+                if (stored.get("session") == record["session"]
+                        and turn_keys.of_record(root, stored) == record["turn_digest"]
+                        and _words(stored.get("text")) == _words(record["text"])):
+                    return day, line, stored
+        # A missing entry or conflicting words require all canonical lane days before any refusal.
+        rebuilt = turn_keys.scan(root, agent)
+        address = rebuilt.get(record["session"], {}).get(record["turn_digest"])
+        if address is not None:
+            day = address[0]
+            for number, stored in _lane_records(root, agent, day):
+                if (stored.get("session") == record["session"]
+                        and turn_keys.of_record(root, stored) == record["turn_digest"]):
+                    return day, number, stored
+        return None
+    earliest = moment - timedelta(seconds=TURN_JOIN_SECONDS)
+    latest = moment + timedelta(seconds=TURN_JOIN_SECONDS)
+    start = datetime.fromisoformat(_day(earliest.isoformat(), config)).date()
+    stop = datetime.fromisoformat(_day(latest.isoformat(), config)).date()
+    days = [(start + timedelta(days=n)).isoformat() for n in range((stop - start).days + 1)]
     label = record["sources"][0]
     best: tuple[str, int, dict[str, Any]] | None = None
     for day in days:
         for number, stored in _lane_records(root, agent, day):
             if stored.get("session") != record["session"]:
-                continue
-            if keyed:
-                if stored.get("turn") == record["turn"]:
-                    return day, number, stored
                 continue
             if stored.get("role") != record["role"] or _words(stored.get("text")) != _words(record["text"]):
                 continue
@@ -433,19 +521,13 @@ def _same_turn(
     return best
 
 
-def _add_source(
-    root: str | os.PathLike[str], agent: str, day: str, number: int, stored: Mapping[str, Any], listed: list[str]
-) -> None:
-    """Write one lane line again with ``listed`` as its sources; every other byte of the file stays."""
+def _add_source(root, agent: str, day: str, number: int, stored: Mapping[str, Any], *, committed=None) -> None:
+    """Atomically publish the joined line. Bookkeeping is outside this commit function."""
     path = _lane_path(root, agent, day)
-    data = system.read_bytes(path)
-    lines = data.split(b"\n")
-    changed = dict(stored)
-    changed["sources"] = listed
-    lines[number] = _encode(changed).rstrip("\n").encode("utf-8")
-    rebuilt = b"\n".join(lines)
-    atomic_write(path, rebuilt)
-    _write_ids(root, agent, day, _ids_in(rebuilt), len(rebuilt))
+    lines = system.read_bytes(path).split(b"\n")
+    kept = {key: value for key, value in stored.items() if key not in {"path", "wrote", "stored"}}
+    lines[number] = _encode(kept).rstrip("\n").encode("utf-8")
+    system.write_whole(path, b"\n".join(lines), committed=committed)
 
 
 def status(root: str | os.PathLike[str]) -> Result:
@@ -529,47 +611,96 @@ def status(root: str | os.PathLike[str]) -> Result:
 
 
 def rename_agent(root: str | os.PathLike[str], old: str, new: str) -> Result:
-    """Move one agent's lane and ids, and the name in each cursor that names it. The intake lock is held.
+    """Rename the lane under the intake lock, then rebuild its disposable records and relabel its cursors.
 
-    The steps go in an order that a second run completes after an interruption at any of them: the lane
-    folder, then the ids folder, then each cursor (each written whole). A step already done is skipped.
+    A preparation names the old and new lane before the rename. Once the source is gone and the target
+    exists, another write or run can finish its pending bookkeeping. No turn line is reidentified.
     """
     if not layout.is_slug(old) or not layout.is_slug(new):
         raise MemoryForestError("intake_agent_invalid", "An agent id is a slug.", details={"agent": old})
     if old == new:
         return Result((f"{old} is already the name",), {"agent": new, "ok": True, "renamed": False})
-    pairs = (
-        ("lane", f"{layout.ISTM}/{old}", f"{layout.ISTM}/{new}"),
-        ("ids", f"{INTAKE_DIR}/ids/{old}", f"{INTAKE_DIR}/ids/{new}"),
-    )
-    moved_cursors = 0
-    with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="forest intake rename-agent"):
-        planned = []
-        for step, source_rel, dest_rel in pairs:
-            source = layout.resolve(root, source_rel)
-            dest = layout.resolve(root, dest_rel)
-            if source.exists():
-                if dest.exists():
-                    raise MemoryForestError(
-                        "intake_rename_exists",
-                        f"{new} already has a lane or ids of its own.",
-                        details={"agent": new},
-                    )
-                planned.append((step, source, dest))
-        for step, source, dest in planned:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(source, dest)
-            _checkpoint(f"rename-{step}")
+    source = layout.resolve(root, f"{layout.ISTM}/{old}")
+    target = layout.resolve(root, f"{layout.ISTM}/{new}")
+    committed = False
+    body = {"agent": new, "from": old, "ok": True, "renamed": True, "stored": "renamed"}
+
+    def mark() -> None:
+        nonlocal committed
+        committed = True
+        _checkpoint("rename-lane")
+
+    try:
+        with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="forest intake rename-agent"):
+            if system.kind(source) is not None and system.kind(target) is not None:
+                raise MemoryForestError("intake_rename_exists", f"{new} already has a lane or ids of its own.",
+                                        details={"agent": new})
+            lane = source if system.kind(source) is not None else target
+            body["ids"] = sorted(identifier for entry in system.listing(lane) if entry.kind == "file"
+                                 and entry.name.endswith(".jsonl") for identifier in _ids_in(system.read_bytes(entry.path)))
+            body["id"] = body["ids"][0] if body["ids"] else ""
+            layout.ensure_folder(root, f"{INTAKE_DIR}/renames")
+            intent = layout.resolve(root, f"{INTAKE_DIR}/renames/{new}.json")
+            system.write_whole(intent, json.dumps({"old": old, "new": new}) + "\n")
+            if lane == source:
+                system.rename_folder(source, target, committed=mark)
+            else:
+                mark()
+            body.update(_finish_rename(root, old, new))
+    except Exception as exc:
+        if not committed:
+            raise
+        body.setdefault("derived", {name: _pending(exc) for name in ("ids", "turns", "sources", "cursors")})["bookkeeping"] = _pending(exc)
+    lines = [f"renamed {old} to {new}", "stored: renamed", f"ids: {', '.join(body.get('ids', []))}"]
+    lines.extend(f"{name}: {state['state']}" + (f" ({state['reason']})" if state.get("reason") else "")
+                 for name, state in body.get("derived", {}).items())
+    return Result(tuple(lines), body)
+
+
+def _finish_rename(root, old: str, new: str) -> dict[str, Any]:
+    """Finish the rebuildable records and cursor relabelling after a committed lane rename."""
+    moved = 0
+    done = _repair_derived(root, new, {})
+    try:
         for adapter_name in _tool_names(root):
             for _path, cursor in _each_cursor(root, adapter_name):
-                if cursor.get("agent") != old:
-                    continue
-                cursor["agent"] = new
-                _save_cursor(root, adapter_name, str(cursor.get("source") or ""), cursor)
-                moved_cursors += 1
-                _checkpoint("rename-cursor")
-    message = f"renamed {old} to {new}"
-    return Result((message,), {"agent": new, "cursors": moved_cursors, "from": old, "ok": True, "renamed": True})
+                if cursor.get("agent") == old:
+                    cursor["agent"] = new
+                    _save_cursor(root, adapter_name, str(cursor.get("source") or ""), cursor)
+                    moved += 1
+                    _checkpoint("rename-cursor")
+        done["cursors"] = {"state": "updated"}
+        old_ids = _id_dir(root, old)
+        if system.kind(old_ids) == "folder":
+            # Only known old id records are disposable; unexpected contents keep this cleanup pending.
+            for entry in system.listing(old_ids):
+                if entry.kind == "file" and entry.name.endswith((".ids", ".end")):
+                    system.remove(entry.path)
+            system.remove_folder(old_ids)
+        _checkpoint("rename-ids")
+        if all(item["state"] == "updated" for item in done.values()):
+            system.remove(layout.resolve(root, f"{INTAKE_DIR}/renames/{new}.json"))
+    except Exception as exc:
+        done.setdefault("cursors", _pending(exc))
+        done["rename"] = _pending(exc)
+    return {"cursors": moved, "derived": done}
+
+
+def _finish_renames(root) -> dict[str, Any]:
+    folder = layout.resolve(root, f"{INTAKE_DIR}/renames")
+    if system.kind(folder) != "folder":
+        return {}
+    states = []
+    for entry in system.listing(folder):
+        if entry.kind != "file" or not entry.name.endswith(".json"):
+            continue
+        intent = json.loads(system.read_text(entry.path))
+        old, new = intent["old"], intent["new"]
+        if (layout.is_slug(old) and layout.is_slug(new)
+                and system.kind(layout.resolve(root, f"{layout.ISTM}/{old}")) is None
+                and system.kind(layout.resolve(root, f"{layout.ISTM}/{new}")) == "folder"):
+            states.extend(_finish_rename(root, old, new)["derived"].values())
+    return next((item for item in states if item["state"] == "pending"), {"state": "updated"}) if states else {}
 
 
 def reread(root: str | os.PathLike[str], adapter_name: str) -> Result:
@@ -661,6 +792,7 @@ def _execute(
     bounded: bool,
     dry_run: bool,
 ) -> Result:
+    renames = _finish_renames(root) if not dry_run else {}
     meta = _read_meta(root, adapter.name, dry_run=dry_run)
     if sweep and not dry_run:
         _clear_count(root, adapter.name, "deferred")
@@ -694,6 +826,8 @@ def _execute(
     reports: list[str] = []
     total = 0
     total_unknown = 0
+    receipts: list[dict[str, Any]] = []
+    failures: list[Exception] = []
     for item in discovered:
         label = item.key or item.path.name
         try:
@@ -702,9 +836,11 @@ def _execute(
                 dry_run=dry_run,
                 bounded=bounded,
                 id_cache=id_cache,
+                receipts=receipts,
             )
         except _WroteSome as exc:
             cause = exc.cause
+            failures.append(cause)
             if not dry_run:
                 log_failure(
                     root,
@@ -716,6 +852,7 @@ def _execute(
             reports.append(f"{Path(label).name}: {exc.wrote} turns, then failed ({cause.__class__.__name__})")
             continue
         except Exception as exc:
+            failures.append(exc)
             if not dry_run:
                 log_failure(root, exc.__class__.__name__ if not isinstance(exc, MemoryForestError) else exc.code, adapter.name)
             reports.append(f"{Path(label).name}: failed ({exc.__class__.__name__})")
@@ -728,7 +865,20 @@ def _execute(
         if note:
             line += f" ({note})"
         reports.append(line)
-    return _result(adapter.name, agent, tuple(reports), total, dry_run=dry_run, placed=True, unknown=total_unknown)
+    if not dry_run and failures and not receipts:
+        raise failures[0]
+    result = _result(adapter.name, agent, tuple(reports), total, dry_run=dry_run, placed=True, unknown=total_unknown)
+    if not dry_run:
+        result.data["stored"] = receipts
+        result.data["ids"] = [row["id"] for row in receipts]
+        result.data["derived"] = receipts[-1]["derived"] if receipts else _repair_derived(root, agent, {})
+        if renames:
+            result.data["derived"]["renames"] = renames
+        lines = [*result.lines, *(f"stored: {row['stored']}; id: {row['id']}" for row in receipts)]
+        lines.extend(f"{name}: {state['state']}" + (f" ({state['reason']})" if state.get("reason") else "")
+                     for name, state in result.data["derived"].items())
+        return Result(tuple(lines), result.data)
+    return result
 
 
 def _one(
@@ -742,6 +892,7 @@ def _one(
     dry_run: bool,
     bounded: bool,
     id_cache: dict[tuple[str, str], set[str]],
+    receipts: list[dict[str, Any]],
 ) -> tuple[int, int, str]:
     payload_cwd = transcript.cwd
     cursor = _load_cursor(root, adapter.name, transcript.key, dry_run=dry_run)
@@ -783,8 +934,7 @@ def _one(
         cursor["floor"] = 0
         cursor.pop("floor_prefix", None)
         cursor.pop("carry", None)
-    fresh = "dev" not in cursor and not _cursor_exists(root, adapter.name, transcript.key)
-    if rewind or not cursor.get("described") or fresh:
+    if rewind or not cursor.get("described"):
         transcript = _described(adapter, transcript, settings, payload_cwd=payload_cwd)
     else:
         transcript = replace(
@@ -843,7 +993,7 @@ def _one(
             cursor["owner"] = "internal"
             _remember_batch(root, adapter.name, transcript, cursor, batch, internal=True)
         return 0, batch.unknown, internal_note
-    if decided not in {"ordinary", "internal"} and offset == 0 and not cursor.get("seeded"):
+    if decided != "ordinary" and offset == 0 and not cursor.get("seeded"):
         # Only the first owner turn's own text can mark a session as internal.
         owner = next((turn for turn in batch.turns if turn.role == "owner"), None)
         if owner is not None and text_internal(owner.text):
@@ -859,7 +1009,7 @@ def _one(
                 _store_cursor(root, adapter.name, transcript, cursor, offset=0, internal=False)
             return 0, batch.unknown, "waiting for the owner turn"
         cursor["owner"] = "ordinary"
-    full = rewind or offset == 0
+    full = offset == 0
     records: list[tuple[str, dict[str, Any]]] = []
     seen: set[str] = set()
     faults = 0
@@ -903,17 +1053,27 @@ def _one(
             payload = "".join(_encode(item) for item in group)
             before = sources.lanes_before(root, agent)
             _checkpoint("append")
-            _append(root, relative, payload)
-            written += len(group)
+            def mark() -> None:
+                nonlocal written
+                written += len(group)
+                receipts.extend({"id": item["id"], "path": relative, "stored": "written"} for item in group)
+                _checkpoint("lane-committed")
+
+            _append(root, relative, payload, committed=mark)
             day = Path(relative).stem
-            _note_ids(root, agent, day, [item["id"] for item in group])
-            sources.note(root, agent, [label for item in group for label in sources.of_record(item)], before)
+            derived = _repair_derived(root, agent, before, [label for item in group for label in sources.of_record(item)])
+            if any(item["state"] == "pending" for item in derived.values()):
+                log_failure(root, "derived_pending", adapter.name, wrote=len(group))
+            for receipt in receipts[-len(group):]:
+                receipt["derived"] = derived
             id_cache.setdefault((agent, day), set()).update(item["id"] for item in group)
         _remember_batch(root, adapter.name, transcript, cursor, batch, internal=False)
+        _clear_busy(root, adapter.name, transcript.key)
     except Exception as exc:
         # Any failure after a line is in the lane reports what was written.
+        for receipt in receipts[-written:] if written else ():
+            receipt.setdefault("derived", {name: _pending(exc) for name in ("ids", "turns", "sources")})["bookkeeping"] = _pending(exc)
         raise _WroteSome(written, exc) from exc
-    _clear_busy(root, adapter.name, transcript.key)
     return len(records), batch.unknown, ""
 
 
@@ -1074,6 +1234,7 @@ def _record(
     repaired = _mask_strings(record, config) or repaired
     if repaired:
         record["repaired"] = True
+    record["arrivals"] = sources.arrivals(record)
     return record
 
 
@@ -1630,25 +1791,25 @@ def _write_meta(root, adapter_name: str, meta: Mapping[str, Any]) -> None:
 
 def _tool_names(root) -> list[str]:
     base = layout.resolve(root, TOOLS_DIR)
-    if not base.is_dir() or base.is_symlink():
+    if system.kind(base) != "folder":
         return []
-    return sorted(entry.name for entry in base.iterdir() if entry.is_dir() and not entry.is_symlink())
+    return sorted(entry.name for entry in system.listing(base) if entry.kind == "folder")
 
 
 def _each_cursor(root, adapter_name: str) -> list[tuple[Path, dict[str, Any]]]:
     folder = _cursor_dir(root, adapter_name)
-    if not folder.is_dir() or folder.is_symlink():
+    if system.kind(folder) != "folder":
         return []
     found = []
-    for entry in sorted(folder.iterdir(), key=lambda item: item.name):
-        if entry.name.startswith("_") or entry.suffix != ".json" or entry.is_symlink():
+    for entry in sorted(system.listing(folder), key=lambda item: item.name):
+        if entry.kind != "file" or not entry.name.endswith(".json") or entry.name.startswith("_"):
             continue
         try:
-            value = json.loads(entry.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+            value = json.loads(system.read_text(entry.path))
+        except (OSError, UnicodeError, ValueError):
             continue
         if isinstance(value, dict):
-            found.append((entry, value))
+            found.append((entry.path, value))
     return found
 
 
@@ -1827,21 +1988,10 @@ def _gap_ids(root, agent: str, day: str) -> set[str]:
 
 
 def _day_ids(root, agent: str, day: str) -> set[str]:
-    covered, size = _covered(root, agent, day)
-    path = _ids_path(root, agent, day)
-    if path.is_file() and not path.is_symlink() and covered == size:
-        try:
-            return {line for line in path.read_text(encoding="utf-8").split("\n") if line}
-        except (OSError, UnicodeError):
-            pass
     lane = _lane_path(root, agent, day)
-    ids: set[str] = set()
-    if lane.is_file() and not lane.is_symlink():
-        try:
-            ids = _ids_in(lane.read_bytes())
-        except OSError:
-            ids = set()
-    _write_ids(root, agent, day, ids, size)
+    data = system.read_bytes(lane)
+    ids = _ids_in(data)
+    _write_ids(root, agent, day, ids, len(data))
     return ids
 
 
@@ -1862,94 +2012,22 @@ def _ids_in(data: bytes) -> set[str]:
     return found
 
 
-def _note_ids(root, agent: str, day: str, ids: list[str]) -> None:
-    """Append the ids of the lane's new tail, including a torn write's lines, then remember the end."""
-    tail = _gap_ids(root, agent, day)
-    fresh = list(dict.fromkeys([*tail, *ids]))
-    _checkpoint("ids")
-    if fresh:
-        folder = _id_dir(root, agent)
-        folder.mkdir(parents=True, exist_ok=True)
-        path = _ids_path(root, agent, day)
-        payload = "".join(item + "\n" for item in fresh).encode("utf-8")
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags, 0o600)
-        try:
-            _write_all(descriptor, payload)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    _write_end(root, agent, day, _lane_path(root, agent, day).stat().st_size)
-
-
 def _write_ids(root, agent: str, day: str, ids: set[str], size: int) -> None:
-    folder = _id_dir(root, agent)
-    folder.mkdir(parents=True, exist_ok=True)
-    atomic_write(_ids_path(root, agent, day), "".join(item + "\n" for item in sorted(ids)))
-    _write_end(root, agent, day, size, mark=False)
+    layout.ensure_folder(root, f"{INTAKE_DIR}/ids/{agent}")
+    system.write_whole(_ids_path(root, agent, day), "".join(item + "\n" for item in sorted(ids)))
+    _write_end(root, agent, day, size)
 
 
-def _write_end(root, agent: str, day: str, size: int, *, mark: bool = True) -> None:
-    folder = _id_dir(root, agent)
-    folder.mkdir(parents=True, exist_ok=True)
-    if mark:
-        _checkpoint("end")
-    atomic_write(_end_path(root, agent, day), f"{size}\n")
+def _write_end(root, agent: str, day: str, size: int) -> None:
+    layout.ensure_folder(root, f"{INTAKE_DIR}/ids/{agent}")
+    _checkpoint("end")
+    system.write_whole(_end_path(root, agent, day), f"{size}\n")
 
 
-def _append(root: str | os.PathLike[str], relative: str, payload: str) -> None:
+def _append(root: str | os.PathLike[str], relative: str, payload: str, *, committed=None) -> None:
     parent = relative.rsplit("/", 1)[0]
     layout.ensure_folder(root, parent)
-    path = layout.resolve(root, relative)
-    created = not path.exists()
-    data = payload.encode("utf-8")
-    # Read-write so a torn tail can be cut back before the append.
-    flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        if created:
-            os.fchmod(descriptor, 0o600)
-        _trim_torn(descriptor)
-        _write_all(descriptor, data)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    if created:
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-
-
-def _trim_torn(descriptor: int) -> None:
-    """A lane file that does not end in a newline loses that torn tail before the next append."""
-    size = os.lseek(descriptor, 0, os.SEEK_END)
-    if size <= 0:
-        return
-    os.lseek(descriptor, size - 1, os.SEEK_SET)
-    if os.read(descriptor, 1) == b"\n":
-        return
-    position = size
-    while position > 0:
-        step = min(8192, position)
-        position -= step
-        os.lseek(descriptor, position, os.SEEK_SET)
-        chunk = os.read(descriptor, step)
-        found = chunk.rfind(b"\n")
-        if found >= 0:
-            os.ftruncate(descriptor, position + found + 1)
-            return
-    os.ftruncate(descriptor, 0)
-
-
-def _write_all(descriptor: int, payload: bytes) -> None:
-    view = memoryview(payload)
-    while view:
-        written = os.write(descriptor, view)
-        if written <= 0:
-            raise OSError("a lane write made no progress")
-        view = view[written:]
+    system.append(layout.resolve(root, relative), payload.encode("utf-8"), trim_torn=True, committed=committed)
 
 
 # ─────────────────────────────── lanes written under earlier masking rules ───────────────────────────────
@@ -1959,26 +2037,29 @@ def _mask_lane_value(value: Any, config: Config, ledger: Any) -> Any:
     if isinstance(value, str):
         return credentials.mask(value, config=config, ledger=ledger)
     if isinstance(value, dict):
-        return {key: _mask_lane_value(item, config, ledger) for key, item in value.items()}
+        return {key: item if key == "turn_digest" else _mask_lane_value(item, config, ledger) for key, item in value.items()}
     if isinstance(value, list):
         return [_mask_lane_value(item, config, ledger) for item in value]
     return value
 
 
-def _masked_lane_line(raw: bytes, config: Config, ledger: Any) -> bytes | None:
+def _masked_lane_line(raw: bytes, config: Config, ledger: Any, *, root=None, fix=False) -> bytes | None:
     """The line as today's rules would store it, or None when they change nothing (or it is no record).
 
-    Every string of the record is masked except ``id`` and ``at``, as the writer masks them. A line the
-    writer's encoding does not reproduce byte for byte is left as written: rewriting it would change more
-    than the masked spans."""
+    Identity fields ``id``, ``at`` and ``turn_digest`` stay. Other strings are masked. A legacy ``turn``
+    field is migrated to its digest, including JSON re-encoding when necessary; otherwise a line outside
+    the writer's encoding is left as written rather than changing more than its masked spans."""
     record = parse_object(raw)
     if not isinstance(record, dict):
         return None
-    masked = {key: value if key in {"id", "at"} else _mask_lane_value(value, config, ledger)
-              for key, value in record.items()}
+    legacy = isinstance(record.get("turn"), str)
+    masked = {key: value if key in {"id", "at", "turn_digest"} else _mask_lane_value(value, config, ledger)
+              for key, value in record.items() if key != "turn"}
+    if legacy:
+        masked["turn_digest"] = turn_keys.digest(root, record["turn"]) if fix else "digest-on-repair"
     if masked == record:
         return None
-    if _encode(record).encode("utf-8") != raw + b"\n":
+    if not legacy and _encode(record).encode("utf-8") != raw + b"\n":
         return b""
     return _encode(masked).encode("utf-8").rstrip(b"\n")
 
@@ -1986,22 +2067,23 @@ def _masked_lane_line(raw: bytes, config: Config, ledger: Any) -> bytes | None:
 def _lane_files(root) -> list[tuple[str, str, Path]]:
     base = layout.resolve(root, layout.ISTM)
     found: list[tuple[str, str, Path]] = []
-    if not base.is_dir() or base.is_symlink():
+    if system.kind(base) != "folder":
         return found
-    for agent in sorted(base.iterdir(), key=lambda item: item.name):
-        if not agent.is_dir() or agent.is_symlink() or not layout.is_slug(agent.name):
+    for agent in sorted(system.listing(base), key=lambda item: item.name):
+        if agent.kind != "folder" or not layout.is_slug(agent.name):
             continue
-        for path in sorted(agent.glob("*.jsonl")):
-            if path.is_file() and not path.is_symlink():
-                found.append((agent.name, path.stem, path))
+        for entry in sorted(system.listing(agent.path), key=lambda item: item.name):
+            if entry.kind == "file" and entry.name.endswith(".jsonl"):
+                found.append((agent.name, entry.name[:-6], entry.path))
     return found
 
 
 def lane_masking(root: str | os.PathLike[str], *, fix: bool = False) -> list[dict[str, Any]]:
     """For each lane (``06 istm/<agent>``), how many lines today's masking rules would change: a count, never a
     value. With ``fix`` each such line is rewritten in place, under the intake lock: the file is replaced
-    atomically, it keeps its number of lines, and only the masked spans differ. The id index of a rewritten
-    file is written again from it. A line the writer's encoding does not reproduce is counted as kept."""
+    atomically and keeps its number of lines. Legacy caller keys migrate to digests; other changes are
+    masked spans only. Derived records follow the rewrite. Other lines outside the writer's encoding
+    are counted as kept."""
     from . import credential_ledger
 
     config = load_config(root)
@@ -2009,14 +2091,14 @@ def lane_masking(root: str | os.PathLike[str], *, fix: bool = False) -> list[dic
     totals: dict[str, dict[str, Any]] = {}
 
     def scan(agent: str, path: Path) -> tuple[bytes, int, int]:
-        data = path.read_bytes()
+        data = system.read_bytes(path)
         complete = data[: data.rfind(b"\n") + 1] if b"\n" in data else b""
         tail = data[len(complete):]
         lines = complete.split(b"\n")[:-1] if complete else []
         changed = kept = 0
         out: list[bytes] = []
         for raw in lines:
-            new = _masked_lane_line(raw, config, ledger)
+            new = _masked_lane_line(raw, config, ledger, root=root, fix=fix)
             if new is None:
                 out.append(raw)
                 continue
@@ -2036,16 +2118,34 @@ def lane_masking(root: str | os.PathLike[str], *, fix: bool = False) -> list[dic
             row["lines"] += changed + kept
             row["kept"] += kept
             if write and changed:
-                before = path.read_bytes().count(b"\n")
-                atomic_write(path, rebuilt)
-                if path.read_bytes().count(b"\n") != before:  # pragma: no cover - atomic_write writes all or nothing
-                    raise MemoryForestError("lane_fix_lines", "A rewritten lane lost or gained a line.")
-                _write_ids(root, agent, day, _ids_in(rebuilt), len(rebuilt))
-                row["written"] += changed
+                committed = False
+
+                def mark() -> None:
+                    nonlocal committed
+                    committed = True
+                    row["written"] += changed
+                    row["stored"] = "rewritten"
+                    row["ids"] = sorted(_ids_in(rebuilt))
+                    _checkpoint("lane-committed")
+
+                try:
+                    system.write_whole(path, rebuilt, committed=mark)
+                    row["derived"] = _repair_derived(root, agent, {})
+                except Exception as exc:
+                    if not committed:
+                        raise
+                    row.setdefault("derived", {name: _pending(exc) for name in ("ids", "turns", "sources")})["bookkeeping"] = _pending(exc)
 
     if not fix:
         visit(False)
     else:
-        with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="forest credentials fix"):
-            visit(True)
+        try:
+            with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="forest credentials fix"):
+                visit(True)
+        except Exception as exc:
+            stored = [row for row in totals.values() if row["written"]]
+            if not stored:
+                raise
+            for row in stored:
+                row.setdefault("derived", {name: _pending(exc) for name in ("ids", "turns", "sources")})["bookkeeping"] = _pending(exc)
     return [row for row in totals.values() if row["lines"] or row["kept"]]

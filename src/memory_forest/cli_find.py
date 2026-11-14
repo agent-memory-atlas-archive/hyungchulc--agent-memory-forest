@@ -331,13 +331,6 @@ def cmd_log(arguments: Any) -> int:
         )
     _refuse_widening(arguments)
     reader = _caller(arguments, required=True, door="log")
-    if not reader:
-        raise MemoryForestError(
-            "log_agent_unset",
-            "Name the agent with `forest log --as`, or the group and the caller with "
-            "`forest log --as-group` and `--agent`.",
-            next_step="fix",
-        )
     with _admitted(arguments):
         body = mcp.record_turn(
             forest_root(arguments),
@@ -354,15 +347,17 @@ def cmd_log(arguments: Any) -> int:
     # The turn is written: an answer that cannot be masked keeps its fixed words, never a refusal.
     try:
         shown = _shown(body)
-    except (MemoryForestError, OSError) as exc:
+    except Exception as exc:
         shown = mcp.withheld(body, exc)
     if arguments.json:
         sys.stdout.write(json.dumps(shown, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
         return 0
     lines = [f"path: {shown['path']}"] if "path" in shown else []
     lines += [f"wrote: {str(shown['wrote']).lower()}", f"indexed: {str(shown['indexed']).lower()}"]
-    lines += [f"{key}: {shown[key]}" for key in ("stored", "tree", "index", "reason", "withheld", "admitted")
+    lines += [f"{key}: {shown[key]}" for key in ("id", "stored", "tree", "index", "reason", "withheld", "admitted")
               if shown.get(key)]
+    for name, status in shown.get("derived", {}).items():
+        lines.append(f"{name}: {status['state']}" + (f" ({status['reason']})" if status.get("reason") else ""))
     sys.stdout.write("\n".join(lines) + "\n")
     return 0
 
@@ -562,7 +557,7 @@ COMMANDS: list[ForestCommand] = [
             arg("--origin", default=None, help="refused: the command sets the origin"),
             arg("--session", default=None, help="the session name; the role and the origin stay the command's"),
             arg("--turn-id", dest="turn_id", default=None,
-                help="your own id for this turn, when you may send it twice: the same id in the session is stored once"),
+                help="your own id for this turn, when you may send it twice: the same id in the lane and session is stored once, with no lifetime; only its keyed digest is stored"),
             _READER,
             _GROUP,
             _CALLER,

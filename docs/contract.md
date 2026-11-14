@@ -30,8 +30,11 @@ number, the setting that holds it is given with its default.
     (`owner`, `agent`, `tool`, `system`, or `other:<name>`), `text`, `origin` (`interactive`, `headless`,
     `subagent` or `unknown`) and `source` (the adapter, the transcript and the place in it). The transcript
     in `source` is relative to that tool's own transcript root. A turn an agent wrote itself also has
-    `sources`, where it came from (`group:<id>` or `door:<name>`) in the order it came, and `turn`, the
-    caller's own id for it when one was given. A tool turn also has `name`. Where the tool
+    `sources`, where it came from (`group:<id>` or `door:<name>`) in the order it came, and `turn_digest`, the
+    HMAC-SHA256 digest of the caller's own key when one was given, using the credential ledger's key.
+    `arrivals` keeps every joined arrival's label, door, adapter, group, place and time in arrival order.
+    A legacy line is one arrival. The caller key has no lifetime; the lookup is derived from all lane days.
+    Masking repair migrates legacy raw `turn` fields to the digest and counts those lines as rewritten. A tool turn also has `name`. Where the tool
     marks a span the owner pasted, attached or quoted, or a span the client wrote into the owner's side,
     `text` stays whole and `parts` names each span and its kind (`paste`, `file`, `quote` or `harness`).
     That span is evidence, not the owner's own words. A line the client wrote and the owner did not
@@ -184,12 +187,13 @@ number, the setting that holds it is given with its default.
      (Han characters, a script with no table, a symbol) has the id `agent-` and the first six hexadecimal
      digits of the SHA-256 of its key, and the rest of the name is not used (invented examples: "Kiln
      Bot" → `kiln-bot`, "스카우트" → `seukauteu`, "スカウト" → `sukauto`, "Разведчик" → `razvedchik`,
-     "侦察兵" → `agent-` and six digits). Two agents are one agent only when their names have one key:
+     "侦察兵" → `agent-` and six digits). Except for an exact stored-id selection, two agents are one agent only when their names have one key:
      the name in NFKC, case-folded, with white space, hyphens, dashes and underscores taken out; never
      because their ids or slugs agree. An id something else holds is followed by `-agent`, and one another
      agent holds by the smallest free number from 2. An agent declared with an id and a name keeps that
      id. Identity is resolved across the whole forest before membership: an exact stored id wins,
-     then the name key is matched. A group never changes which agent a text names. Member references
+     then the name key is matched. An exact stored id intentionally selects its stored agent even when
+     another name has a different key. A group never changes which agent a text names. Member references
      use the same admitted text as callers, before exact-id lookup. Two declarations with one key,
      or a name that is another agent's exact id, are reported by `forest check` with the
      edit that removes the ambiguity.

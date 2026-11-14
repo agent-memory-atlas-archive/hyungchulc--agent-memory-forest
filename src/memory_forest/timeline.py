@@ -182,7 +182,7 @@ def subject(
             )
         found = list(pages.values()) if wanted is None else search.narrow(safe, pages.values(), wanted)
         ranked = sorted(found, key=lambda item: (page_stamp.get(item["path"], "9999"), item["path"]))
-        payload = search._envelope(scope, ranked[:limit])
+        payload = search._envelope(scope, ranked[:limit], root=safe)
         payload["subject"] = subject_id
         if stale:
             payload["stale"] = stale
@@ -265,7 +265,7 @@ def _collect(
             unit = search._row_dict(row)
             if not search._visible(scope, unit["path"]):
                 continue
-            page_zone = _page_zone(row["page_zone"] if "page_zone" in row.keys() else "", config)
+            page_zone = _page_zone(row["page_zone"], config)
             matched_lines = _matching_lines(unit["text"], when, config, page_zone)
             if matched_lines:
                 unit = {**unit, "text": "\n".join(matched_lines)}
@@ -276,7 +276,7 @@ def _collect(
                 stamps[unit["path"]] = row["start_utc"]
         found = list(pages.values()) if wanted is None else search.narrow(root, pages.values(), wanted)
         ordered = sorted(found, key=lambda item: stamps.get(item["path"], ""))[:limit]
-        payload = search._envelope(scope, ordered)
+        payload = search._envelope(scope, ordered, root=root)
         payload["phrase"] = phrase
         payload["when"] = _when_dict(when)
         if search.is_read_only(connection):

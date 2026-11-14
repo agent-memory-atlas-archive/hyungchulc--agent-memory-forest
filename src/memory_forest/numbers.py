@@ -205,8 +205,6 @@ def url_spans(text: str) -> list[tuple[int, int]]:
     end = 0
     for found in _SEPARATOR_RE.finditer(text):
         separator = found.start()
-        if separator < end:
-            continue
         start = separator
         while start > end and text[start - 1] in continuing:
             start -= 1

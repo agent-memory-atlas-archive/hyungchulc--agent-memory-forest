@@ -651,10 +651,17 @@ forest navigate --as till-bot
 forest navigate "03 mtm/bakery/bakery_MTM.md" --as-group bakery-bots --agent till-bot
 ```
 
+`memory_navigate` uses `lines: [first, last]` in place of its former `line_start` and `line_end` fields.
+Settings entry problems are reported by `forest check`, not by `forest agents`.
+
 `forest navigate` is the command for `memory_navigate`: one level down from the root index, or from a
 path the previous call showed. The scope is the reader's.
 
 ## `forest log`
+
+The lane commit fixes `stored` and the turn id; ids, caller-key and source records, the tree, the index and connection bookkeeping are derived, with `pending` and a reason when unfinished.
+
+If a crash loses the answer, the caller cannot know whether the turn was stored; repeating the call with its key is safe.
 
 `forest log` is the command-line door of `memory_log`. The turn is read from stdin: its words are at most
 131,072 bytes, the same bound `memory_log` keeps on its `text`, and a piped stdin that has not ended after
@@ -668,7 +675,15 @@ Each call is a turn of its own: the same words twice are two lines. `--turn-id` 
 the caller's own id for the turn: the same id in the same lane and session is stored once, and the second
 call answers `stored: already stored` with the stored id; the same id with other words is
 `turn_id_reused` (`fix`). The same words, role, lane and session through a different source within 120
-seconds are one line that carries both sources (`stored: joined`).
+seconds are one line that carries both sources (`stored: joined`). The window is searched on both sides.
+Each ordered `arrivals` entry keeps its source label, door, adapter, group, place and time.
+
+The key has no lifetime. Only its HMAC-SHA256 digest is stored, using the existing credential-ledger key.
+The raw key is not copied into a lane, derived record or log. A per-lane lookup maps session and digest to
+the first turn, rebuilt from all lane days when missing, torn or stale. Masking repair converts legacy raw
+`turn` fields to `turn_digest`, counts them as rewritten, and preserves their identity. Migrating that legacy
+field can also put the JSON object in the writer's current encoding, with its other field values preserved.
+A lane holder can compare digests for equality; a holder of the private forest key can also test guesses offline.
 
 The answer says what happened, in order: `wrote` and `stored` for the lane's line, then `tree` (`made`,
 `already there`, `pending`, `none`) and `index` (`updated`, `pending`, with `reason`). Once the line is
@@ -697,7 +712,9 @@ when it was last seen on a connection. Agents that are not in a group are listed
 group with a source of members it shows the names the last read left out and a source that failed. Pairs
 whose keys differ by one edit, or whose names by one added word, are a remark, with what the owner can do.
 A remark is not a refusal. The sources come from `.forest/intake/sources.json`, which the lane writer keeps;
-an agent whose lane files no longer have the sizes it records is read from its lanes once.
+an agent whose lane change stamps differ is read from its lanes once.
+
+For unchanged lane and record stamps, a reader scans an agent's lanes at most once per process, and persists that scan when it can.
 
 Member-source refreshes share one result or failure, with the interval starting at completion. A source
 returns at most 50,000 texts of at most 200 Unicode characters each. An unreturned reader holds its one

@@ -167,6 +167,7 @@ CAN: dict[str, tuple[str, ...]] = {
     "remove_folder": ("absent", "denied", "not_a_folder", "other"),
     "set_mode": ("absent", "denied", "link", "other"),
     "sync_folder": ("absent", "denied", "other"),
+    "rename": ("absent", "denied", "not_a_folder", "link", "other"),
     "may": (),
     "enter_folder": ("absent", "denied", "not_a_folder", "link", "changed", "other"),
     "name_limit": ("absent", "denied", "not_a_folder", "other"),
@@ -429,12 +430,13 @@ class Look:
     dev: int
     ino: int
     uid: int
+    ctime_ns: int = 0
 
     @classmethod
     def of(cls, info: os.stat_result) -> Look:
         return cls(
             kind_of(info.st_mode), stat.S_IMODE(info.st_mode), info.st_size, info.st_mtime_ns,
-            info.st_dev, info.st_ino, info.st_uid,
+            info.st_dev, info.st_ino, info.st_uid, info.st_ctime_ns,
         )
 
     @property
@@ -872,7 +874,8 @@ def cut_back(path: str | os.PathLike[str], length: int) -> bool:
 
 
 def write_whole(
-    path: str | os.PathLike[str], data: bytes | str, *, mode: int | None = None, keep_mode: bool = True
+    path: str | os.PathLike[str], data: bytes | str, *, mode: int | None = None, keep_mode: bool = True,
+    committed: Callable[[], None] | None = None,
 ) -> None:
     """Write a whole file: a reader sees the old bytes or the new, never part of either.
 
@@ -905,7 +908,7 @@ def write_whole(
             descriptor = os.open(temporary, flags, 0o600)
             break
         except FileExistsError:
-            continue
+            pass
         except OSError as exc:
             raise _classify(exc, target, "write") from None
     else:  # pragma: no cover - sixteen taken names in a row
@@ -929,6 +932,8 @@ def write_whole(
         if isinstance(exc, OSError):
             raise _classify(exc, target, "write") from None
         raise
+    if committed is not None:
+        committed()
     sync_folder(target.parent)
 
 
@@ -964,7 +969,8 @@ def create_new(path: str | os.PathLike[str], data: bytes, *, mode: int = 0o600) 
 APPEND_WAIT_SECONDS = 5.0
 
 
-def append(path: str | os.PathLike[str], data: bytes, *, mode: int = 0o600) -> None:
+def append(path: str | os.PathLike[str], data: bytes, *, mode: int = 0o600,
+           committed: Callable[[], None] | None = None, trim_torn: bool = False) -> None:
     """Append ``data`` to an append-only file under the caller's lock, then sync it.
 
     The file's own ``flock`` is taken too, so another appender of the same file waits, at most
@@ -974,25 +980,74 @@ def append(path: str | os.PathLike[str], data: bytes, *, mode: int = 0o600) -> N
     if not data:
         return
     flags = (
-        os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        (os.O_RDWR if trim_torn else os.O_WRONLY) | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         | getattr(os, "O_CLOEXEC", 0)
     )
     descriptor, _info = _open_checked(path, flags, mode, "write")
     try:
         _flock_within(descriptor, path, APPEND_WAIT_SECONDS)
+        start = os.lseek(descriptor, 0, os.SEEK_END)
         try:
+            if trim_torn:
+                start = _complete_tail(descriptor, start)
             view = memoryview(data)
             while view:
                 written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError(errno.EIO, "an append made no progress")
                 view = view[written:]
             os.fsync(descriptor)
         except OSError as exc:
+            try:
+                os.ftruncate(descriptor, start)
+                os.fsync(descriptor)
+            except OSError:
+                pass
             raise _classify(exc, path, "write") from None
-        finally:
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        else:
+            if committed is not None:
+                committed()
     finally:
         os.close(descriptor)
+    if committed is not None:
+        sync_folder(Path(path).parent)
+
+
+def _complete_tail(descriptor: int, size: int) -> int:
+    """Remove only a trailing incomplete line, before appending under the file lock."""
+    position = size
+    while position:
+        step = min(8192, position)
+        position -= step
+        os.lseek(descriptor, position, os.SEEK_SET)
+        chunk = os.read(descriptor, step)
+        found = chunk.rfind(b"\n")
+        if found >= 0:
+            end = position + found + 1
+            os.ftruncate(descriptor, end)
+            return end
+    os.ftruncate(descriptor, 0)
+    return 0
+
+
+def rename_folder(source: str | os.PathLike[str], target: str | os.PathLike[str], *,
+                  committed: Callable[[], None] | None = None) -> None:
+    """Rename a real folder into a missing name; the rename is the commit, sync follows it."""
+    _enter("rename", source, "write")
+    if kind(source) == "link":
+        raise Link(source)
+    if kind(source) != "folder":
+        raise NotAFolder(source)
+    if look_or_none(target) is not None:
+        raise Other(target, number=errno.EEXIST)
+    try:
+        os.rename(source, target)
+    except OSError as exc:
+        raise _classify(exc, source, "write") from None
+    if committed is not None:
+        committed()
+    sync_folder(Path(target).parent)
+    sync_folder(Path(source).parent)
 
 
 def _flock_within(descriptor: int, path: str | os.PathLike[str], seconds: float) -> None:

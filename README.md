@@ -182,6 +182,10 @@ two bots, two days of daily pages and a raw lane, about forty small files.
 4. An orchestrator reads the whole forest; other agents read shared trees and their own.
 5. Each agent appends to its own raw lane, and one filing run at a time writes the forest under a lock.
 
+The lane commit fixes `stored` and the turn id; ids, caller-key and source records, the tree, the index and connection bookkeeping are derived, with `pending` and a reason when unfinished.
+
+If a crash loses the answer, the caller cannot know whether the turn was stored; repeating the call with its key is safe.
+
 Details: [Agents](docs/multi-agent.md).
 
 ## Documentation

@@ -626,7 +626,7 @@ that agent's own job.
 - **The record.** One line per turn in `06 istm/<agent>/<YYYY-MM-DD>.jsonl`: `id` (stable for the turn:
   the turn's own id where that id is unique by itself, the session and that id where it is not, or a
   hash of the turn's content and time where it has none; an id of its own for every call of `memory_log`
-  or `forest log`, which also keeps the caller's `turn_id` as `turn` and the turn's `sources`; the lane,
+  or `forest log`, which keeps only the caller key's `turn_digest` and the turn's `sources` and `arrivals`; the lane,
   not the id, names the agent), `at`
   (with its offset), `session`, `role` (`owner`, `agent`,
   `tool`, `system`, or `other:<name>`), `text`, `origin` (`interactive`, `headless`, `subagent` or
@@ -783,3 +783,5 @@ sources; through one door, twice, they are two lines. The words are at most 131,
 door; the protocol line has its own larger bound (1,000,000 bytes), so a turn at that bound fits when every
 byte is escaped. `forest log` refuses bytes that are not UTF-8, and refuses a piped stdin that has not
 ended after 30 seconds; a terminal has no deadline, since a person types there.
+
+The durable lane commit and pending derived bookkeeping follow [the write guarantees](multi-agent.md#what-a-write-answers). Caller keys have no lifetime; the key lookup is rebuilt from all lane days.

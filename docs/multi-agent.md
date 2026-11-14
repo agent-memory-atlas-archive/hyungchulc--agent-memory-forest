@@ -47,8 +47,8 @@ forest levels apply
 ```
 
 A turn an agent writes with `forest log` or `memory_log` makes that one agent's tree before the call
-returns, or answers `pending` while another writer holds the lock. The next write after release makes
-the tree. The level pass still makes a tree a settings entry or an intake lane left due. For readability,
+returns, or answers `pending` with a reason when tree work cannot finish. The next write retries it and
+makes the tree once the cause clears. The level pass still makes a tree a settings entry or an intake lane left due. For readability,
 the following lines show decoded display names; generated names on disk use marked numeric references.
 With the settings entry above, that pass writes:
 
@@ -415,10 +415,13 @@ its sources in `sources`; `forest agents` shows the sources each agent has writt
 read and timeline take `source` (a tool argument) or `--source` (a flag) in that form. A source no lane
 the reader may read has is `source_unknown` with `fix`, and the answer lists the reader's sources. A
 reading narrowed to a source keeps the file's own line numbers (a read names them in `kept_lines`), and it
-is narrowed before its limit. `forest agents` reads a small record the lane writer keeps,
-`.forest/intake/sources.json`, not the lanes: it holds each agent's sources and the size of each of its lane
-files. An agent whose lane files no longer have those sizes (a lane written another way) is read again from
-its lanes, every line of every lane file of that agent, once.
+is narrowed before its limit. `forest agents` starts with a small record the lane writer keeps,
+`.forest/intake/sources.json`; a verified record avoids another lane scan. It holds each agent's sources and each lane file's device, inode, size, modification and change
+nanoseconds. A same-length rewrite changes that stamp. The whole record, every element and its integrity
+check must agree; a malformed record is rebuilt in full. Before `source_unknown`, the readable lanes are
+verified, and the correction choices come from them.
+
+For unchanged lane and record stamps, a reader scans an agent's lanes at most once per process, and persists that scan when it can.
 
 ### A call is a turn
 
@@ -426,16 +429,22 @@ Every `memory_log` or `forest log` call is a turn of its own, with an id of its 
 "yes" twice in a session has said it twice. A caller that may send the same turn twice gives it its own
 id, `turn_id` (the tool's argument) or `--turn-id` (the command's flag): the same id in the same lane and
 session is the same turn, stored once, and the second call answers `stored: "already stored"` with the
-stored id. The same id with other words is `turn_id_reused` with `fix`. The id is looked for on the day of
-the call and the day before.
+stored id. The same id with other words is `turn_id_reused` with `fix`. There is no lifetime. The lane carries only the HMAC-SHA256 digest of the key, never its raw text;
+the small per-lane lookup is rebuilt from all lane days when missing, torn or stale.
 
 Only one thing joins two writes without an id: the same words, by the same role, in the same lane and
 session, through **two different sources**, within 120 seconds of each other's own time. That is one
-turn that came in two ways, and its line carries both sources in the order they came
+turn that came in two ways, and its line keeps each arrival in `arrivals`, with its source label,
+door, adapter, group, place and time. Ordered source labels are derived from those arrivals
+and the search window includes every local day on both sides of the given time. Its sources remain in arrival order
 (`"sources": ["group:studio-counter", "door:cli"]`); the second call answers `stored: "joined"`. Through
 one source, the same words again are another turn.
 
 ### What a write answers
+
+The lane commit fixes `stored` and the turn id; ids, caller-key and source records, the tree, the index and connection bookkeeping are derived, with `pending` and a reason when unfinished.
+
+If a crash loses the answer, the caller cannot know whether the turn was stored; repeating the call with its key is safe.
 
 Once the lane's line is stored, the call says so (`wrote`, and `stored`: `written`, `already stored` or
 `joined`), whatever comes after. The agent's tree and the index follow, and the answer names each:

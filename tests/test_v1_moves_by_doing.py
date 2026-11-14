@@ -53,7 +53,7 @@ from typing import Any
 from unittest import mock
 
 from memory_forest import cli, cli_intake, core, errors, intake, lint, locking, mcp, movelog
-from memory_forest import parse_relative_route, repeats, retrieval, search, stage, writer
+from memory_forest import parse_relative_route, repeats, retrieval, search, sources, stage, writer
 from memory_forest import plan as forest_plan
 from memory_forest import record as forest_record
 from memory_forest import registry as forest_registry
@@ -1113,7 +1113,8 @@ _add(FIX_ROWS, {
                               files={"forest.toml": BAKERY_BOTS}),
     # A source is a kind and a name, and one of the reader's own: till-bot's lane came through the jsonl adapter.
     "source_unknown": Fix("find", forest("search", "trays", "--as", "till-bot", "--source", "night-shift"),
-                          forest("search", "trays", "--as", "till-bot", "--source", "adapter:jsonl")),
+                          forest("search", "trays", "--as", "till-bot", "--source", "adapter:jsonl"),
+                          make=lambda root, base: sources.listed(root, ["till-bot"])),
     # The caller's own turn id, already a turn of the session with other words.
     "turn_id_reused": Fix("find", forest("log", "--as", "till-bot", "--turn-id", "tray-count-1",
                                          stdin=b"Till Bot counted the oat trays.\n"),

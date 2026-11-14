@@ -209,7 +209,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "text": {"type": "string"},
                 "turn_id": {
                     "description": "Your own id for this turn, when you may send it twice: the same id in the "
-                    "same session is stored once.",
+                    "same lane and session is stored once, with no lifetime. Only its keyed digest is stored.",
                     "type": "string",
                 },
             },
@@ -599,6 +599,14 @@ def _call(
     if admitted:
         payload = {**payload, "admitted": admitted}
     try:
+        remembered = _remember(root, reader, name, transport)
+        if name == "memory_log" and remembered is not None:
+            payload.setdefault("derived", {})["seen"] = remembered
+    except Exception as exc:
+        _log("forest mcp: the seen record could not be written")
+        if name == "memory_log":
+            payload.setdefault("derived", {})["seen"] = intake._pending(exc)
+    try:
         # The answer is masked with the forest's settings and ledger, read now: a fault there is a refusal,
         # except for a turn already written, which is never told as unwritten.
         text = _tool_text(payload, root, indent=2)
@@ -607,12 +615,10 @@ def _call(
             refusal = exc if isinstance(exc, MemoryForestError) else search.edge_refusal(exc, root)
             return _tool_error(refusal, root, fixed=True)
         text = json.dumps(withheld(payload, exc), indent=2, sort_keys=True)
-    except Exception:
-        return _tool_error(MemoryForestError("tool_failed", "The tool could not answer."), root)
-    try:
-        _remember(root, reader, name, transport)
-    except Exception:
-        _log("forest mcp: the seen record could not be written")
+    except Exception as exc:
+        if name != "memory_log":
+            return _tool_error(MemoryForestError("tool_failed", "The tool could not answer."), root)
+        text = json.dumps(withheld(payload, exc), indent=2, sort_keys=True)
     return {"content": [{"type": "text", "text": text}], "isError": False}
 
 
@@ -627,10 +633,10 @@ def withheld(body: Mapping[str, Any], exc: Exception) -> dict[str, Any]:
     """A written turn's answer when the masking cannot be read: the words of a fixed vocabulary only.
 
     ``wrote``, ``indexed`` and the reason stay, so the turn is never told as unwritten and never sent again;
-    the id and the path are withheld, with the code of what kept the masking from being read.
+    the random turn id stays and the path is withheld, with the code of what kept masking from being read.
     """
-    code = exc.code if isinstance(exc, MemoryForestError) else door_refusal(exc).code
-    kept = {key: body[key] for key in ("index", "indexed", "reason", "stored", "tree", "wrote") if key in body}
+    code = intake._pending(exc)["reason"]
+    kept = {key: body[key] for key in ("id", "derived", "index", "indexed", "reason", "stored", "tree", "tree_reason", "wrote") if key in body}
     kept["withheld"] = code
     return kept
 
@@ -781,6 +787,7 @@ def record_turn(
         turn_id=turn_id, at=at,
     )
     body: dict[str, Any] = {
+        "derived": record.get("derived", {}),
         "id": record["id"],
         "index": "pending",
         "indexed": False,
@@ -850,18 +857,19 @@ def _load_seen(path: Any) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: str) -> None:
+def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: str) -> dict[str, str] | None:
     """Record when this agent was last seen, at most once per :data:`SEEN_INTERVAL_SECONDS`.
 
-    A lock that is already held is skipped. The call is not failed and not slowed.
+    A lock that is already held is skipped. A failed update returns its pending
+    reason, so a stored turn can report it without failing or slowing the call.
     """
     safe = require_real_root(root)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     path = layout.resolve(safe, SEEN_FILE)
     try:
         current = _load_seen(path)
-    except system.Outcome:
-        return
+    except system.Outcome as exc:
+        return intake._pending(exc)
     entry = current.get(reader)
     if isinstance(entry, dict) and _seen_fresh(str(entry.get("last") or entry.get("at") or ""), now):
         return
@@ -881,10 +889,10 @@ def _remember(root: str | os.PathLike[str], reader: str, tool: str, transport: s
                 entry.setdefault("transport", transport)
             atomic_write(path, json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
             system.set_mode(path, 0o600)
-    except MemoryForestError:
-        return
-    except system.Outcome:
-        return
+    except MemoryForestError as exc:
+        return intake._pending(exc)
+    except system.Outcome as exc:
+        return intake._pending(exc)
 
 
 def _handler(

@@ -170,7 +170,6 @@ REFUSALS: dict[str, tuple[str, str]] = {
     "invalid_xltm_path": ("fix", ""),
     "journal_invalid": ("report", ""),
     "kind_invalid": ("fix", ""),
-    "lane_fix_lines": ("report", ""),
     "layer_number_mismatch": ("fix", ""),
     "leaf_name_clash": ("fix", ""),
     "leaf_name_invalid": ("fix", ""),
