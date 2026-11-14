@@ -169,7 +169,10 @@ forest stage …                                 # 원하는 model을 둘러싼 
 ## agent를 다섯 줄로
 
 1. agent(orchestrator, bot, 예약 실행 단계)는 첫날부터 tree인 subject입니다. 설정 항목이나 raw lane의 첫
-   파일만 있으면 되고, tree는 `forest levels apply`가 만듭니다.
+   파일만 있으면 되고, tree는 `forest levels apply`가 만듭니다. `forest log`와 `memory_log`는 바로
+   tree를 만들거나 다른 writer가 lock을 잡고 있으면 `pending`으로 답합니다. lock이 풀린 뒤 다음
+   write가 tree를 만듭니다. forest 전체에서 정확한 저장 id, 이름 key 순서로 agent를 찾고 나서
+   group 멤버인지 확인합니다. 이미 허용한 이름은 페이지 문법에 맞게 인코딩하며 다시 거절하지 않습니다.
 2. agent의 tree 페이지에는 역할, 고정 지시, 교훈, 현재 상태, branch가 있습니다.
 3. 기본값인 `subject-first`는 사실을 그 subject의 집에 두고 `noted by <agent>`라고 표시합니다.
    `agent-first`는 agent의 tree에 두고 `about:`으로 가리키다가, 두 agent가 같은 사실을 알게 되면 공유합니다.

@@ -15,7 +15,7 @@ from . import __version__
 from . import archive as forest_archive
 from . import layout as forest_layout
 from . import credentials as forest_credentials
-from . import system
+from . import names, system
 
 system.configure_argument_library()
 from . import movelog as forest_movelog
@@ -734,6 +734,13 @@ def forest_main(argv: Sequence[str] | None = None) -> int:
     _READER = _reader_of(arguments)
     _ANSWER_ROOT = None
     try:
+        for value in vars(arguments).values():
+            texts = value if isinstance(value, list) else [value]
+            if any(isinstance(text, str) and names.forbidden(text) for text in texts):
+                raise MemoryForestError(
+                    "arguments_invalid", "A text argument holds no Unicode control character, surrogate or line break.",
+                    next_step="fix",
+                )
         # Resolve the forest before the command runs, so a new command cannot write into a folder that
         # is not one. `init` is the only command registered with uses_root false.
         if getattr(arguments, "_uses_root", True):

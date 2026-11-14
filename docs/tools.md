@@ -5,7 +5,8 @@ change where things live; `forest check`, `forest lint`, `forest record …`, `f
 `forest credentials …` check the pages and keep their records, numbers and sign-in values.
 `forest intake` is the writer of a raw lane. Each example below runs on an invented forest of a bakery
 owner, Ilse Varrow, with a `bakery` tree, a `people` tree and an agent tree `front-desk`. The rules the
-tools keep are in the [contract](contract.md); the settings they read are in the
+tools keep are in the [contract](contract.md); generated agent names use marked numeric references,
+and examples below show their decoded display text. The settings they read are in the
 [design](v1-design.md#12-settings).
 
 ## An agent's tree, with no command for it
@@ -675,6 +676,12 @@ stored, neither the tree nor the index turns the answer into a refusal. A tree i
 writer holds the writer lock for more than 2 seconds; the next write of that agent, or the level pass,
 makes it.
 
+Agent names follow one key and one admission rule all the way to the tree. Identity is resolved over
+the whole forest, exact stored id first, then name key, before group membership. An admitted name is
+encoded where page or registry syntax needs it; it is never refused later by a subject-name rule.
+Caller text arguments are checked as supplied, before trimming, for the Unicode classes in contract
+section 2; stdin content may hold line breaks. Test clocks are passed into the relevant call.
+
 ```sh
 forest log --as till-bot <<'EOF'
 the till counted the trays
@@ -691,6 +698,11 @@ group with a source of members it shows the names the last read left out and a s
 whose keys differ by one edit, or whose names by one added word, are a remark, with what the owner can do.
 A remark is not a refusal. The sources come from `.forest/intake/sources.json`, which the lane writer keeps;
 an agent whose lane files no longer have the sizes it records is read from its lanes once.
+
+Member-source refreshes share one result or failure, with the interval starting at completion. A source
+returns at most 50,000 texts of at most 200 Unicode characters each. An unreturned reader holds its one
+process slot; later calls fail immediately and `forest check` reports it. Settings repairs distinguish
+`add_to_list`, `set_value` and `new_table`, so every edit can be applied even after a lock failure.
 
 ## `forest mcp`
 

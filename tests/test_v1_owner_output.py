@@ -15,6 +15,7 @@ import contextlib
 import io
 import json
 import sqlite3
+import sys
 import tempfile
 import unittest
 
@@ -220,6 +221,30 @@ class OwnerOutputTests(unittest.TestCase):
                     self.assertNotIn(str(self.root), out + err)
                     self.assertNotIn("at the till", out + err)
                     self.assertNotIn("Traceback", out + err)
+
+    def test_a_masking_refusal_prevents_the_command_and_keeps_hook_output_silent(self) -> None:
+        failure = MemoryForestError("search_empty", "Give the words to search for.", next_step="fix")
+        with mock.patch.object(cli, "_masking_for", return_value=failure):
+            code, out, err = self._main(["stand-in", "fault", "--root", str(self.root), "--json"])
+            self.assertEqual((code, json.loads(out)["error"]["code"], err), (2, "search_empty", ""))
+            code, out, err = self._main(["stand-in", "intake", "fault", "--hook", "--root", str(self.root)])
+            self.assertEqual((code, out, err), (0, "", ""))
+        failures = self.root / ".forest" / "intake" / "failures.jsonl"
+        self.assertEqual(json.loads(failures.read_text().splitlines()[-1])["class"], "search_empty")
+
+    def test_a_failure_before_root_resolution_folds_the_selected_root_for_an_agent(self) -> None:
+        failure = MemoryForestError("read_failed", "A file could not be read as text.",
+                                    details={"path": str(self.root / PAGE)}, next_step="report")
+        with mock.patch.object(cli, "forest_root", side_effect=failure):
+            code, out, err = self._main(["navigate", "--as", "front-desk", "--root", str(self.root), "--json"])
+        self.assertEqual((code, err), (2, ""))
+        self.assertEqual(json.loads(out)["error"]["details"]["path"], PAGE)
+
+    def test_default_argv_uses_the_same_dispatch_and_refusal_boundary(self) -> None:
+        argv = ["forest", "stand-in", "interrupted", "--root", str(self.root)]
+        with mock.patch.object(cli, "FOREST_COMMANDS", [*cli.FOREST_COMMANDS, *STAND_INS]), \
+                mock.patch.object(sys, "argv", argv):
+            self.assertEqual(cli.forest_main(), 130)
 
 
 if __name__ == "__main__":

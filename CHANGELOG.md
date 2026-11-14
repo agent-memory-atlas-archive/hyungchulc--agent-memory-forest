@@ -22,6 +22,21 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- An admitted agent name keeps one key and one admission rule through tree creation, fill and rename.
+  Registry and Markdown syntax use reversible numeric character references. Identity is resolved over
+  the whole forest, exact stored id before name key, before group membership. Invisible format characters
+  remain significant and receive notices. Id allocation shares the tree writer lock and trusts the
+  agent-id record first; generated ids avoid Windows device names. Hangul finals use word-final Revised
+  Romanization per isolated syllable, with no cross-syllable sound changes; stored ids stay unchanged.
+- Member sources validate a list of texts, deduplicate keys with first spelling retained, and share
+  concurrent refreshes. The interval starts at completion; cooperative readers receive a deadline and
+  cancellation event. An unreturned reader keeps its one source slot and later calls fail immediately,
+  with a diagnostic in `forest check`. Names are bounded in characters as well as count.
+- Settings recovery edits create missing lists and replace wrong-kind values, retaining a valid single
+  text member. Lock setup failures carry the same applicable edits. Parser diagnostics are never owner
+  keys. Text arguments are checked before trimming for the contract's Unicode classes, and tests pass
+  local clocks instead of replacing a function of the shared `time` module.
+
 - The disk is reached through one module, `system` (the door). Every call that looks, lists, opens,
   reads, writes or locks answers one of eight outcomes (absent, denied, not a file, not a folder, link,
   changed, busy, other), and the code decides on outcomes, not on the system's raw errors. The derived

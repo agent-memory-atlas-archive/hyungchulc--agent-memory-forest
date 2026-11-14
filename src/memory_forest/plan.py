@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import PurePath as Path, PurePosixPath
 from typing import Any, Final, NoReturn
 
-from . import archive, layout, movelog, registry, system
+from . import archive, layout, movelog, names as name_rules, registry, system
 from .config import Config, load_config
 from .errors import MemoryForestError, raise_refusal
 from .locking import LockToken, atomic_write, writer_lock
@@ -858,6 +858,12 @@ class Plan:
                 found[name] = holder
         return found
 
+    def agent_name_holders(self, names: Iterable[str], *, besides: str | None = None) -> dict[str, str]:
+        """An agent display name collides only with another agent's name key, never a subject alias."""
+        held = {name_rules.key(ref.name): ref.id for ref in self.subjects()
+                if ref.type == registry.AGENT_TYPE and ref.id != besides}
+        return {name: held[name_rules.key(name)] for name in names if name_rules.key(name) in held}
+
     def known_ids(self) -> set[str]:
         return {ref.id for ref in self.subjects()} | {entry.id for _page, entry in self.entries()}
 
@@ -939,6 +945,7 @@ class Plan:
         problems: set[tuple[str, str, str]] = set()
         seen: dict[str, str] = {}
         names: dict[str, str] = {}
+        agent_names: dict[str, str] = {}
         for tree in self.trees():
             index = layout.tree_index(tree)
             for raw in section_items(self.read(index), SUBJECTS_SECTION):
@@ -957,7 +964,8 @@ class Plan:
                     problems.add(("registry_duplicate_id", index, f"`{line.id}`"))
                     continue
                 seen[line.id] = index
-                reason = registry.masked_name_problem((line.id, line.name, *line.aliases), self.config)
+                reason = (registry.masked_name_problem((line.id, line.name, *line.aliases), self.config)
+                          if line.type != registry.AGENT_TYPE else None)
                 if reason is not None:
                     problems.add(("registry_name_masked", index, f"`{line.id}`: {reason}"))
                 subject = {"id": line.id, "type": line.type, "level": line.level, "home": line.home, "tree": tree}
@@ -966,8 +974,14 @@ class Plan:
                     problems.add(("registry_line_invalid", index, reason))
                 elif not self.exists(line.home):
                     problems.add(("registry_home_missing", index, f"`{line.id}`: `{line.home}`"))
+                if line.type == registry.AGENT_TYPE:
+                    key = name_rules.key(line.name)
+                    if agent_names.setdefault(key, line.id) != line.id:
+                        problems.add(("registry_duplicate_alias", index,
+                                      f"`{line.name}` of `{line.id}` and `{agent_names[key]}` have one agent key"))
+                    continue
                 for name in {registry.normalize_name(item) for item in (line.id, line.name, *line.aliases)}:
-                    if name and names.setdefault(name, line.id) != line.id:
+                    if names.setdefault(name, line.id) != line.id:
                         problems.add(("registry_duplicate_alias", index, f"`{name}` of `{line.id}` and `{names[name]}`"))
         for page, entry in self.entries():
             reason = registry.masked_name_problem((entry.id, entry.name, *entry.aliases), self.config)

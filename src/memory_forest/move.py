@@ -27,7 +27,7 @@ from dataclasses import replace
 from pathlib import PurePath as Path, PurePosixPath
 from typing import Any, Final
 
-from . import layout, numbers, registry, system
+from . import layout, names as name_rules, numbers, registry, system
 from .errors import MemoryForestError
 from .locking import LockToken
 from .model import (
@@ -351,12 +351,12 @@ def _branch_line(plan: Plan, tree: str, branch: str) -> str | None:
 
 def _retitle(plan: Plan, subject_id: str, tree: str, was: str, now: str) -> None:
     """Where a board, tree page or branch line still shows the old name word for word, it shows the new one."""
-    heading = re.compile(rf"^# {re.escape(was)}[ \t]*$", re.MULTILINE)
+    heading = re.compile(r"^# [^\r\n]*", re.MULTILINE)
     for path in (layout.board(tree, subject_id), layout.tree_page(subject_id)):
         if plan.exists(path) and field_of(plan.read(path), "entity") == subject_id:
             text = plan.read(path)
-            if title_of(text) == was:
-                plan.update(path, heading.sub(f"# {now}", text, count=1))
+            if title_of(text) == name_rules.decode(was):
+                plan.update(path, heading.sub(lambda _match: f"# {now}", text, count=1))
     key = f"branch:{tree}/{subject_id}"
     if (plan.hints.get(key) or "").strip() == was:
         plan.hints[key] = now
@@ -391,16 +391,18 @@ def rename_subject(plan: Plan, old: str, *, new_id: str | None = None, new_name:
     line = ref.line
     why = plan.reason(f"subject `{old}` is renamed")
     if new_name is not None:
-        name = _name_ok(new_name, "new name")
-        holders = plan.name_holders([name], besides=old)
+        agent = ref.type == registry.AGENT_TYPE
+        name = name_rules.check(new_name) if agent else _name_ok(new_name, "new name")
+        holders = (plan.agent_name_holders([name], besides=old) if agent else plan.name_holders([name], besides=old))
         if holders:
             refuse("name_taken", "Another subject or entry already holds this name.", holders=holders)
         aliases = list(line.aliases)
-        if registry.normalize_name(line.name) != registry.normalize_name(name) and line.name not in aliases:
+        normal = name_rules.key if agent else registry.normalize_name
+        if normal(line.name) != normal(name) and line.name not in aliases:
             aliases.append(line.name)
-        aliases = [alias for alias in aliases if registry.normalize_name(alias) != registry.normalize_name(name)]
+        aliases = [alias for alias in aliases if normal(alias) != normal(name)]
         plan.record_change(ref.index, f"Name of `{old}`", line.name, name, why)
-        line = replace(line, name=name, aliases=aliases)
+        line = replace(line, name=name, aliases=aliases, encoded_name=True if agent else line.encoded_name)
     if new_id is not None and new_id != old:
         _slug(new_id, "new id")
         if new_id in plan.known_ids():
@@ -442,7 +444,9 @@ def rename_subject(plan: Plan, old: str, *, new_id: str | None = None, new_name:
         line = replace(line, id=new_id, home=home)
     plan.replace_subject(plan.subject(old), line)
     if new_name is not None and line.name != ref.line.name:
-        _retitle(plan, line.id, ref.tree, ref.line.name, line.name)
+        _retitle(plan, line.id, ref.tree,
+                 name_rules.encode(ref.line.name) if ref.type == registry.AGENT_TYPE else ref.line.name,
+                 name_rules.encode(line.name) if ref.type == registry.AGENT_TYPE else line.name)
     plan.touch(ref.tree)
     _done(plan, f"rename {old}" + (f" -> {new_id}" if new_id else "") + (f" ({new_name})" if new_name else ""))
 
@@ -941,15 +945,16 @@ def ensure_agent(plan: Plan, agent_id: str, *, name: str | None = None, role: st
     if existing is not None and not refuse_existing:
         return False
     _tree_free(plan, agent_id)
-    title = _name_ok(name if name and name.strip() else agent_id, "agent's name")
+    title = name_rules.check(name if name is not None else agent_id)
     purpose = " ".join(str(role or "").split()) or ROLE_UNSET
-    others = [_name_ok(alias, "alias") for alias in aliases]
-    holders = plan.name_holders([agent_id, title, *others])
+    others = [name_rules.check(alias) for alias in aliases]
+    holders = plan.agent_name_holders([title])
     if holders or agent_id in plan.known_ids():
         refuse("name_taken", "Another subject or entry already holds one of these names.", holders=holders)
     page = layout.tree_page(agent_id)
     line = RegistryLine(agent_id, title, registry.AGENT_TYPE, "tree", page, others)
-    plan.write(page, tree_page_text(agent_id, title=title, entity=agent_id, agent=True, bodies={"Role": [purpose]}))
+    plan.write(page, tree_page_text(agent_id, title=name_rules.encode(title), entity=agent_id, agent=True,
+                                    bodies={"Role": [purpose]}))
     plan.write(layout.tree_index(agent_id), index_text(agent_id, [line.render()]))
     plan.make_dir(f"{layout.STM}/{agent_id}")
     plan.hints[f"agent:{agent_id}"] = purpose
@@ -970,13 +975,13 @@ def fill_agent(plan: Plan, agent_id: str, fills: Mapping[str, str]) -> list[str]
     filled: list[str] = []
     name = fills.get("name")
     if name:
-        title = _name_ok(name, "agent's name")
-        holders = plan.name_holders([title], besides=agent_id)
+        title = name_rules.check(name)
+        holders = plan.agent_name_holders([title], besides=agent_id)
         if holders:
             refuse("name_taken", "Another subject or entry already holds this name.", holders=holders)
         was = ref.line.name
-        plan.replace_subject(ref, replace(ref.line, name=title))
-        _retitle(plan, agent_id, ref.tree, was, title)
+        plan.replace_subject(ref, replace(ref.line, name=title, encoded_name=True))
+        _retitle(plan, agent_id, ref.tree, name_rules.encode(was), name_rules.encode(title))
         plan.record_change(page, f"Name of `{agent_id}`", was, title, why)
         filled.append("name")
     role = fills.get("role")
@@ -1009,8 +1014,8 @@ def _fill_root_line(plan: Plan, agent_id: str, was_name: str, fills: Mapping[str
         if item is None or item.description is None or item.target.strip() != agent_id:
             return line
         parts = item.description.split(DOT)
-        if fills.get("name") and parts[0].strip() == was_name:
-            parts[0] = fills["name"]
+        if fills.get("name") and name_rules.decode(parts[0].strip()) == was_name:
+            parts[0] = name_rules.encode(fills["name"])
         if fills.get("role") and len(parts) > 1 and parts[1].strip() in ("", ROLE_UNSET):
             parts[1] = fills["role"]
         return replace(item, description=DOT.join(parts)).render()

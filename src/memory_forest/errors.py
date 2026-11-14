@@ -136,7 +136,6 @@ REFUSALS: dict[str, tuple[str, str]] = {
     "intake_role_invalid": ("fix", ""),
     "intake_session_invalid": ("fix", ""),
     "intake_text_empty": ("fix", ""),
-    "intake_turn_rejected": ("report", ""),
     "internal_error": ("report", ""),
     "interrupted": ("retry", ""),
     "into_missing": ("fix", ""),

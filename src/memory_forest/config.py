@@ -249,6 +249,9 @@ class AgentGroup:
     open: bool = False
     max_members: int | None = None
     source: str = ""
+    # Original valid member references, before identity lookup. Runtime resolves them against forest-wide ids.
+    # Parser output only; never an owner key or an additional membership declaration.
+    member_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,6 +473,30 @@ _SECTIONS: Final[dict[str, type]] = {
     "record": RecordSettings,
 }
 
+# The owner's keys are an explicit contract, independent of fields used for parsed diagnostics.
+SETTING_KEYS: Final[dict[str, frozenset[str]]] = {
+    "forest": frozenset(("timezone", "language")),
+    "owner": frozenset(("id", "name", "aliases")),
+    "limits": frozenset(("leaf_cap_bytes", "leaf_max_bytes", "record_keep_bytes", "category_max_leaves",
+                         "about_max_ids", "entry_admit_margin_bytes", "repeat_min_lines", "repeat_min_chars")),
+    "numbers": frozenset(("identity_formats", "account_words", "reference_words", "identity_words",
+                          "phone_patterns", "keep_whole")),
+    "credentials": frozenset(("label_words", "joining_words", "count_words")),
+    "levels": frozenset(("leaf_days", "branch_days", "tree_subtopics", "tree_subtopic_days",
+                         "tree_subtopic_leaves", "tree_types", "stream_kinds", "stream_subtopic_words",
+                         "stage_names", "work_verbs", "tool_names", "shared_branch", "default_subtopic")),
+    "agents": frozenset(("policy", "orchestrators", "default_scope", "auto_create", "folded_type", "known", "groups")),
+    "embeddings": frozenset(("provider",)),
+    "intake": frozenset(("tool_output", "tools")),
+    "subjects": frozenset(("types", "system_id")),
+    "names": frozenset(("date_words",)),
+    "lint": frozenset(("channel_words", "remark_phrases")),
+    "record": frozenset(("owner_word_names", "quote_marks")),
+    "agents.known": frozenset(("name", "role")),
+    "agents.groups": frozenset(("members", "open", "max_members", "source")),
+    "intake.tools": frozenset(("enabled", "agent", "include", "exclude", "import_earlier", "path")),
+}
+
 
 def _error(key: str, message: str, source: str | None) -> MemoryForestError:
     details: dict[str, Any] = {"key": key}
@@ -540,17 +567,17 @@ def _known_agents(
         values: dict[str, str] = {}
         for field_name, value in table.items():
             where = f"{dotted}.{field_name}"
-            if field_name not in ("name", "role"):
+            if field_name not in SETTING_KEYS["agents.known"]:
                 left_out.append((where, "is not a known setting; it is left out"))
                 continue
             if field_name == "name":
-                from .names import bad_reason
+                from .names import bad_reason, check
 
                 why = bad_reason(value)
                 if why is not None:
                     left_out.append((where, f"is not a name ({why}); it is left out"))
                     continue
-                values["name"] = str(value).strip()
+                values["name"] = check(value)
                 continue
             if not isinstance(value, str) or any(ord(character) < 32 or ord(character) == 127 for character in value):
                 left_out.append((where, "is not text without control characters; it is left out"))
@@ -561,7 +588,7 @@ def _known_agents(
 
 
 def _agent_groups(
-    key: str, raw: Any, source: str | None, known: tuple[KnownAgent, ...]
+    key: str, raw: Any, source: str | None, known: tuple[KnownAgent, ...], agent_ids: tuple[str, ...] = ()
 ) -> tuple[tuple[AgentGroup, ...], list[tuple[str, str]], list[tuple[str, str]]]:
     """``[agents.groups.<id>]`` tables. A value wrong for one entry is reported and left out; the rest load.
 
@@ -575,6 +602,8 @@ def _agent_groups(
     from . import names
 
     rows = [(item.id, item.name) for item in known]
+    declared_ids = {item.id for item in known}
+    rows.extend((agent_id, "") for agent_id in agent_ids if agent_id not in declared_ids)
     found = []
     for group_id, table in raw.items():
         dotted = f"{key}.{group_id}"
@@ -585,12 +614,16 @@ def _agent_groups(
             left_out.append((dotted, "is not a table with `members` and `open`; the group is left out"))
             continue
         members: list[str] = []
+        member_refs: list[str] = []
+        provisional: set[str] = set()
         open_group = False
         max_members: int | None = None
         member_source = ""
         for field_name, value in table.items():
             item_key = f"{dotted}.{field_name}"
-            if field_name == "members":
+            if field_name not in SETTING_KEYS["agents.groups"]:
+                left_out.append((item_key, "is not a known setting; it is left out"))
+            elif field_name == "members":
                 if not isinstance(value, list):
                     left_out.append((item_key, "is not a list of names; the group has no members from it"))
                     continue
@@ -598,21 +631,29 @@ def _agent_groups(
                     if not isinstance(item, str) or names.bad_reason(item) is not None:
                         left_out.append((item_key, f"holds {item!r}, which is not a name; it is left out"))
                         continue
-                    hits = names.find(item, rows)
+                    member_refs.append(item)
+                    reference = names.check(item)
+                    hits = names.find(reference, rows)
                     if len(hits) == 1 and _id_ok(hits[0]):
                         chosen = hits[0]
-                    elif not hits and _id_ok(item):
-                        chosen = item
+                    elif not hits and _id_ok(reference):
+                        chosen = reference
                     else:
                         unplaceable.append((item_key, item))
                         continue
+                    uncertain_id = (_id_ok(reference) and reference != chosen
+                                    and all(reference != agent_id for agent_id, _ in rows))
                     if chosen in members:
-                        left_out.append((item_key, f"lists `{chosen}` twice ({item!r}); it is counted once"))
+                        same_ref = any(names.key(item) == names.key(ref) for ref in member_refs[:-1])
+                        if same_ref or (not uncertain_id and chosen not in provisional):
+                            left_out.append((item_key, f"lists `{chosen}` twice ({item!r}); it is counted once"))
                         continue
                     if chosen == group_id:
                         left_out.append((item_key, "lists the group's own id, which is not a member; it is left out"))
                         continue
                     members.append(chosen)
+                    if uncertain_id:
+                        provisional.add(chosen)
             elif field_name == "open":
                 if not isinstance(value, bool):
                     left_out.append((item_key, "is not true or false; the group is closed"))
@@ -628,13 +669,8 @@ def _agent_groups(
                     left_out.append((item_key, f"{value!r} is not a slug; the group has no source of members"))
                     continue
                 member_source = value
-            else:
-                left_out.append((item_key, "is not a known setting; it is left out"))
-        found.append(AgentGroup(str(group_id), tuple(members), open_group, max_members, member_source))
+        found.append(AgentGroup(str(group_id), tuple(members), open_group, max_members, member_source, tuple(member_refs)))
     return tuple(sorted(found, key=lambda item: item.id)), unplaceable, left_out
-
-
-_INTAKE_FIELDS: Final[tuple[str, ...]] = ("enabled", "agent", "include", "exclude", "import_earlier", "path")
 
 
 def _intake_tools(key: str, raw: Any, source: str | None) -> tuple[IntakeToolSettings, ...]:
@@ -652,7 +688,7 @@ def _intake_tools(key: str, raw: Any, source: str | None) -> tuple[IntakeToolSet
         defaults = IntakeToolSettings(str(adapter_id))
         for field_name, value in table.items():
             item_key = f"{dotted}.{field_name}"
-            if field_name not in _INTAKE_FIELDS:
+            if field_name not in SETTING_KEYS["intake.tools"]:
                 raise _error(item_key, "is not a known setting", source)
             default = _values(defaults)[field_name]
             if isinstance(default, bool):
@@ -670,16 +706,20 @@ def _intake_tools(key: str, raw: Any, source: str | None) -> tuple[IntakeToolSet
     return tuple(sorted(found, key=lambda item: item.id))
 
 
-def _section(name: str, raw: Any, source: str | None) -> Any:
+def _section(name: str, raw: Any, source: str | None, *, agent_ids: tuple[str, ...] = ()) -> Any:
     settings_type = _SECTIONS[name]
     if not isinstance(raw, Mapping):
         raise _error(name, "must be a table", source)
-    known = {item.name: item for item in fields(settings_type)}
+    known = SETTING_KEYS[name]
     values: dict[str, Any] = {}
     defaults = settings_type()
+    unknown: list[tuple[str, str]] = []
     for key, value in raw.items():
         dotted = f"{name}.{key}"
         if key not in known:
+            if name == "agents":
+                unknown.append((dotted, "is not a known setting; it is left out"))
+                continue
             raise _error(dotted, "is not a known setting", source)
         default = _values(defaults)[key]
         if name == "numbers" and key == "identity_formats":
@@ -688,7 +728,7 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
                 for item in _strings(dotted, value, source)
             )
         elif name == "agents" and key in ("known", "groups", "orchestrators"):
-            continue
+            pass  # These entries are resolved together below, after all declared ids are known.
         elif name == "intake" and key == "tools":
             values[key] = _intake_tools(dotted, value, source)
         elif isinstance(default, bool):
@@ -703,7 +743,6 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
             values[key] = _string(dotted, value, source)
     if name == "agents":
         known_agents, bad_known, left_known = _known_agents(f"{name}.known", raw.get("known", {}), source)
-        groups, bad_groups, left_groups = _agent_groups(f"{name}.groups", raw.get("groups", {}), source, known_agents)
         kept_orchestrators: list[str] = []
         bad_orchestrators: list[tuple[str, str]] = []
         left_orchestrators: list[tuple[str, str]] = []
@@ -720,11 +759,15 @@ def _section(name: str, raw: Any, source: str | None) -> Any:
                 left_orchestrators.append((f"{name}.orchestrators", f"lists `{item}` twice; it is counted once"))
             else:
                 kept_orchestrators.append(item)
+        groups, bad_groups, left_groups = _agent_groups(
+            f"{name}.groups", raw.get("groups", {}), source, known_agents,
+            tuple(dict.fromkeys((*kept_orchestrators, *agent_ids))),
+        )
         values["orchestrators"] = tuple(kept_orchestrators)
         values["known"] = known_agents
         values["groups"] = groups
         values["unplaceable"] = tuple([*bad_known, *bad_groups, *bad_orchestrators])
-        values["left_out"] = tuple([*left_known, *left_groups, *left_orchestrators])
+        values["left_out"] = tuple([*unknown, *left_known, *left_groups, *left_orchestrators])
     return replace(defaults, **values)
 
 
@@ -826,7 +869,12 @@ def parse_config(text: str, *, source: str | None = None) -> Config:
     for name, value in raw.items():
         if name not in _SECTIONS:
             raise _error(name, "is not a known settings section", source)
-        sections[name] = _section(name, value, source)
+        if name != "agents":
+            sections[name] = _section(name, value, source)
+    if "agents" in raw:
+        intake = sections.get("intake", IntakeSettings())
+        agent_ids = tuple(dict.fromkeys(tool.agent for tool in intake.tools if _id_ok(tool.agent)))
+        sections["agents"] = _section("agents", raw["agents"], source, agent_ids=agent_ids)
     return _validate(Config(**sections, source=source))
 
 
@@ -932,7 +980,9 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
             for tool in section.tools:
                 lines.append("")
                 lines.append(f"[intake.tools.{tool.id}]")
-                for key in _INTAKE_FIELDS:
+                for key in _values(tool):
+                    if key not in SETTING_KEYS["intake.tools"]:
+                        continue
                     lines.append(f"{key} = {_toml_value(_values(tool)[key])}")
         if name == "agents":
             for agent in section.known:
@@ -944,7 +994,7 @@ def render_config(config: Config = DEFAULT_CONFIG) -> str:
             for group in section.groups:
                 lines.append("")
                 lines.append(f"[agents.groups.{group.id}]")
-                lines.append(f"members = {_toml_value(group.members)}")
+                lines.append(f"members = {_toml_value(group.member_refs or group.members)}")
                 lines.append(f"open = {_toml_value(group.open)}")
                 if group.max_members is not None:
                     lines.append(f"max_members = {_toml_value(group.max_members)}")

@@ -47,8 +47,10 @@ forest levels apply
 ```
 
 A turn an agent writes with `forest log` or `memory_log` makes that one agent's tree before the call
-returns. The level pass still makes a tree a settings entry or an intake lane left due. With the settings
-entry above, that pass writes:
+returns, or answers `pending` while another writer holds the lock. The next write after release makes
+the tree. The level pass still makes a tree a settings entry or an intake lane left due. For readability,
+the following lines show decoded display names; generated names on disk use marked numeric references.
+With the settings entry above, that pass writes:
 
 - the registry line, in `03 mtm/post-bot/post-bot_MTM.md`:
   ``- `post-bot` — Post Bot · agent · tree · `02 ltm/post-bot_LTM.md` ``
@@ -136,8 +138,8 @@ The same happens at once when the owner states a fact for everyone ("the depot i
 
 Every reader has an id. It comes from the reader's connection (the MCP session, the command's `--as`),
 never from the text of the question, so an agent cannot widen its view by asking for another's. When
-several agents share one connection, the caller also names itself, and that name resolves only inside
-its group (below, "An app that runs several agents").
+several agents share one connection, the caller also names itself. Identity is resolved across the
+whole forest first, the exact stored id before the name key, and membership is applied afterwards.
 
 - An **orchestrator**, listed in `agents.orchestrators`, reads the whole forest. Studio Hub needs that to
   check the bots' work and to answer Juno about anything.
@@ -297,9 +299,18 @@ another letter, and a dot, a plus sign or an exclamation mark is part of the nam
 
 A name finds an agent in two ways only: the text **is** the agent's id, character for character
 (`kiln-bot`), or its key is the key of the agent's stored name (an agent that has no name is named by its
-id). A name whose key no agent has is a new agent. The only names refused are empty text, text longer
+id). The exact stored id wins before the key, over all agents, before group membership. A name whose
+key no agent has is a new agent. The only names refused are empty text, text longer
 than 200 characters (counted in characters, not bytes), and text that holds a control character or a line
-break; the refusal is `agent_name_invalid` or `agent_unset`, with `fix`.
+break; the refusal is `agent_name_invalid` or `agent_unset`, with `fix`. The argument rule and its
+Unicode classes are in the contract, section 2. Names that need escaping in a registry line or page
+use reversible numeric character references, with the same displayed title. Subject alias rules and
+masked-value tests never refuse an admitted agent name. Invisible format characters keep their key
+and receive a notice in `forest check`.
+
+New names use the marker `<!--amf-name-v1-->` and a numeric reference for every character, including
+letters. This keeps a credential-looking display name intact through masking upkeep. Unmarked
+legacy references stay literal and untouched legacy lines keep their representation.
 
 ### The id is only a handle
 
@@ -329,6 +340,11 @@ id is the id and `-agent` (`bakery-agent`), then `-agent-2`. Held by an agent wi
 was admitted as `crate-bot`, then `Crate Bot` comes), the new id is the id and the smallest free number from
 2 (`crate-bot-2`).
 
+Generated ids also avoid the Windows device basenames, case-insensitively and before an extension,
+and never end in a dot or space. A declared reserved id still works where the system holds it;
+`forest check` gives its rename. The id record is read first under the lock shared with tree creation,
+so a half-created tree cannot give another agent the non-agent suffix.
+
 To give an agent the id you want, declare it before its first turn: an agent declared with an id and a name
 is found by that name, whatever the tables would have made.
 
@@ -353,10 +369,19 @@ to call again under the caller's own name as it is listed. It never says to call
 A group may name a `source` of members, a reader of the app's own list registered in the process. The
 source is then the list: a name on it is admitted, a name not on it is refused as a closed group refuses
 it, and `open` does not widen it. A read of the source has a deadline (5 seconds) and a greatest size
-(50,000 names), and for 60 seconds after a read the last list is used again, so a caller cannot make Juno
+(50,000 texts of at most 200 Unicode characters each), and for 60 seconds after completion the last list is used again, so a caller cannot make Juno
 pay for a read on every call. A source that fails, does not answer in time, lists too many names or has no
 reader in the process is `member_source_failed` with `report`, never "not a member". Names on the list
-that are not a name by the rule above are left out, and `forest agents` shows them.
+that are not a name by the rule above are left out, and `forest agents` shows them. A single text,
+mapping, number or a list with a non-text entry is a malformed result, never a list of letters.
+Duplicate name keys keep the first spelling and are reported. Concurrent misses share one refresh.
+
+`register_member_source(name, reader, cooperative=True)` calls
+`reader(group_id, *, deadline, cancelled)`, with an absolute monotonic deadline and a cancellation event;
+the reader must return by that deadline or cancellation. Legacy one-argument readers remain supported.
+An abandoned reader keeps its one source slot in the process. Later calls fail immediately, stating
+when it started, and `forest check` reports it. A late result is discarded. No second worker starts
+until the first returns, or the answering process is restarted.
 
 On a group connection a caller that names the main agent sees what the main agent sees. An orchestrator
 needs no entry in `members`, on an open group, on a closed one, or on a group fed by a source. A name that
@@ -373,6 +398,13 @@ edits, as sentences and in `details.edits` (`{"add_to_list": "members", "table":
 "value": "<id>"}` and `{"new_table": "agents.known.<id>", "values": {"name": "…"}}`), and so does
 `settings_unwritable` when the file cannot be written. A patch whose result would not parse, or would
 mean anything else, is caught before anything is written and answered the same way.
+
+`add_to_list` requires an existing list. `set_value` creates a missing key or replaces a wrong-kind
+value, creating missing parent tables; a valid single-text member is retained when repaired into a
+list, and the message shows the rejected value. `new_table` creates a missing table. Failure to create
+or take an admission lock is `settings_unpatched` with the same edits, even without `.forest`.
+Apply these operations to the parsed TOML table, serialize it, parse it again, and retry the call.
+Parser-filled diagnostic fields are not settings; `forest check` reports them as unknown entries.
 
 ### Where a turn came from
 

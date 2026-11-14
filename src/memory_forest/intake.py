@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import credentials, layout, numbers, sources, system
+from . import credentials, layout, names, numbers, sources, system
 from .config import AGENT_TEXT_MAX
 from . import adapters as adapter_loader
 from .adapters.common import (
@@ -210,7 +210,8 @@ def _discover(adapter: Any, settings: IntakeToolSettings) -> list[Transcript]:
 LOG_READ_SECONDS = 30.0
 
 
-def read_bounded(stream: Any, *, limit: int, seconds: float | None) -> str:
+def read_bounded(stream: Any, *, limit: int, seconds: float | None,
+                 clock: Callable[[], float] = time.monotonic) -> str:
     """Read at most ``limit`` bytes, and stop when ``seconds`` pass with no end (None: no deadline).
 
     The bytes are not repaired. A text that is not UTF-8 is ``invalid_utf8``.
@@ -219,7 +220,7 @@ def read_bounded(stream: Any, *, limit: int, seconds: float | None) -> str:
     """
     chunks: list[bytes] = []
     total = 0
-    deadline = None if seconds is None else time.monotonic() + seconds
+    deadline = None if seconds is None else clock() + seconds
 
     def timed_out() -> MemoryForestError:
         return MemoryForestError(
@@ -231,7 +232,7 @@ def read_bounded(stream: Any, *, limit: int, seconds: float | None) -> str:
         )
 
     while total <= limit:
-        remaining = None if deadline is None else deadline - time.monotonic()
+        remaining = None if deadline is None else deadline - clock()
         if remaining is not None and remaining <= 0:
             raise timed_out()
         chunk = _read_some(stream, min(65536, limit + 1 - total), remaining)
@@ -309,7 +310,7 @@ def append_owned(
         raise MemoryForestError("intake_text_empty", "A turn needs text.")
     if turn_id is not None and (
         not isinstance(turn_id, str) or not turn_id.strip() or len(turn_id) > TURN_ID_MAX
-        or any(ord(character) < 32 or ord(character) == 127 for character in turn_id)
+        or names.forbidden(turn_id)
     ):
         raise MemoryForestError(
             "arguments_invalid",
@@ -334,8 +335,6 @@ def append_owned(
     door_name = door.strip() or "mcp"
     transcript = Transcript(key=door_name, path=Path(door_name), session=session_name, cwd="", origin=origin)
     record = _record(config, agent, door_name, transcript, turn)
-    if record is None:
-        raise MemoryForestError("intake_turn_rejected", "The turn was not a record the lane keeps.")
     source = record.get("source")
     if isinstance(source, dict):
         source["door"] = door_name

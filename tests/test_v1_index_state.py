@@ -381,10 +381,9 @@ class BoundaryTests(unittest.TestCase):
 
                 with mock.patch.object(search, "refresh_lanes_and_daily", lambda root: 0), \
                         mock.patch.object(search, "_checked_read", checked), \
-                        mock.patch.object(search, "_retry_pause", lambda seconds: None), \
-                        mock.patch.object(search.time, "monotonic", lambda: next(ticks)):
+                        mock.patch.object(search, "_retry_pause", lambda seconds: None):
                     with self.assertRaises(MemoryForestError) as refused:
-                        search.query(self.root, "trays", reader="till-bot")
+                        search.query(self.root, "trays", reader="till-bot", clock=lambda: next(ticks))
                 self.assertEqual(refused.exception.code, "index_io_error")
                 self.assertEqual(attempts["n"], len(row) - 1)
 

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import PurePath as Path, PurePosixPath
 from typing import Any, Final
 
-from . import layout, system
+from . import layout, names as name_rules, system
 from .config import Config, load_config
 from .errors import MemoryForestError
 from .locking import atomic_write
@@ -379,6 +379,7 @@ def build(root: str | os.PathLike[str], *, config: Config | None = None) -> Regi
     problems: list[Problem] = []
     entities: dict[str, dict[str, Any]] = {}
     names = _Names()
+    agent_keys: dict[str, str] = {}
 
     for tree, index, number, raw in subject_lines(safe_root):
         try:
@@ -419,6 +420,13 @@ def build(root: str | os.PathLike[str], *, config: Config | None = None) -> Regi
         elif system.kind(layout.resolve(safe_root, line.home)) != "file":
             problems.append(Problem("registry_home_missing", index, number, f"the home `{line.home}` is not there"))
         entities[line.id] = subject
+        if line.type == AGENT_TYPE:
+            key = name_rules.key(line.name)
+            holder = agent_keys.setdefault(key, line.id)
+            if holder != line.id:
+                problems.append(Problem("registry_duplicate_alias", index, number,
+                                        f"`{line.name}` of `{line.id}` has the name key of `{holder}`"))
+            continue
         reason = masked_name_problem((line.id, line.name, *line.aliases), settings)
         if reason is not None:
             problems.append(Problem("registry_name_masked", index, number, f"`{line.id}`: {reason}"))
@@ -703,12 +711,21 @@ class Registry:
 
     def lookup(self, name: str) -> dict[str, Any] | None:
         """The subject or entry one of whose names is exactly ``name`` (after folding), or None."""
+        agents = name_rules.find(name, [(agent_id, str(self.entities[agent_id]["name"]))
+                                        for agent_id in self.agents])
+        if len(agents) == 1:
+            return self.subject(agents[0])
         key = normalize_name(name)
         record = self.entry_index.get(key)
         if record is not None:
             return self.entry(record["entry"])
         subject_id = self.alias_index.get(key)
-        return self.subject(subject_id) if subject_id is not None else None
+        if subject_id is not None:
+            return self.subject(subject_id)
+        # Subject retrieval may use an agent's aliases; caller identity never consults this index.
+        aliases = name_rules.find(name, [(agent_id, alias) for agent_id in self.agents
+                                        for alias in self.entities[agent_id]["aliases"]])
+        return self.subject(aliases[0]) if len(aliases) == 1 else None
 
     def find(self, name: str) -> list[Match]:
         """Subjects and entries by name: exact names first (subjects before entries), then names

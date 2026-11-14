@@ -127,9 +127,11 @@ def taken(root: str | os.PathLike[str], config: Config) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
 
     def add(slug: str, kind: str) -> None:
-        if not slug or not layout.is_slug(slug):
-            return
+        if kind == "agent":
+            found[slug] = ["agent"]
         bucket = found.setdefault(slug, [])
+        if bucket == ["agent"]:
+            return
         if kind not in bucket:
             bucket.append(kind)
 
@@ -229,9 +231,15 @@ def problems(root: str | os.PathLike[str], config: Config, subjects: Subjects) -
     ``agent_setting_invalid``: a value of the agents' tables wrong for one
     entry; that entry was left out and the rest of the settings loaded.
     """
+    from . import groups
+
+    rows = [(agent_id, name or agent_id) for agent_id, name in groups._agent_rows(root, config)]
     found: list[Problem] = []
     declared = {item.id for item in config.agents.known}
     for where, agent_id in config.agents.unplaceable:
+        if (where.startswith("agents.groups.") and where.endswith(".members")
+                and len(name_rules.find(name_rules.check(agent_id), rows)) == 1):
+            continue
         found.append(Problem(
             INVALID, where, None,
             f"`{agent_id}` cannot be placed; it is not an id a file can be named, and the rest of the pass goes on",
@@ -240,6 +248,13 @@ def problems(root: str | os.PathLike[str], config: Config, subjects: Subjects) -
         found.append(Problem(SETTING_INVALID, CONFIG_PATH, None, f"`{where}` {why}; everything else loads"))
     for known in config.agents.known:
         reason = why_invalid(known.id, config, subjects.area_trees)
+        if name_rules.reserved_id(known.id):
+            replacement = new_id(known.name or known.id, taken(root, config))
+            found.append(Problem(INVALID, CONFIG_PATH, None,
+                                 f"`{known.id}` is a reserved device basename on Windows. Rename the table "
+                                 f"[agents.known.{known.id}] to [agents.known.{replacement}] and replace "
+                                 f"its id in members, orchestrators and intake agent settings with `{replacement}`; "
+                                 "move its lane and tree folders to that id on a system that can hold them."))
         kind = subjects.types.get(known.id)
         if reason is None and kind is not None and kind != registry.AGENT_TYPE:
             reason = f"is registered as a `{kind}`, not an agent (`forest move set-type {known.id} agent`)"
@@ -254,6 +269,43 @@ def problems(root: str | os.PathLike[str], config: Config, subjects: Subjects) -
             found.append(Problem(WITHOUT_TREE, path, None,
                                  f"the lane of `{lane}` has no agent: `agents.auto_create` is false; declare it "
                                  f"under `[agents.known.{lane}]` or make it with `forest move new-agent {lane}`"))
+    for group in config.agents.groups:
+        seen_members: set[str] = set()
+        for reference in group.member_refs:
+            hits = name_rules.find(name_rules.check(reference), rows)
+            if len(hits) != 1:
+                continue
+            agent_id = hits[0]
+            where = f"agents.groups.{group.id}.members"
+            if agent_id in seen_members and not any(path == where and repr(reference) in why
+                                                   for path, why in config.agents.left_out):
+                found.append(Problem(SETTING_INVALID, CONFIG_PATH, None,
+                                     f"`{where}` lists `{agent_id}` twice ({reference!r}); remove the duplicate reference"))
+            seen_members.add(agent_id)
+    for index, (left_id, left_name) in enumerate(rows):
+        if name_rules.has_invisible(left_name):
+            found.append(Problem("agent_name_invisible", CONFIG_PATH, None,
+                                 f"notice: `{left_id}` ({left_name}) holds an invisible format character; "
+                                 "it remains a distinct name."))
+        for right_id, right_name in rows[index + 1:]:
+            if (name_rules.invisible(left_name) == name_rules.invisible(right_name)
+                    and name_rules.key(left_name) != name_rules.key(right_name)):
+                found.append(Problem("agent_name_invisible", CONFIG_PATH, None,
+                                     f"notice: `{left_id}` ({left_name}) and `{right_id}` ({right_name}) "
+                                     "differ only by invisible format characters; they remain distinct agents."))
+            if name_rules.key(left_name) == name_rules.key(right_name):
+                found.append(Problem(SETTING_INVALID, CONFIG_PATH, None,
+                                     f"`{left_id}` ({left_name}) and `{right_id}` ({right_name}) have one name key. "
+                                     f"Change name in [agents.known.{right_id}] to a distinct name, or merge "
+                                     "their declarations and membership into one id."))
+            if left_name == right_id or right_name == left_id:
+                shadow = left_id if left_name == right_id else right_id
+                found.append(Problem(SETTING_INVALID, CONFIG_PATH, None,
+                                     f"`{left_id}` ({left_name}) and `{right_id}` ({right_name}): a declared name "
+                                     f"is another agent's exact id. Change name in [agents.known.{shadow}]; "
+                                     "the exact id selects its holder on every group."))
+    for group_id, detail in groups.source_problems(root, config):
+        found.append(Problem("member_source_failed", CONFIG_PATH, None, f"`{group_id}`: {detail}"))
     return found
 
 
@@ -292,9 +344,9 @@ def to_fill(known: KnownAgent | None, agent_id: str, name: str, role: str) -> di
         return {}
     fills = {}
     # A name not given is the id itself (the literal id, not another name of the same key).
-    if (known.name and registry.normalize_name(name) == registry.normalize_name(agent_id)
+    if (known.name and name == agent_id
             and not name_rules.same(known.name, name)):
-        fills["name"] = " ".join(known.name.split())
+        fills["name"] = known.name
     if known.role and _role_unset(role):
         fills["role"] = " ".join(known.role.split())
     return fills
@@ -309,7 +361,7 @@ def settings_differ(config: Config, names: Mapping[str, str], roles: Mapping[str
         if known.id not in names:
             continue
         name = names[known.id]
-        if (known.name and registry.normalize_name(name) != registry.normalize_name(known.id)
+        if (known.name and name != known.id
                 and not name_rules.same(known.name, name)):
             found.append((known.id, f"the settings name `{known.id}` \"{known.name}\", its registry line "
                                     f"\"{name}\" (`forest move rename {known.id} --name …`, or change the settings)"))

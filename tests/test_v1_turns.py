@@ -111,6 +111,7 @@ class TurnTests(ForestTestCase):
         with self.assertRaises(MemoryForestError) as caught:
             _log(root, "thirteen loaves", at=NOON, turn_id="msg-0042")
         self.assertEqual((caught.exception.code, caught.exception.next_step), ("turn_id_reused", "fix"))
+        self.assertEqual(caught.exception.details, {"id": first["id"], "turn": "msg-0042"})
         self.assertEqual((root / first["path"]).read_bytes(), before)
         elsewhere = _log(root, "thirteen loaves", at=NOON, turn_id="msg-0042", session="other")
         self.assertEqual(elsewhere["stored"], "written")
@@ -412,7 +413,8 @@ class BoundTests(ForestTestCase):
     def test_at_the_bound_and_one_past_it_plain_and_escaped_through_both_doors(self) -> None:
         root = self.make_forest({**FILES, "forest.toml": BAKERY_GROUPS})
         self.assertGreater(mcp.MESSAGE_LIMIT, 6 * mcp.TURN_MAX_BYTES + 4096)
-        for kind, unit in (("plain", "a"), ("escaped", "\x01")):
+        # A quote is escaped in JSON and remains a permitted text argument under the Unicode rule.
+        for kind, unit in (("plain", "a"), ("escaped", '"')):
             at_bound = unit * mcp.TURN_MAX_BYTES
             past = at_bound + unit
             for text, fits in ((at_bound, True), (past, False)):
@@ -446,13 +448,13 @@ class BoundTests(ForestTestCase):
             try:
                 fake = _Bytes(b"", terminal=terminal)
                 fake.buffer = stream  # type: ignore[assignment]
-                with mock.patch.object(sys, "stdin", fake), mock.patch.object(intake.time, "monotonic", clock):
+                with mock.patch.object(sys, "stdin", fake):
                     if refused:
                         with self.assertRaises(MemoryForestError) as caught:
-                            cli_find._log_text()
+                            cli_find._log_text(clock=clock)
                         self.assertEqual(caught.exception.code, "log_read_timeout")
                     else:
-                        self.assertEqual(cli_find._log_text(), "a turn typed by a person\n")
+                        self.assertEqual(cli_find._log_text(clock=clock), "a turn typed by a person\n")
             finally:
                 stream.close()
 

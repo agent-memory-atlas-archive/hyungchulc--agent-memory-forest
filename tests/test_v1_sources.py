@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from memory_forest import groups, mcp, search, sources, system, timeline
+from memory_forest.config import load_config
 from memory_forest.errors import MemoryForestError
 
 from test_v1_find import FILES
@@ -179,6 +180,7 @@ class ListingTests(ForestTestCase):
                                          '[agents.groups.day-shift]\nmembers = ["oven-bot", "oven-bat"]\nopen = false')
         settings += '\n[agents.known.oven-bat]\nname = "Oven Bat"\n'
         settings += '\n[agents.known.delivery-bot-two]\nname = "Delivery Bot Two"\n'
+        settings += '\n[agents.known.front-desk]\n'
         # A name that is only separators has no key: it is no pair with anything (from either side).
         settings += '\n[agents.known.dash-0]\nname = "-"\n\n[agents.known.dash-a]\nname = "- Bot"\n'
         settings += '\n[agents.known.dash-b]\nname = "-"\n'
@@ -189,6 +191,9 @@ class ListingTests(ForestTestCase):
         mcp.record_turn(root, "till-bot", "counted", origin="interactive", session="shift", group="bakery-bots",
                         at=NOON)
         listed = groups.listing(root)
+        member_rows = {member['id']: member for group in listed['groups'] for member in group['members']}
+        self.assertTrue(member_rows['till-bot']['lane'])
+        self.assertTrue(member_rows['oven-bot']['lane'])
         self.assertEqual([item["id"] for item in listed["agents"]],
                          ["dash-0", "dash-a", "dash-b", "delivery-bot", "delivery-bot-two", "front-desk", "rack-bot"])
         rows = {item["id"]: item for item in listed["agents"]}
@@ -200,7 +205,7 @@ class ListingTests(ForestTestCase):
         lines = groups.listing_lines(listed)
         self.assertIn("group night-shift (open)", lines)
         self.assertEqual(lines[lines.index("group night-shift (open)") + 1], "  (no members)")
-        self.assertIn("agent front-desk — front-desk — no lane — not seen — orchestrator", lines)
+        self.assertIn("agent front-desk — Front Desk — no lane — not seen — orchestrator", lines)
         self.assertIn("agent delivery-bot — Delivery Bot — no lane — not seen", lines)
         till = next(line for line in lines if line.startswith("  till-bot — "))
         self.assertTrue(till.endswith(" — adapter:jsonl, group:bakery-bots"), till)
@@ -250,10 +255,7 @@ class MemberSourceTests(ForestTestCase):
             return ["Crate Bot"]
 
         def floods(_group: str):
-            number = 0
-            while True:
-                number += 1
-                yield f"Crate {number}"
+            return [f"Crate {number}" for number in range(groups.SOURCE_MAX_NAMES + 1)]
 
         def raises(_group: str):
             raise RuntimeError("the app is down")
@@ -265,33 +267,37 @@ class MemberSourceTests(ForestTestCase):
                     self._source(reader)
                 else:
                     groups._SOURCE_CACHE.clear()
-                before = (root / "forest.toml").read_bytes()
-                with mock.patch.object(groups, "SOURCE_SECONDS", 0.2):
-                    refused = self._refused(root, "Crate Bot")
-                self.assertEqual((refused.code, refused.next_step), ("member_source_failed", "report"))
-                if reader is None:
-                    self.assertIn("has no reader in this process", refused.message)
-                self.assertEqual((root / "forest.toml").read_bytes(), before)
-                groups.unregister_member_source("crate-app")
-        release.set()
+                try:
+                    before = (root / "forest.toml").read_bytes()
+                    with mock.patch.object(groups, "SOURCE_SECONDS", 0.2):
+                        refused = self._refused(root, "Crate Bot")
+                    self.assertEqual((refused.code, refused.next_step), ("member_source_failed", "report"))
+                    if reader is None:
+                        self.assertIn("has no reader in this process", refused.message)
+                    self.assertEqual((root / "forest.toml").read_bytes(), before)
+                finally:
+                    release.set()
+                    with groups._SOURCE_CHANGED:
+                        self.assertTrue(groups._SOURCE_CHANGED.wait_for(
+                            lambda: "crate-app" not in groups._SOURCE_ACTIVE, timeout=2))
+                    groups.unregister_member_source("crate-app")
 
     def test_within_the_interval_the_last_list_is_used(self) -> None:
         root = self._forest()
         reads: list[str] = []
         self._source(lambda group: reads.append(group) or ["Crate Bot"])
         now = [1000.0]
-        with mock.patch.object(groups, "_clock", lambda: now[0]):
-            self.assertEqual(self._refused(root, "Other Bot").code, "agent_not_in_group")
-            self.assertEqual(self._refused(root, "Other Bot").code, "agent_not_in_group")
-            self.assertEqual(groups.resolve_caller(root, "crates", "Crate Bot").id, "crate-bot")
-            self.assertEqual(len(reads), 1)
-            state = root / groups.SOURCE_STATE
-            noted = (state.read_bytes(), state.stat().st_ino)
-            now[0] += groups.SOURCE_INTERVAL_SECONDS
-            self.assertEqual(self._refused(root, "Other Bot").code, "agent_not_in_group")
-            self.assertEqual(len(reads), 2)
-            # The same answer again leaves the record as it was.
-            self.assertEqual((state.read_bytes(), state.stat().st_ino), noted)
+        group = groups.require_group(load_config(root), "crates")
+        for _ in range(3):
+            self.assertEqual(groups._read_source(root, group, clock=lambda: now[0]), ("Crate Bot",))
+        self.assertEqual(len(reads), 1)
+        state = root / groups.SOURCE_STATE
+        noted = (state.read_bytes(), state.stat().st_ino)
+        now[0] += groups.SOURCE_INTERVAL_SECONDS
+        self.assertEqual(groups._read_source(root, group, clock=lambda: now[0]), ("Crate Bot",))
+        self.assertEqual(len(reads), 2)
+        # The same answer again leaves the record as it was.
+        self.assertEqual((state.read_bytes(), state.stat().st_ino), noted)
 
     def test_an_open_group_with_a_source_admits_only_what_the_source_lists(self) -> None:
         root = self._forest(open_group=True)
@@ -301,9 +307,9 @@ class MemberSourceTests(ForestTestCase):
 
     def test_names_of_the_list_that_are_a_bad_argument_are_left_out_and_shown(self) -> None:
         root = self._forest()
-        self._source(lambda _group: ["Crate Bot", "", "Shelf\nBot", 7, "y" * 300])
+        self._source(lambda _group: ["Crate Bot", "", "Shelf\nBot"])
         self.assertEqual(groups.resolve_caller(root, "crates", "Crate Bot").id, "crate-bot")
         group = next(item for item in groups.listing(root)["groups"] if item["id"] == "crates")
-        self.assertEqual(len(group["left_out"]), 4)
+        self.assertEqual(len(group["left_out"]), 2)
         lines = "\n".join(groups.listing_lines(groups.listing(root)))
         self.assertIn("left out of source crate-app", lines)

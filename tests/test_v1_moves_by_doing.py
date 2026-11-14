@@ -1379,9 +1379,6 @@ UNREACHABLE: dict[str, str] = {
     "not_an_agent_tree": "move.py fill_agent takes a Plan held under the writer lock; its only caller is "
     "levels.carry_out for a `fill` item, and levels.due makes a `fill` item only when levels.agent_fills finds an "
     "agent at level tree whose tree page exists, the very conditions fill_agent refuses without",
-    "intake_turn_rejected": "intake.py:320 append_owned: _record returns None only when _role_ok(role) fails "
-    "(intake.py:921), and append_owned refused every such role before (intake.py:294, intake_role_invalid); the "
-    "only change _record makes to a role first is masking the name of an `other:` role, never to blank text",
     # The 0.3 command line, model and writer.
     "write_journal_exists": "writer.py _MutationSession.prepare (a private class): apply_daily, promote and "
     "apply_structured_sweep each run _recover_write_journal under the maintenance lock first, which rolls back and "

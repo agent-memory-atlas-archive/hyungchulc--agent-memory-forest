@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -291,7 +292,7 @@ def cmd_navigate(arguments: Any) -> int:
     return 0
 
 
-def _log_text() -> str:
+def _log_text(*, clock: Callable[[], float] = time.monotonic) -> str:
     """The turn on stdin, bounded by the same number of bytes as ``memory_log``'s words.
 
     A pipe has a deadline; a terminal has none, since a person types there.
@@ -309,7 +310,7 @@ def _log_text() -> str:
         return text
     terminal = bool(getattr(sys.stdin, "isatty", lambda: False)())
     return intake.read_bounded(
-        raw, limit=mcp.TURN_MAX_BYTES, seconds=None if terminal else intake.LOG_READ_SECONDS
+        raw, limit=mcp.TURN_MAX_BYTES, seconds=None if terminal else intake.LOG_READ_SECONDS, clock=clock
     )
 
 

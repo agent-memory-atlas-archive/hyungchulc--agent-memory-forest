@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from memory_forest.model import AgentLine
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from v1_support import REPOSITORY_ROOT, ForestTestCase  # noqa: E402
@@ -146,7 +148,9 @@ class EndToEndTests(ForestTestCase):
         for agent in ("kiln-bot", "post-bot", "studio-hub"):
             self.assertTrue((root / f"02 ltm/{agent}_LTM.md").is_file(), agent)
         agents = (root / "01 xltm/XLTM.md").read_text(encoding="utf-8").split("## Agents", 1)[1]
-        self.assertIn("- `studio-hub` — Studio Hub · talks with Juno and hands work to the bots", agents)
+        listed = {line.id: (line.name, line.role) for raw in agents.splitlines()
+                  if (line := AgentLine.match(raw)) is not None}
+        self.assertEqual(listed["studio-hub"], ("Studio Hub", "talks with Juno and hands work to the bots"))
 
         self.run_ok("check", "--sync", *at)
         self.assertEqual(self.run_ok("check", *at), "")

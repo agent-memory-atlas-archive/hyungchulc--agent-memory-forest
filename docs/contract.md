@@ -188,12 +188,36 @@ number, the setting that holds it is given with its default.
      the name in NFKC, case-folded, with white space, hyphens, dashes and underscores taken out; never
      because their ids or slugs agree. An id something else holds is followed by `-agent`, and one another
      agent holds by the smallest free number from 2. An agent declared with an id and a name keeps that
-     id.
+     id. Identity is resolved across the whole forest before membership: an exact stored id wins,
+     then the name key is matched. A group never changes which agent a text names. Member references
+     use the same admitted text as callers, before exact-id lookup. Two declarations with one key,
+     or a name that is another agent's exact id, are reported by `forest check` with the
+     edit that removes the ambiguity.
+     Generated ids avoid Windows device basenames (also before a dot, in any case), trailing dots and
+     spaces. The reserved table is `names.DEVICE_NAMES`; a reserved basename is held by something
+     that is not an agent. A declared reserved id still works where the system can hold it, and
+     `forest check` gives the rename edit.
+     Hangul uses the Revised Romanization of Korean, each syllable written by itself, its final
+     consonant as at the end of a word, and no sound change carried from one syllable to the next.
+     This follows the [standard's treatment of given names](https://www.korean.go.kr/front_eng/roman/roman_01.do).
+     Existing stored ids stay unchanged when a table changes.
+     Every caller-supplied text argument is checked before trimming for Unicode classes Cc (controls),
+     Cs (surrogates), Zl (line separators) and Zp (paragraph separators). Format characters (Cf),
+     including zero-width spaces and joiners, stay significant in a name key, apart from the soft
+     hyphen already counted as a hyphen; `forest check` names
+     affected agents and pairs in a notice, never a name refusal. Stdin turn bodies are content, not
+     command arguments, and may contain line breaks.
   5. A name says who or what the subject is, never the words of what it sent set before digits: a sender
      is `Lowtide parcel sender`, not `Lowtide verification code 4821`. A name, id or alias that reads as a
      sign-in value (section 4) would be shown masked by every read, and `forest credentials fix` would
      take it off the subject's own pages. Such a name, and one that holds `[REDACTED]`, is the violation
-     `registry_name_masked` (section 8), and no plan may add one.
+     `registry_name_masked` (section 8), and no plan may add one. Agent display names are represented
+     with the reversible numeric-character-reference encoding `names.encode` / `names.decode` where
+     registry or Markdown syntax needs it, rather than refused. New representations start with
+     `<!--amf-name-v1-->` and encode every character, so masking cannot mistake a display name for a
+     credential. Unmarked legacy references remain literal; ordinary untouched legacy lines stay as
+     written. Their uniqueness uses only the agent
+     name key, never subject aliases, punctuation-confusability rules or a masked-value test.
 - **The owner.** The owner of the forest is a subject like any other, with the id `owner.id`. The setting
   `owner.name` is how memory text names the owner, and `owner.aliases` are the owner's other names.
   1. In memory text, the bare `owner.name` always means the owner.
@@ -211,7 +235,7 @@ number, the setting that holds it is given with its default.
   subjects would take one name, each carries a distinguishing word (`Lowtide café (mail sender)`) and none
   takes the bare name; a merge waits for a reader who has read the material of both sides. No tool merges
   on a name by itself: a name two subjects claim is a registry problem to report.
-- Names and aliases are compared after NFKC normalisation, case folding and collapsing white space: two
+- Other subjects' names and aliases are compared after NFKC normalisation, case folding and collapsing white space: two
   that are equal after that are one name. Two that differ only in punctuation or spacing are reported by
   `forest registry check` as likely the same and are never merged by a tool on that ground alone.
 
@@ -515,6 +539,26 @@ helper started for one task works as the agent that started it.
   days.
 - **Its tree page is what the agent reads first.** It has the sections `## Role`, `## Standing
   instructions`, `## Lessons`, `## Current state` and `## Branches` (section 5).
+- **A write and a pending tree.** A write by an admitted agent makes its tree, or answers `pending`
+  while another writer holds the lock. The next write after that lock is released makes the tree.
+  No admitted name has a permanent pending reason. Allocation and tree creation share the writer
+  lock; the agent-id record is authoritative before inspecting trees or registry entries for other ids.
+- **Member sources.** A source returns a list of at most 50,000 texts, each at most 200 Unicode
+  characters, at most 40,000,000 UTF-8 bytes of name data. Readers enforce those limits before returning.
+  Entries with one key count once, keeping the first spelling and reporting duplicates. A malformed
+  container or non-text entry is `member_source_failed`. One forest, group and source share one refresh
+  and its success or failure; the 60-second interval starts at completion. Each caller has its own
+  deadline. A cooperative reader receives `deadline` and `cancelled` and must return by the deadline
+  or cancellation. An unreturned reader retains its one process-wide source slot, so later calls
+  fail immediately, naming when that read started; `forest check` reports it. A late result is discarded.
+- **Settings repairs.** An admission that cannot patch the settings gives applicable `details.edits`:
+  `add_to_list` appends to a list, `set_value` creates or replaces a key and its missing parent tables,
+  and `new_table` creates a table. A missing members list is created; a rejected value is replaced,
+  retaining a valid single-text name, and the message names what stood there. When declaring a new
+  exact id would reinterpret a member reference, edits using stable ids preserve both members. Failure to
+  create or take an admission lock is `settings_unpatched` with those edits. Parser diagnostics such as
+  `left_out` and `unplaceable` are never owner settings; unknown agent-table fields are isolated and
+  reported by `forest check`, whatever the TOML value kind.
 - **What is filed there** follows the `agents.policy` setting:
   - `subject-first` (the default, for one owner served by several agents): a fact about a subject lives in
     that subject's home whichever agent learned it; the agent is a tag on the line (`noted by <agent>`).

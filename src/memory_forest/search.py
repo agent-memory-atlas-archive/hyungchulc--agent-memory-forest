@@ -2494,6 +2494,7 @@ def query(
     limit: int = 10,
     config: Config | None = None,
     source: str | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Registry names first, then words, then vectors when a provider is registered."""
     safe = require_real_root(root)
@@ -2507,7 +2508,7 @@ def query(
     scope = for_reader(config, built, reader, named=named, root=safe)
     wanted = source_for(safe, scope, source)
     stale = refresh_lanes_and_daily(safe)
-    started = time.monotonic()
+    started = clock()
     deadline = started + READER_TIMEOUT_SECONDS
 
     def read(connection: sqlite3.Connection | None) -> dict[str, Any]:
@@ -2534,7 +2535,7 @@ def query(
         except MemoryForestError as exc:
             if exc.code != "index_protocol":
                 raise
-            now = time.monotonic()
+            now = clock()
             if now >= deadline:
                 raise protocol_spent(now - started, path=str(exc.details.get("path") or "")) from exc
             remaining = deadline - now

@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import PurePath as Path, PurePosixPath
 from typing import Final
 
-from . import system
+from . import names as name_rules, system
 from .errors import MemoryForestError
 
 
@@ -538,7 +538,7 @@ class Page:
         for raw in self.head:
             match = _H1_RE.fullmatch(_bare(raw))
             if match:
-                return match["text"]
+                return name_rules.decode(match["text"])
         return None
 
     def field(self, key: str) -> str:
@@ -827,12 +827,16 @@ class TimelineLine:
         return f"{self.indent}- {mark}{self.when}{DASH}{self.text}"
 
 
-def _split_names(text: str) -> list[str]:
+def _split_names(text: str, *, agent: bool = False) -> list[str]:
     names: list[str] = []
-    for part in text.split(";"):
+    parts = re.findall(r"(?:&#[0-9]+;|[^;])+", text) if agent else text.split(";")
+    for part in parts:
         value = part.strip()
-        quoted = CODE_SPAN_RE.fullmatch(value)
-        value = quoted["text"].strip() if quoted else value
+        if agent and value.startswith(name_rules.ENCODED_NAME):
+            value = name_rules.decode(value)
+        else:
+            quoted = CODE_SPAN_RE.fullmatch(value)
+            value = quoted["text"].strip() if quoted else value
         if value and value not in names:
             names.append(value)
     return names
@@ -855,6 +859,7 @@ class RegistryLine:
     aliases: list[str]
     status: str = "active"
     status_written: bool = False
+    encoded_name: bool = True
 
     @classmethod
     def parse(cls, line: str) -> RegistryLine:
@@ -868,27 +873,26 @@ class RegistryLine:
         home = CODE_SPAN_RE.fullmatch(home_field)
         if home is None:
             raise LineShapeError("the home of a registry line is one code-span path")
-        if not name:
-            raise LineShapeError("a registry line names its subject")
         aliases: list[str] | None = None
         status: str | None = None
         for value in tail:
             found = _ALIASES_RE.fullmatch(value)
             if found is not None and aliases is None and status is None:
-                aliases = _split_names(found["names"])
+                aliases = _split_names(found["names"], agent=kind == "agent")
             elif value in STATUSES and status is None:
                 status = value
             else:
                 raise LineShapeError(f"unexpected field `{value}` in a registry line")
         return cls(
             id=match["id"].strip(),
-            name=name,
+            name=name_rules.decode(name) if kind == "agent" else name,
             type=kind,
             level=level,
             home=home["text"].strip(),
             aliases=aliases or [],
             status=status or "active",
             status_written=status is not None,
+            encoded_name=name.startswith(name_rules.ENCODED_NAME) or any(name_rules.ENCODED_NAME in part for part in tail),
         )
 
     @classmethod
@@ -899,9 +903,12 @@ class RegistryLine:
             return None
 
     def render(self) -> str:
-        text = f"- `{self.id}`{DASH}{self.name}{DOT}{self.type}{DOT}{self.level}{DOT}`{self.home}`"
+        name = name_rules.encode(self.name) if self.type == "agent" and self.encoded_name else self.name
+        text = f"- `{self.id}`{DASH}{name}{DOT}{self.type}{DOT}{self.level}{DOT}`{self.home}`"
         if self.aliases:
-            text += f"{DOT}aliases: {'; '.join(self.aliases)}"
+            aliases = ([name_rules.encode(alias) for alias in self.aliases]
+                       if self.type == "agent" and self.encoded_name else self.aliases)
+            text += f"{DOT}aliases: {'; '.join(aliases)}"
         if self.status != "active" or self.status_written:
             text += f"{DOT}{self.status}"
         return text
@@ -1000,6 +1007,7 @@ class AgentLine:
     name: str
     role: str
     ended: bool = False
+    encoded_name: bool = True
 
     @classmethod
     def parse(cls, line: str) -> AgentLine:
@@ -1012,7 +1020,8 @@ class AgentLine:
             parts = parts[:-1]
         if len(parts) < 2 or not parts[0].strip():
             raise LineShapeError("an agent line gives a name and a role")
-        return cls(listed.target, parts[0].strip(), DOT.join(parts[1:]).strip(), ended)
+        return cls(listed.target, name_rules.decode(parts[0].strip()), DOT.join(parts[1:]).strip(), ended,
+                   parts[0].strip().startswith(name_rules.ENCODED_NAME))
 
     @classmethod
     def match(cls, line: str) -> AgentLine | None:
@@ -1022,7 +1031,8 @@ class AgentLine:
             return None
 
     def render(self) -> str:
-        text = f"- `{self.id}`{DASH}{self.name}{DOT}{self.role}"
+        name = name_rules.encode(self.name) if self.encoded_name else self.name
+        text = f"- `{self.id}`{DASH}{name}{DOT}{self.role}"
         return text + f"{DOT}ended" if self.ended else text
 
 

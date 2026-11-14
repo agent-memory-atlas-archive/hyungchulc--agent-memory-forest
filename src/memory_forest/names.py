@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -38,10 +39,55 @@ from .errors import MemoryForestError
 NAME_MAX: Final[int] = 200
 HASH_DIGITS: Final[int] = 6
 HASH_PREFIX: Final[str] = "agent"
+ENCODED_NAME: Final[str] = "<!--amf-name-v1-->"
 LETTERS_DIR: Final[Path] = Path(__file__).parent / "letters"
 # Taken out of a name before its id is made, with nothing in their place: O'Neil is oneil.
 _DROPPED: Final[frozenset[str]] = frozenset("'\u2018\u2019\u02bc\u02bb`\u00b4")
-_LINE_BREAKS: Final[frozenset[str]] = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
+# Basenames Windows reserves even before an extension, on every supported system.
+DEVICE_NAMES: Final[tuple[str, ...]] = (
+    "con", "prn", "aux", "nul", "conin$", "conout$",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+    "com¹", "com²", "com³", "lpt¹", "lpt²", "lpt³",
+)
+
+
+def forbidden(text: str) -> bool:
+    """Caller arguments contain no Unicode Cc, Cs, Zl or Zp characters (Cf remains significant)."""
+    return any(unicodedata.category(character) in {"Cc", "Cs", "Zl", "Zp"} for character in text)
+
+
+def reserved_id(text: str) -> bool:
+    """A portable basename must neither name a device nor end in a dot or space."""
+    return text.endswith((".", " ")) or text.split(".", 1)[0].casefold() in DEVICE_NAMES
+
+
+def encode(text: str) -> str:
+    """A marked representation: every character is a reference, so neither syntax nor masking reads its words."""
+    return ENCODED_NAME + "".join(f"&#{ord(character)};" for character in text)
+
+
+def decode(text: str) -> str:
+    """Decode only a complete marked representation; legacy literal references remain literal."""
+    if not text.startswith(ENCODED_NAME):
+        return text
+    body = text[len(ENCODED_NAME):]
+    if re.fullmatch(r"(?:&#[0-9]{1,7};)*", body) is None:
+        return text
+    values = [int(value) for value in re.findall(r"&#([0-9]+);", body)]
+    if any(value > 0x10ffff or 0xd800 <= value <= 0xdfff for value in values):
+        return text
+    return "".join(chr(value) for value in values)
+
+
+def invisible(text: str) -> str:
+    """The visible comparison used only for a notice; format characters remain part of the identity key."""
+    return key("".join(character for character in text if unicodedata.category(character) != "Cf"))
+
+
+def has_invisible(text: str) -> bool:
+    """Whether a display name contains a format character, including one already folded as a separator."""
+    return any(unicodedata.category(character) == "Cf" for character in text)
 
 
 def _separator(character: str) -> bool:
@@ -80,6 +126,10 @@ def check(given: object) -> str:
         raise MemoryForestError(
             "agent_name_invalid", "The agent is text: the caller's own name.", next_step="fix"
         )
+    if forbidden(given):
+        raise MemoryForestError(
+            "agent_name_invalid", "A name holds no control character, surrogate or line break.", next_step="fix"
+        )
     trimmed = given.strip()
     if not trimmed:
         raise MemoryForestError("agent_unset", "Name the caller: pass agent, the caller's own name.", next_step="fix")
@@ -88,13 +138,6 @@ def check(given: object) -> str:
             "agent_name_invalid",
             f"A name is at most {NAME_MAX} characters. Pass the caller's own name.",
             details={"name": trimmed[:80]},
-            next_step="fix",
-        )
-    if any(character in _LINE_BREAKS or unicodedata.category(character) == "Cc" for character in trimmed):
-        raise MemoryForestError(
-            "agent_name_invalid",
-            "A name holds no control character and no line break. Pass the caller's own name.",
-            details={"name": trimmed[:80].encode("unicode_escape").decode("ascii")},
             next_step="fix",
         )
     return trimmed
@@ -266,7 +309,7 @@ def new_id(name: str, held: Callable[[str], list[str]]) -> str:
     key, or the name would have found it): the id, a hyphen and the smallest number from 2 that nothing holds.
     """
     base = make_id(name)
-    kinds = held(base)
+    kinds = ["reserved"] if reserved_id(base) else held(base)
     if not kinds:
         return base
     number = 1

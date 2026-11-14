@@ -18,10 +18,11 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-from memory_forest import agents, groups, mcp, move, names, search
+from memory_forest import agents, groups, mcp, move, names, registry, search
 from memory_forest.cli import forest_main
 from memory_forest.config import load_config, parse_config
 from memory_forest.errors import MemoryForestError
+from memory_forest.model import parse_page
 
 from test_v1_find import FILES
 from test_v1_groups import BAKERY_GROUPS, COOLING, _call, _stdin, _tool_body
@@ -119,7 +120,7 @@ class KeyTests(ForestTestCase):
 
 
 class AmbiguityTests(ForestTestCase):
-    """A name two agents share is refused with both ids, among members first, then main agents, then everyone."""
+    """Ambiguity is forest-wide, before membership or the main agent's exemption."""
 
     def _refused(self, settings: str, group: str, given: str, name: str) -> MemoryForestError:
         root = self.make_forest({**FILES, "forest.toml": settings}, name=name)
@@ -135,8 +136,7 @@ class AmbiguityTests(ForestTestCase):
         mains = BAKERY_GROUPS.replace('orchestrators = ["front-desk"]', 'orchestrators = ["front-desk", "frontdesk"]')
         shelves = '\n[agents.known.shelf-one]\nname = "Shelf Bot"\n\n[agents.known.shelf-two]\nname = "shelf_bot"\n'
         cases = (
-            # Two members share the key, and a main agent has it too: the members are asked first.
-            ("members", members + two, "bakery-bots", "Front Desk", ["desk-one", "desk-two"]),
+            ("members", members + two, "bakery-bots", "Front Desk", ["front-desk", "desk-one", "desk-two"]),
             ("main agents", mains, "night-shift", "Front Desk", ["front-desk", "frontdesk"]),
             ("agents of no group", BAKERY_GROUPS + shelves, "night-shift", "Shelf Bot", ["shelf-one", "shelf-two"]),
         )
@@ -145,6 +145,10 @@ class AmbiguityTests(ForestTestCase):
                 refused = self._refused(settings, group, given, label.replace(" ", "-"))
                 self.assertEqual(refused.code, "agent_ambiguous")
                 self.assertEqual([item["id"] for item in refused.details["members"]], wanted)
+                expected_names = {"front-desk": "Front Desk", "frontdesk": "frontdesk", "desk-one": "Front Desk",
+                                  "desk-two": "front_desk", "shelf-one": "Shelf Bot", "shelf-two": "shelf_bot"}
+                self.assertEqual([item["name"] for item in refused.details["members"]],
+                                 [expected_names[item] for item in wanted])
 
 
 class BadArgumentTests(ForestTestCase):
@@ -322,6 +326,14 @@ NAME_KINDS = {
     "symbol": ("★", "★"),
     "mixed": ("스카우트 Bot", "스카우트-BOT"),
     "mixed-rest": ("카피 Bot", "카피_bot"),
+    "dot": ("Crate.Bot", "CRATE.BOT"),
+    "space": ("Crate Bot", "crate_bot"),
+    "display-spaces": ("Crumb  \u3000  Clerk", "CRUMB_CLERK"),
+    "backtick": ("Crumb ` Bot", "CRUMB ` BOT"),
+    "middle-dot": ("Crumb · Bot", "CRUMB · BOT"),
+    "masked": ("Mask [REDACTED] Bot", "MASK [REDACTED] BOT"),
+    "markup": ("<Sift>&* Bot;", "<SIFT>&* BOT;"),
+    "subject": ("Deck Oven", "deck_oven"),
 }
 
 
@@ -338,6 +350,7 @@ class DoorProductTests(ForestTestCase):
             with self.subTest(door=door):
                 root = self.make_forest({**FILES, "forest.toml": self._settings()}, name=f"door-{door}")
                 ids: dict[str, str] = {}
+                original_trees = set(registry.build(root).agents)
                 for kind, (name, again) in NAME_KINDS.items():
                     agent_id = self._through(root, door, name)
                     self.assertRegex(agent_id, ID_RE, kind)
@@ -345,7 +358,13 @@ class DoorProductTests(ForestTestCase):
                     self.assertEqual(load_config(root).agents.declared(agent_id).name, name, kind)
                     self.assertTrue((root / "06 istm" / agent_id).is_dir(), kind)
                     self.assertTrue((root / "02 ltm" / f"{agent_id}_LTM.md").is_file(), kind)
+                    self.assertEqual(parse_page((root / "02 ltm" / f"{agent_id}_LTM.md").read_text()).title, name)
+                    compiled = registry.build(root)
+                    self.assertEqual(compiled.subject(agent_id)["name"], name)
+                    self.assertFalse([p for p in compiled.problems if p.code in
+                                      {"registry_name_masked", "registry_duplicate_alias"}], compiled.problems)
                     self.assertEqual(self._through(root, door, again), agent_id, (kind, again))
+                    self.assertEqual(set(registry.build(root).agents), original_trees | set(ids.values()))
                 self.assertEqual(len(set(ids.values())), len(ids), ids)
                 self.assertNotEqual(ids["mixed"], ids["mixed-rest"])
 

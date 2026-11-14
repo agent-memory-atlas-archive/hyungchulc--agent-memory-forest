@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from v1_support import ForestTestCase, leaf_text  # noqa: E402
 
-from memory_forest import lint, maps, move, movelog, registry  # noqa: E402
+from memory_forest import lint, maps, move, movelog, names, registry  # noqa: E402
 from memory_forest.errors import MemoryForestError  # noqa: E402
 
 TODAY = "2051-03-05"
@@ -141,6 +141,25 @@ class LeafAndRenameTests(MoveTestCase):
         _, changed = self.run_move(root, "rename", target="millstone-flour", name="Millstone Mill")
         self.assertEqual((changed["created"], changed["removed"]), ([], []))
         self.assertIn("— Millstone Mill · organization · leaf", self.text(root, "03 mtm/bakery/bakery_MTM.md"))
+
+    def test_rename_a_leaf_id_moves_only_its_prefixed_files_and_keeps_every_entity_and_reference(self) -> None:
+        root = self.forest()
+        folder = root / "04 stm/bakery/suppliers"
+        (folder / "millstone-flour-notes.md").write_text(leaf_text("millstone-flour"))
+        (folder / "custom-name.md").write_text(leaf_text("millstone-flour"))
+        (folder / "millstone-flour-other.md").write_text(leaf_text("deck-oven", about="millstone-flour"))
+        _, changed = self.run_move(root, "rename", target="millstone-flour", new="millstone-mill")
+        self.assertEqual(changed["created"], ["04 stm/bakery/suppliers/millstone-mill-notes.md",
+                                              "04 stm/bakery/suppliers/millstone-mill.md"])
+        self.assertEqual(changed["removed"], ["04 stm/bakery/suppliers/millstone-flour-notes.md", MILLSTONE])
+        built = registry.build(root)
+        self.assertEqual(built.subject("millstone-mill")["home"], "04 stm/bakery/suppliers/millstone-mill.md")
+        self.assertIsNone(built.subject("millstone-flour"))
+        for filename in ("millstone-mill.md", "millstone-mill-notes.md", "custom-name.md"):
+            self.assertIn("entity: millstone-mill\n", (folder / filename).read_text())
+        other = (folder / "millstone-flour-other.md").read_text()
+        self.assertIn("entity: deck-oven\n", other)
+        self.assertIn("about: millstone-mill\n", other)
 
     def test_a_rename_to_a_name_that_reads_as_a_sign_in_value_is_refused(self) -> None:
         root = self.forest()
@@ -278,7 +297,7 @@ class TreeTests(MoveTestCase):
         self.assertEqual(changed["created"], ["02 ltm/till-bot_LTM.md", "03 mtm/till-bot/till-bot_MTM.md"])
         agents = self.text(root, "01 xltm/XLTM.md").split("## Agents", 1)[1]
         self.assertIn("`till-bot`", agents)
-        self.assertIn("- `till-bot` — Till Bot · agent · tree · `02 ltm/till-bot_LTM.md` · aliases: the till",
+        self.assertIn(f"- `till-bot` — {names.encode('Till Bot')} · agent · tree · `02 ltm/till-bot_LTM.md` · aliases: {names.encode('the till')}",
                       self.text(root, "03 mtm/till-bot/till-bot_MTM.md"))
         with self.assertRaises(MemoryForestError):
             move.execute(root, "new-tree", tree="garden", description="again", today=TODAY)

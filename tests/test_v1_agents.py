@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from v1_support import ForestTestCase  # noqa: E402
 
-from memory_forest import agents, levels, lint, move, registry  # noqa: E402
+from memory_forest import agents, levels, lint, model, move, names, registry  # noqa: E402
 from memory_forest.checks import run_checks  # noqa: E402
 from memory_forest.config import load_config, parse_config  # noqa: E402
 
@@ -68,9 +68,9 @@ class AutomaticTreeTests(AgentTestCase):
         page = (root / "02 ltm/post-bot_LTM.md").read_text(encoding="utf-8")
         self.assertIn("entity: post-bot", page)
         self.assertIn(f"## Role\n\n{move.ROLE_UNSET}\n", page)
-        self.assertIn("- `post-bot` — post-bot · agent · tree · `02 ltm/post-bot_LTM.md`",
+        self.assertIn(f"- `post-bot` — {names.encode('post-bot')} · agent · tree · `02 ltm/post-bot_LTM.md`",
                       (root / "03 mtm/post-bot/post-bot_MTM.md").read_text(encoding="utf-8"))
-        self.assertIn(f"- `post-bot` — post-bot · {move.ROLE_UNSET}",
+        self.assertIn(f"- `post-bot` — {names.encode('post-bot')} · {move.ROLE_UNSET}",
                       (root / "01 xltm/XLTM.md").read_text(encoding="utf-8"))
         self.assertClean(root)
         self.assertIn("post-bot", self.readable(root, "studio-hub"))
@@ -81,7 +81,7 @@ class AutomaticTreeTests(AgentTestCase):
         root = self.forest('\n[agents.known.glaze-bot]\nname = "Glaze Bot"\nrole = "mixes and tests glazes"\n')
         self.assertEqual([item.home for item in levels.check(root)], ["forest.toml"])
         levels.apply(root, today=TODAY)
-        self.assertIn("- `glaze-bot` — Glaze Bot · mixes and tests glazes",
+        self.assertIn(f"- `glaze-bot` — {names.encode('Glaze Bot')} · mixes and tests glazes",
                       (root / "01 xltm/XLTM.md").read_text(encoding="utf-8"))
         self.assertClean(root)
         self.assertIn("glaze-bot", self.readable(root, "studio-hub"))
@@ -118,13 +118,13 @@ class AutomaticTreeTests(AgentTestCase):
         result = levels.apply(root, today="2042-05-16")
         self.assertEqual(result["refused"], [])
         page = (root / "02 ltm/post-bot_LTM.md").read_text(encoding="utf-8")
-        self.assertIn("# Parcel Bot\n", page)
+        self.assertEqual(model.parse_page(page).title, "Parcel Bot")
         self.assertIn("## Role\n\nships orders\n", page)
         self.assertIn('Name of `post-bot`: was "post-bot", now "Parcel Bot"', page)
         self.assertIn(f'Role of `post-bot`: was "{move.ROLE_UNSET}", now "ships orders"', page)
-        self.assertIn("- `post-bot` — Parcel Bot · agent · tree · `02 ltm/post-bot_LTM.md`",
+        self.assertIn(f"- `post-bot` — {names.encode('Parcel Bot')} · agent · tree · `02 ltm/post-bot_LTM.md`",
                       (root / "03 mtm/post-bot/post-bot_MTM.md").read_text(encoding="utf-8"))
-        self.assertIn("- `post-bot` — Parcel Bot · ships orders", (root / "01 xltm/XLTM.md").read_text(encoding="utf-8"))
+        self.assertIn(f"- `post-bot` — {names.encode('Parcel Bot')} · ships orders", (root / "01 xltm/XLTM.md").read_text(encoding="utf-8"))
         self.assertEqual(levels.check(root), [])
         self.assertClean(root)
 

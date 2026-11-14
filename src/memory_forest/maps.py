@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Final
 
-from . import layout, registry
+from . import layout, names, registry
 from .locking import LockToken
 from .config import Config
 from .model import DOT, RECORD_SECTION, ListLine, code_spans, parse_page
@@ -308,7 +308,7 @@ def sync_root(plan: Plan, changes: list[ListChange]) -> None:
         text = plan.read(layout.tree_page(agent_id))
         role = _one_line(plan.hints.get(f"agent:{agent_id}") or first_prose(text, "Role"), ref.type)
         ended = ref.line.status == "ended"
-        description = f"{ref.name}{DOT}{role}" + (f"{DOT}{ENDED}" if ended else "")
+        description = f"{names.encode(ref.name)}{DOT}{role}" + (f"{DOT}{ENDED}" if ended else "")
         listed[agent_id] = Wanted(agent_id, description, adjust=_with_ended(ended))
     text = plan.read(layout.ROOT_INDEX)
     for section, wanted in ((TREES, area), (AGENTS, listed)):

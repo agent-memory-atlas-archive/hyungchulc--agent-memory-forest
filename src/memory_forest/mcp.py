@@ -76,7 +76,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from . import __version__, groups, intake, layout, search, system, timeline
+from . import __version__, groups, intake, layout, names, search, system, timeline
 from .config import load_config
 from .errors import MOVE_DEFINITIONS, MemoryForestError, door_refusal
 from .locking import atomic_write
@@ -646,6 +646,9 @@ def _check_arguments(name: str, arguments: Mapping[str, Any], tool: Mapping[str,
     required = set(schema.get("required") or ())
     if any(key not in arguments for key in required):
         raise _BadArguments("A required argument is missing.")
+    for value in arguments.values():
+        if isinstance(value, str) and names.forbidden(value):
+            raise _BadArguments("A text argument holds no Unicode control character, surrogate or line break.")
     if "agent" in schema["properties"]:
         caller = arguments.get("agent")
         if not isinstance(caller, str) or not caller.strip():

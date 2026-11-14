@@ -104,7 +104,11 @@ class PagePathTests(unittest.TestCase):
         body = json.loads(out.getvalue())
         found["command"] = (body["error"]["code"], None) if code else (None, body["results"][0]["path"])
         tool = "memory_read" if kind == "read" else "memory_navigate"
-        reply = mcp._call(self.root, READER, {"name": tool, "arguments": {"path": spelling}}, "stdio")
+        message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                   "params": {"name": tool, "arguments": {"path": spelling}}}
+        answered, _version = mcp.handle_message(self.root, READER, message, "stdio", "2025-11-25")
+        self.assertNotIn("error", answered)
+        reply = answered["result"]
         body = json.loads(reply["content"][0]["text"])
         found["tool"] = (body["code"], None) if reply["isError"] else (None, body["results"][0]["path"])
         return found
@@ -122,7 +126,11 @@ class PagePathTests(unittest.TestCase):
                 for spelling, wanted in refused(page).items():
                     for door, (code, _answered) in self._doors(kind, spelling).items():
                         with self.subTest(kind=kind, page=which, spelling=spelling[:40], door=door):
-                            self.assertEqual(code, wanted)
+                            # Command/tool arguments are rejected before the page-path reader runs.
+                            bad_argument = any(unicodedata.category(char) in {"Cc", "Cs", "Zl", "Zp"}
+                                               for char in spelling)
+                            expected = "arguments_invalid" if bad_argument and door != "public function" else wanted
+                            self.assertEqual(code, expected)
 
     def test_the_reader_is_one_function_with_a_stated_length(self) -> None:
         self.assertEqual(layout.caller_page_path(" ./04 stm//bakery/./ovens/floor.md/ "), "04 stm/bakery/ovens/floor.md")

@@ -157,18 +157,23 @@ A helper started for one task works as the agent that started it.
     comparison of agent names: the group connection, a command's `--agent`, the settings parser, a source
     of members and `forest agents` use it. A name finds an agent in two ways only: it is the agent's id
     character for character, or its key is the key of the agent's stored name (an agent with no name is
-    named by its id). A name whose key no agent has is a new agent. The only bad names are empty text,
+    named by its id). The exact stored id wins before the key over the whole forest; membership is
+    checked afterwards. A name whose key no agent has is a new agent. The only bad names are empty text,
     more than 200 characters, and text with a control character or a line break (`fix`).
   - **The id is a handle, made once.** A new agent's id is made from its name when it is admitted and
     stored beside the name (`[agents.known.<id>]`); no call makes it again. It is ASCII, letter for letter,
     one table per script, kept as data in `letters/` (Latin letters lose their accents; Hangul by the
-    Revised Romanization of each syllable's three parts; kana by Hepburn; Greek and Cyrillic by one table
+    Revised Romanization of each syllable alone, its final as at the end of a word; kana by Hepburn; Greek and Cyrillic by one table
     each): not a language's spelling, and no sound changes. A name with any letter, digit or symbol no
     table carries (Han characters, a script with no table, a symbol) gets `agent-` and six hexadecimal
     digits of the SHA-256 of its key. An id held by something that is not an agent is followed by
     `-agent`; one held by an agent with another key by the smallest free number from 2. An agent the
     owner declares with an id and a name is found by that name: that is how a person chooses an id, before
     the agent's first turn. After it, a tree carries the id and no move changes it.
+    Reserved device basenames are held by something that is not an agent. Allocation takes the same
+    writer lock as tree creation and reads the agent-id record first, so a partial tree cannot change
+    the suffix. Agent display names use reversible numeric character references where registry or
+    Markdown syntax needs them; no downstream subject-name rule rejects an admitted name.
   - A name some agent already has is that agent, whichever group or tool it first came from, and on an
     open group it becomes a member here as well. One name in two apps is one agent, one lane and one tree.
     Inside a group a caller is whoever it says it is, so any member can read what another member's own
@@ -178,9 +183,12 @@ A helper started for one task works as the agent that started it.
     open group (`open = true`) admits every new name at once. There is no greatest number of members
     unless the owner sets `max_members`. `forest agents` lists them. A group may name a `source` of
     members: then the source is the list. Its read has a deadline and a greatest size, the last list is
-    used for 60 seconds, and a source that fails is `member_source_failed` (`report`), never "not a
+    used for 60 seconds from completion, and a source that fails is `member_source_failed` (`report`), never "not a
     member". On a group connection a caller that names the main agent sees what the main agent sees. An
     orchestrator needs no entry in `members`.
+    Concurrent misses share a refresh. The exact list unit, cooperative deadline/cancellation and
+    single abandoned-reader slot are stated in contract sections 2 and 3. Settings repairs carry
+    executable list/create/replace edits even when an admission lock cannot be created.
   - **An admission patches bytes.** A second identical admission changes no byte of the settings. Two
     calls that would both admit the same new name end as one member and one settings write. The patch
     keeps every byte of `forest.toml` and adds one run inside the group's `members` and one table at the

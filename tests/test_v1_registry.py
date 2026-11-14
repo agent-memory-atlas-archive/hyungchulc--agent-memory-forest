@@ -177,6 +177,7 @@ class ProblemTests(ForestTestCase):
                 files = self.with_bakery_subjects([line], leaves=("rye-starter", "do3", "none"))
                 found = self.problems(files, name=f"forest-{number}")
                 self.assertEqual([item[0] for item in found], [code], found)
+                self.assertEqual(registry.build(self.base / f"forest-{number}").subject("deck-oven")["name"], "Deck Oven")
 
     def test_an_entry_a_subject_holds_or_another_entry_holds_is_an_error(self) -> None:
         files = dict(BAKERY_FILES)
@@ -216,6 +217,7 @@ class ProblemTests(ForestTestCase):
         ).replace("· person · aliases: Tam", "· starship · aliases: Tam")
         found = self.problems(files)
         self.assertEqual([code for code, _detail in found], ["collection_entry_malformed", "collection_entry_malformed"])
+        self.assertEqual(registry.build(self.base / "forest").subject("regulars-seen-once")["entries"], [])
 
     def test_a_collection_lives_on_its_categorys_period_pages(self) -> None:
         files = dict(BAKERY_FILES)
