@@ -369,7 +369,10 @@ forest numbers star "04 stm/bakery/ovens/deck-oven.md"
 A value sent to sign in or to pay is removed rather than starred: the line keeps who sent it, to whom and
 for which account, and `[REDACTED]` in the value's place (contract, section 4, Sign-in values). It is found
 by the word before it, from `credentials.label_words`; a forest that records other languages adds their
-words in `forest.toml`:
+words in `forest.toml`. A label word is found only as a word of its own before the value: a language
+written with spaces works this way ("Le code porte est 4471." is masked with the lines below), while a word
+with a particle joined to it ("비밀번호는 4471") is not found, even with the particle added to
+`joining_words`:
 
 ```toml
 [credentials]

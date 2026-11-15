@@ -38,12 +38,23 @@ and it does not show a turn that has not been filed onto the daily page. `forest
 ## What the forest keeps out
 
 - **Account and identity numbers** are written with their middle starred on every page a stage writes, and
-  the tools star them in what they show. The lint reports any written in full (contract, section 4).
+  the tools star them in what they show. The lint reports any written in full (contract, section 4). A
+  turn shows what that covers: a card number (`4111 1111 1111 1111` becomes `411* **** **** 1111`), a run
+  of digits after the word account (`Account 12345678` becomes `Account 123*5678`) and a telephone number
+  written with its `+` country code (`+1 9** *** 0147`) are starred; a run of digits after another word
+  (`Order 20420514`, `Ref 123456789012`), a telephone number without the `+` (`902-555-0147`) and an
+  identity number written in groups with hyphens (`123-45-6789`) are kept.
 - **Sign-in values** (passwords, PINs, one-time and verification codes, door codes) are never starred but
   removed: a page keeps that a value was sent, by whom, to whom and for which account, and `[REDACTED]` in
   its place. The value is recognised by a label word before it (`credentials.label_words`, English by
   default, including token, API key, secret, bearer and authorization; add the words of the other
-  languages your forest records). A shape is masked first, whatever stands before it, and the label
+  languages your forest records). The label stands before the value, after a colon, a space, `=` or a
+  joining word: "The door code is 4471.", "Door code: 4471", "PIN 4471" and `token=…` are masked, while
+  "The door code changed to 4471." is kept, since `changed to` is not a joining word. A label word added
+  for another language works the same way when it stands as its own word ("Le mot de passe est 4471."
+  with `mot de passe` and `est` added). It must stand as its own word before the value: with `비밀번호`
+  added, "비밀번호: 4471" and "문 비밀번호 4471" are masked, but "문 비밀번호는 4471이야", where a particle
+  is joined to the word, is kept, also with the particle added to `joining_words`. A shape is masked first, whatever stands before it, and the label
   step runs after. The shapes are the published prefixes listed in the contract (section 4): the large
   model providers, the code hosts, the cloud consoles, the payment and chat services, the package
   registries, a JWT, an `Authorization` header of bearer, basic or digest, and a private-key block.
@@ -57,7 +68,8 @@ and it does not show a turn that has not been filed onto the daily page. `forest
   numbers and sign-in values are masked at the doors (intake, `forest log` and `memory_log` mask a turn
   before it reaches the lane), and `forest lint` judges the page the agent wrote. (In 0.3 the daily writer
   masked the text a model handed it.) The tools mask what they show; the lint reports a page line that still holds one (`credential_in_full`) and
-  `forest credentials fix` masks it after archiving the page. **What is kept:** the raw lane `06 istm`
+  `forest credentials fix` masks it after archiving the page. **What is kept:** an agent's record file `transcripts/<id>.jsonl` holds
+  the words as they were said, unmasked, until its exporter empties it; the raw lane `06 istm`
   and the archive keep the bytes they were given, so protect them like the forest. A lane line written
   under an earlier masking rule keeps what that rule left: `forest credentials check` counts those lines
   for each lane (never a value) and `forest credentials fix --all` rewrites them in place, changing only
@@ -66,7 +78,8 @@ and it does not show a turn that has not been filed onto the daily page. `forest
   candidates | judge`); once judged a sign-in value it is masked wherever it appears, through a ledger
   that keeps only keyed digests (`.forest/credentials/`, the key readable by its owner only; protect it
   like the forest). **What the rule cannot see:** a bare code nobody has judged yet and that has none of
-  those shapes, a label word your settings do not list, a value written without a digit and without a
+  those shapes, a label word your settings do not list, a label followed by words that are not a joining
+  word ("the door code changed to 4471"), a label word with a particle or ending joined to it, a value written without a digit and without a
   colon ("the password is tulip"), a value split across lines (except a private-key block, which is one
   pattern), a value inside an image, a value that reads as code (`Spring.Time` after a name reads as an
   attribute, `abc(1)` as a call), a value that holds a quote, a bracket, a comma or a semicolon past
