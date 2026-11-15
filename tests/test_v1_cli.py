@@ -228,7 +228,8 @@ def milestone_1_lines(readme: str) -> str:
 class ForestRootTests(ForestTestCase):
     def test_every_command_but_init_refuses_an_empty_folder_and_writes_nothing(self) -> None:
         creators = [command.words for command in cli.FOREST_COMMANDS if not command.uses_root]
-        self.assertEqual(creators, [("init",)])
+        # `forest setup` creates a forest only in the folder its --root names (test_v1_setup); the guide writes nothing.
+        self.assertEqual(creators, [("init",), ("guide",), ("setup",)])
         parser = cli.build_forest_parser()
         folder = self.base / "empty"
         folder.mkdir()
