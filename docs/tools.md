@@ -419,6 +419,8 @@ zone. The record and the writer's rules are in the [contract](contract.md), sect
 The package ships one adapter, `jsonl`, which reads a folder of files that are already in the record's
 shape. It ships no reader of a particular program's own transcripts. Whoever knows a program writes its
 reader as a module in the entry point group `memory_forest.adapters`, and `--from` then takes its name.
+[Writing a reader](adapters.md) says when one is worth writing, the interface intake uses, and the rules a
+reader keeps.
 
 Intake for a tool stays off until `[intake.tools.<adapter>] enabled` is true. Until then the command says
 so and takes nothing, unless `--once` is given. The agent is `--as`, or `agent` in that table. Without

@@ -3,9 +3,10 @@
 The package ships one, ``jsonl``, behind the entry point group
 ``memory_forest.adapters``: it reads records already in the lane's shape. A
 reader of a particular program's own transcripts is another module in that
-group, written by whoever knows that program. When the package is imported from
-a checkout that has not been installed, the built-in adapter is used directly,
-because the entry points are registered by installing it.
+group, written by whoever knows that program (``docs/adapters.md``). When the
+package is imported from a checkout that has not been installed, the built-in
+adapter is used directly, because the entry points are registered by installing
+it.
 """
 
 from __future__ import annotations
@@ -19,19 +20,46 @@ from .common import ReadBatch, Transcript
 
 
 class Adapter(Protocol):
+    """A reader of one tool's transcripts, as ``forest intake`` uses it (``docs/adapters.md``).
+
+    Required, called without a fallback: ``name``, ``discover``, ``read`` (intake always passes ``carry=``
+    and ``max_bytes=``), ``open_path`` and ``hook``.
+
+    Optional, looked up with a default:
+
+    - ``describe(transcript, settings) -> Transcript``: the transcript with what its head states. Called on
+      a transcript's first read and after a rewrite; without it, the transcript stands as found.
+    - ``transcript_root(settings) -> Path | None``: the folder transcript keys are relative to; without it,
+      ``settings.path``.
+    - ``id_stands_alone(turn_id) -> bool``: whether this one id is unique without its session; asked
+      before ``ids_stand_alone``.
+    - ``ids_stand_alone: bool``: whether every id is unique without its session; default false.
+    - ``ReadBatch.carry``: what a read could not finish, handed back as ``carry=`` on the next read.
+    - the code ``transcript_deferred``, which ``hook`` may raise to leave its session for a sweep.
+    """
+
     name: str
 
     def discover(self, settings: IntakeToolSettings) -> list[Transcript]:
-        """The transcripts this tool keeps."""
+        """Required. The transcripts this tool keeps."""
 
-    def read(self, transcript: Transcript, offset: int) -> ReadBatch:
-        """Turns after ``offset``, and the cursor the next read should keep."""
+    def read(
+        self,
+        transcript: Transcript,
+        offset: int,
+        carry: dict | None = None,
+        max_bytes: int | None = None,
+    ) -> ReadBatch:
+        """Required. Turns after ``offset``, and the cursor the next read should keep.
+
+        ``carry`` is the previous read's ``ReadBatch.carry``; ``max_bytes`` bounds a hook's read.
+        """
 
     def open_path(self, path, settings: IntakeToolSettings) -> Transcript:
-        """One transcript named by ``forest intake --transcript``."""
+        """Required. One transcript named by ``forest intake --transcript``."""
 
     def hook(self, payload: dict, settings: IntakeToolSettings) -> Transcript:
-        """The transcript a hook's JSON on stdin names."""
+        """Required. The transcript a hook's JSON on stdin names. May raise ``transcript_deferred``."""
 
 
 _BUILTINS: dict[str, str] = {

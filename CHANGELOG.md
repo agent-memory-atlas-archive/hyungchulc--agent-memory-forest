@@ -394,6 +394,11 @@ The lane commit fixes `stored` and the turn id; ids, caller-key and source recor
   entry to a tree of its own
 - `docs/multi-agent.md`: agent trees, the `subject-first` and `agent-first` filing policies with worked
   examples, reader scopes, raw lanes and the single writer, sharing a lesson, retiring an agent
+- `docs/adapters.md`: how to write a reader of one program's own transcripts, for someone who knows that
+  program: when a reader is worth writing and when records for `jsonl` are enough, every member intake
+  uses with its mark (required or optional), the entry point group, what a hook call hands a reader, the
+  rules a reader keeps, and the kiln-log reader of the tests as the worked example. The `Adapter`
+  Protocol's text names the same members with the same marks, and a test holds the two together
 - `docs/comparison.md`: how the design differs from Mem0, GBrain, the LLM Wiki idea and plain vector-store
   RAG, citing only those projects' own pages with the date they were read
 - `docs/v1-design.md`: the design of version 1, its settings, package map and milestones
