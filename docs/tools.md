@@ -3,8 +3,9 @@
 The commands that keep a forest in order: `forest move …`, `forest levels …` and `forest collections …`
 change where things live; `forest check`, `forest lint`, `forest record …`, `forest numbers …` and
 `forest credentials …` check the pages and keep their records, numbers and sign-in values.
-`forest intake` is the writer of a raw lane. Each example below runs on an invented forest of a bakery
-owner, Ilse Varrow, with a `bakery` tree, a `people` tree and an agent tree `front-desk`. The rules the
+`forest intake` is the writer of a raw lane. `forest guide`, `forest setup` and `forest doctor`, at the
+end of the page, are how an agent connects itself. Each example before those three runs on an invented
+forest of a bakery owner, Ilse Varrow, with a `bakery` tree, a `people` tree and an agent tree `front-desk`. The rules the
 tools keep are in the [contract](contract.md); generated agent names use marked numeric references,
 and examples below show their decoded display text. The settings they read are in the
 [design](v1-design.md#12-settings).
@@ -60,9 +61,10 @@ are in the [contract](contract.md), section 3, Agent trees.
 - Common options: `--dry-run` prints the plan as JSON and writes nothing; `--why "…"` gives the reason the
   move log and the record lines carry; `--lock-token` lets a caller that already holds the writer lock run
   it; `--json` prints the result as JSON; `--root` names the forest. When `--root` is omitted, the forest
-  is the nearest folder at or above the current one that holds `forest.toml`. `forest init` is the only
-  command that creates a forest. Any other command, when there is no such folder, stops with a message
-  and writes nothing.
+  is the nearest folder at or above the current one that holds `forest.toml`. `forest init` and
+  `forest setup` create a forest (setup only in the new or empty folder its `--root` names), and
+  `forest guide` needs none. Any other command, when there is no such folder, stops with a message and
+  writes nothing.
 
 A refused command exits 2 and prints its error code (for example `target_exists` or
 `branch_holds_other_subjects`).
@@ -429,7 +431,8 @@ The first sweep of a tool, `forest intake --from <adapter>`, turns intake on for
 at the end of every transcript that exists (unless `import_earlier` is true, when it takes them from their
 start) and records that it did. A hook never turns intake on. Before that sweep a hook reads nothing and
 adds one line to a counter that needs no lock, which `status` shows with the command to run; setting a
-tool up includes that first sweep (today by hand, later by `forest setup`). After it, a transcript with
+tool up by hand includes that first sweep. `forest setup` gives each agent its own record file instead,
+and its intake command names that file with `--transcript` and `--once`, which reads it from its first line. After it, a transcript with
 no cursor is a new one and is read from its start. `--dry-run` prints a count per transcript and writes
 nothing under the forest, also when the tool's state cannot be read. `forest intake reread --from
 <adapter>` sets that adapter's cursors back to where intake first placed them, never further, and leaves
@@ -826,7 +829,7 @@ A stdio line over 1,000,000 bytes gets one error and the next line is read. The 
 
 The first tool call of each agent is recorded in `.forest/mcp/seen.json`, with the agent, the time, the
 tool and the transport. Each later call records when the agent was last seen. The question is not stored.
-`forest doctor` can later use that file to prove the server was called. `forest doctor` itself is not built yet.
+`forest doctor` reads that file to prove the server was called (its `finding` check).
 
 ```sh
 forest mcp --as till-bot
@@ -844,3 +847,163 @@ helper process to preserve this process's SQLite locks. The test runs reported h
 
 When sidecars are present, each readable sidecar is probed by a bounded helper process before SQLite opens.
 Those processes are additional to the clean, closed-index counts above.
+
+## `forest guide`
+
+`forest guide [part]` prints a guide an agent follows. The guides ship inside the package, so the text
+matches the installed version, and nothing in them sends an agent to an address on the web. The command
+needs no forest and reads none. There are three parts:
+
+- `setup` (the default): read by every agent its owner asks to connect itself. Install, run
+  `forest setup` and ask the owner its questions, register the finding server, bring its conversation in,
+  prove it with `forest doctor`, and tell the owner what was set up.
+- `routine`: read by the one agent the owner chose to keep the forest (`todo` step `routine`). The daily
+  record, the filing run and the upkeep run, the commands that judge each, which model for which pass, and
+  how the agent schedules them itself.
+- `use`: read by every connected agent from then on. When to look, which tool answers which question, and
+  memory as grounding data.
+
+`--json` prints `{"part": …, "text": …}`. A part that is not one of the three is refused with
+`arguments_invalid` (`fix`), exit 2. The examples of these three sections, like the guides, use the
+invented studio of the [synthetic forest](../examples/synthetic-forest/README.md).
+
+```sh
+forest guide                                   # the setup guide
+forest guide routine
+forest guide use --json
+```
+
+## `forest setup`
+
+`forest setup` is run by an agent for its owner. It asks what only the owner decides, writes this agent
+into the forest, and lists what the agent does next in its own tool. It answers one object with `next`:
+
+- `ask_owner`: `questions`, every question still unanswered, each with its `flag`, `question`, `choices`
+  where there are some, and `why_owner`, and `proposals` (the time zone of a new forest). Nothing is
+  written. The agent asks the owner each question as it stands, never answers one itself, and runs setup
+  again with every answer as its flag. Exit 1: not finished.
+- `done`: `agent` (its id and name), `forest`, `new` (whether the forest was made by this call), `dry_run`,
+  `changed` (each file and block written, or `nothing (already set up so)` in text) and `todo`. Exit 0.
+- A refusal from [the table](refusals.md), with `code`, `message`, `details` and `next`. Exit 2.
+
+Every answer is a flag, and setup never fills one in by itself:
+
+| Flag | The owner's answer |
+| --- | --- |
+| `--root DIR` | where the forest lives: a new or empty folder makes a new forest; the folder of an existing forest joins it |
+| `--as NAME` | this agent's name, in any script; the forest makes its id from it |
+| `--main yes\|no` | whether this agent is the owner's main agent, which reads the whole forest |
+| `--conversations all\|asked\|none` | which of this agent's conversations are brought in: all from now on, those the owner asks for, or none |
+| `--earlier yes\|no` | whether conversations from before today come in too; not asked for `none` |
+| `--keeper this\|other\|nobody` | who keeps the forest growing: this agent, another agent, or nobody yet |
+| `--when TEXT` | when the keeper runs the routine, free text; asked for `--keeper this` |
+| `--daily-model TEXT` | which of the owner's models the daily record may use; asked for `--keeper this` |
+| `--filing-model TEXT` | which of the owner's models filing and upkeep may use; asked for `--keeper this` |
+
+`--timezone ZONE` is not a question: the time zone of a new forest is proposed from the system and changed
+with this flag; a name the system does not know is refused (`arguments_invalid`). A choice outside its list
+is refused the same way. A forest has one keeper: an agent that answers `--keeper this` where another agent
+already keeps the forest gets `ask_owner` again, naming the keeper, with the choices `other` and `nobody`.
+A name that is the name of more than one agent of the forest is `agent_ambiguous` (`fix`), and a forest
+whose settings set `path` under `[intake.tools.jsonl]` is `setup_jsonl_path_set` (`report`).
+
+Setup writes only inside the forest's folder, under the writer lock:
+
+- a new forest, when `--root` is a new or empty folder (as `forest init` makes it, with the time zone);
+- in `forest.toml`, the agent's `[agents.known.<id>]` table with its name, and its id added to or taken out
+  of `agents.orchestrators` by the answer to `--main`, every other byte of the file kept;
+- the agent's empty record file `transcripts/<id>.jsonl`, unless the answer is `--conversations none`;
+- the setup record `.forest/setup/<id>.json`: the answers, when they were given, and the day turns are
+  taken from.
+
+A second run with the same answers writes nothing; a run with a changed answer says what changed
+(`earlier was no, now yes`). `--dry-run` prints each file and block it would write and writes nothing, also
+for a forest that does not exist yet.
+
+`todo` lists, in order, what the agent then does in its own tool, each step with `why`, `command` and
+`text`, paths as the caller gave them:
+
+1. `register_mcp`: the `forest mcp --as <id> --root <forest>` line to register as an MCP server in the
+   agent's own tool; a tool without MCP uses the same doors as commands.
+2. `bring_turns` (not for `--conversations none`): the record's `fields` and an `example` line, the `file`
+   the agent's exporter appends to, and the intake command that reads it,
+   `forest intake --from jsonl --as <id> --transcript <forest>/transcripts/<id>.jsonl --once --root <forest>`.
+3. `own_turn` (not for `--conversations none`): `memory_log`, or `forest log` with the turn on stdin.
+4. `routine` (for `--keeper this` only): `forest guide routine`, with `when` and the `models` for the daily,
+   filing and upkeep passes; the agent schedules the routine itself.
+5. `verify`: the `forest doctor` command.
+
+```sh
+forest setup --json                            # next: ask_owner, every question, exit 1
+forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
+  --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" \
+  --timezone America/Sao_Paulo --dry-run
+# next: done
+# agent: Kiln Bot (id kiln-bot)
+# would write: a new forest in studio-forest (time zone America/Sao_Paulo)
+# would write: forest.toml: [agents.known.kiln-bot] name = "Kiln Bot"
+# would write: transcripts/kiln-bot.jsonl: this agent's record file, empty
+# would write: .forest/setup/kiln-bot.json: the owner's answers
+# todo 1. register_mcp: …
+#   command: forest mcp --as kiln-bot --root studio-forest
+# …
+# todo 5. verify: …
+#   command: forest doctor --as 'Kiln Bot' --root studio-forest --json
+forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
+  --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" \
+  --timezone America/Sao_Paulo                 # the same, written: wrote: … instead of would write: …
+forest setup --root studio-forest --as "Studio Hub" --main yes --conversations none --keeper other
+# next: done
+# agent: Studio Hub (id studio-hub)
+# wrote: forest.toml: [agents.known.studio-hub] name = "Studio Hub"
+# wrote: forest.toml: studio-hub added to agents.orchestrators (the main agent)
+# wrote: .forest/setup/studio-hub.json: the owner's answers
+# todo 1. register_mcp: …
+# todo 2. verify: …
+```
+
+[Connecting an agent](setup.md) tells the same from the owner's side.
+
+## `forest doctor`
+
+`forest doctor --as NAME` proves by evidence that this agent's memory works from end to end. `--as` takes
+the agent's name or id. Each check says what it found, with times, in `evidence`, and its `state`: `ok`,
+`todo`, `problem` or `skipped`. A check that is not `ok` names its next move and, where there is one, the
+command to run.
+
+| Check | `ok` when | Otherwise |
+| --- | --- | --- |
+| `forest` | the forest opens, no unfinished commit's journal stands, and the journal and structure checks find nothing | `problem`, with `forest recover` or `forest check` |
+| `setup` | the agent has a setup record; its answers are shown | `todo`, with the `forest setup` command |
+| `agent` | the name is an agent of the forest; its id, whether `forest.toml` declares it, its raw lane and its tree are shown, and a pending tree is `ok` | `todo`, with the `forest setup` command |
+| `turns` | a phrase the doctor made is in the agent's lane; the turn's time and source are shown | `todo` until a phrase exists and its turn came in; `skipped` for `--conversations none` |
+| `finding` | the search index exists and is current, a search as the agent answers, and the agent was seen on an MCP connection | `todo`, with `forest index build` or the `forest mcp` command; `problem` when a search is refused |
+| `routine` | for the keeper: every day of turns before today has its daily page; the lint's counts are shown | `todo`, with `forest guide routine`, naming the days with no daily page; `skipped` for an agent that does not keep the forest |
+
+`result` is `passed` when no check is `todo` or `problem`, `problem` when one is a problem, and `todo`
+otherwise. The command exits 0 only for `passed`, 1 for `todo` or `problem`, and 2 for a refusal (a
+missing forest, for example).
+
+`--phrase` writes and prints a new phrase of three words, `.forest/setup/<id>.phrase`, the only file the
+doctor writes. The agent says it in its conversation and brings that turn in its real way; the next doctor
+finds it in the lane. The `finding` check reads `.forest/mcp/seen.json`, which the MCP server keeps: a
+search run as a command does not count, a call of `memory_search` from the agent's own tool does.
+
+```sh
+forest doctor --as "Kiln Bot" --root studio-forest --phrase
+# result: todo
+# phrase: forest doctor phrase meadow willow marble  (say it in your conversation, bring that turn in, run doctor)
+# …
+# turns: todo: no turn in the lane since the phrase was made; the phrase "forest doctor phrase meadow willow marble" …
+#   next: run  command: forest doctor --as 'Kiln Bot' --root studio-forest
+# (the phrase said and brought in with the intake command, the index built, memory_search called once)
+forest doctor --as "Kiln Bot" --root studio-forest
+# result: passed
+# forest: ok: the forest opens; time zone America/Sao_Paulo; no journal; structure sound
+# setup: ok: answered at 2042-05-14T21:20:49.465656+00:00: conversations all, daily_model small model, earlier no, filing_model large model, keeper this, main no, when every night at 23:30
+# agent: ok: id kiln-bot; declared in forest.toml: yes; raw lane: yes; tree: pending (the next write or `forest levels apply` makes it)
+# turns: ok: newest turn at 2042-05-14T21:20:50+00:00 through adapter:jsonl; the phrase "forest doctor phrase meadow willow marble" came in at 2042-05-14T21:20:50+00:00 through adapter:jsonl
+# finding: ok: index built 2042-05-14T21:20:50Z; a search as kiln-bot answers (trees: none); last seen on a connection at 2042-05-14T21:20:51Z (memory_search, stdio)
+# routine: ok: newest day of turns 2042-05-14, newest daily page none; every day before today has its daily page; lint: 0 violations, 0 upkeep, 2 due
+forest doctor --as "Kiln Bot" --root studio-forest --json
+```
