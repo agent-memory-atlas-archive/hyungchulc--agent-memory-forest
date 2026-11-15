@@ -167,8 +167,10 @@ Agents never edit forest pages at the same time. Instead:
    the same lock.
 
 This keeps every page change in one place in time, which is what lets the move log, the update records and
-the lint baseline stay exact. The stage programs that do this arrive in milestone 3; the lock and the move
-tool in milestone 1.
+the lint baseline stay exact. The package supplies the lock and the move tool. Writing the daily record and
+filing it are the work of the owner's own agent, which carries them out following the contract (section 10)
+and the guide; the package runs no stage of its own, and `forest check`, `forest lint` and `forest levels`
+judge what the agent wrote.
 
 ## Intake
 

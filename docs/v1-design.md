@@ -484,10 +484,14 @@ members, whether a member has written a lane, and that last-seen time.
 `06 istm` (raw, append-only) → `05 daily` (one readable page per day, appended in marked blocks) →
 the filing run (reads the blocks it has not filed, at most a bounded amount per run, newest days first)
 → the forest. A nightly upkeep run applies levels, works the lint's upkeep list down, trims records and
-re-checks stale current-state lines. The stages are plain programs around a model of your choice; the
-package supplies their input and commit steps, their cursors and receipts, and the prompts as files.
-`stage.prepare` is the place a stage starts a model: it records the session id and marks the prompt and
-the environment so intake does not take that session in. The rest of the stage programs are milestone 3.
+re-checks stale current-state lines. These stages are roles (contract, section 10), not programs of the
+package. In the first release the owner's own agent carries them out, following the contract and the
+routine part of the guide (`forest guide`); the package runs no stage and starts no model. Its part is the
+material and the judge: the lanes, the time index and search the stages read, the move tool and the
+writer lock they write through, and the commands that judge what they wrote (`forest check`,
+`forest lint`, `forest levels`, `forest doctor`). A session opened for a stage opens its first owner turn
+with the line `MEMORY_FOREST_INTERNAL`, so intake does not take that session in; a program that starts
+such a session can also record its id and mark its prompt and environment with `stage.prepare`.
 
 ## 12. Settings (`forest.toml`)
 
@@ -602,7 +606,7 @@ provider = "none"               # none | openai-compatible
 | `timeline` | the time index and time phrases | `forest timeline` |
 | `search`, `scope` | the search index, coarse-to-fine retrieval, reader scopes | `forest search`, `forest read` |
 | `mcp` | the MCP server, one agent or one group | `forest mcp` |
-| `stage` | daily store, bounded filing interval, cursors, receipts | `forest stage` |
+| `stage` | the marker of a session opened for a stage: records the session, marks the prompt and the environment | |
 | `setup`, `doctor` | setup driven by the agent, the connection proof, the guide for agents | `forest setup`, `forest doctor`, `forest guide` |
 
 ## 14. Milestones
@@ -613,7 +617,9 @@ provider = "none"               # none | openai-compatible
 2. **Connecting and finding.** Intake (the turn record, `forest intake`, the adapters), the time index,
    search with scopes, the MCP server, and setup (`forest setup`, `forest doctor`, the guide):
    section 15.
-3. **Growing.** The stage programs and their prompts, the nightly upkeep.
+3. **Growing.** The daily record, the filing run and the nightly upkeep (section 11). In the first release
+   the owner's own agent carries them out, following the contract (section 10) and the guide; the
+   package supplies no engine for them.
 
 ## 15. Connecting agents
 
@@ -666,11 +672,11 @@ that agent's own job.
   already exists). While a source is excluded, its cursor follows the file's end and nothing from it is
   written; lifting the exclude does not import that past. Automatic intake stays off until `enabled` is
   true. `forest intake --from <adapter>` then says so and takes nothing, unless `--once` is given. A
-  session a forest stage started is not taken in. The stage records the session id (one small file
-  named by its hash), opens the prompt with the line `MEMORY_FOREST_INTERNAL`, and sets that name in
-  the environment of the model process. Only the first owner turn's own text marks a session; a hook
-  still reads the environment. A hosted assistant has no transcript to read. Its
-  `memory_log` path belongs to the MCP server, not to intake.
+  session a forest stage started is not taken in. Its first owner turn opens with the line
+  `MEMORY_FOREST_INTERNAL`; a program that starts the session can also record its id (one small file
+  named by its hash) and set that name in the environment of the model process (`stage.prepare`). Only
+  the first owner turn's own text marks a session; a hook still reads the environment. A hosted
+  assistant has no transcript to read. Its `memory_log` path belongs to the MCP server, not to intake.
 - **An agent with no transcript and no hooks** has three ways in, strongest last: its own write, either
   the MCP tool `memory_log` or the command `forest log` (the text comes on stdin, never as an argument;
   it depends on the agent calling it, so where a reader of the host's own records exists, the reader is
@@ -695,8 +701,10 @@ that agent's own job.
 
 ### 15.3 Upkeep
 
-`forest nightly` runs the stage programs of section 11 with the model command the owner chose
-(`stages.runner`). It is asked at setup, because it spends the owner's model budget.
+The daily record, the filing run and the upkeep run are the owner's own agent's work (section 11): it
+carries them out on the schedule the owner gives it, with the model it already runs on, following the
+contract (section 10) and the routine part of the guide. The package starts no model and spends no model
+budget. After each run the agent checks its work with `forest check`, `forest lint` and `forest levels`.
 
 ### 15.4 Setup is the agent's job
 
@@ -722,17 +730,16 @@ errors retain their separate `code` fields. A refusal of any command or tool has
   asks, runs the command again with `--answer key=value`, and is finished when `forest doctor` passes. An
   agent that never read a guide, or lost its place, still ends in the right state by following the output.
 - **Asked** (only what the owner alone can decide): where the forest lives, or which forest to join; this
-  agent's name; which conversations are taken in and whether earlier ones are imported; which model command
-  the nightly upkeep may spend; whether the machine's other agents are connected too. **Detected and shown
-  as a proposal**: the timezone, the language, the installed tools, the paths.
+  agent's name; which conversations are taken in and whether earlier ones are imported; whether the
+  machine's other agents are connected too. **Detected and shown as a proposal**: the timezone, the
+  language, the installed tools, the paths.
 - Setup writes nothing into another program's settings. It tells the agent what to register in its own
   tool (the MCP entry that starts `forest mcp --as <agent>`, the command a hook runs, the lines of an
   instruction file), and the agent registers them there. What setup writes in the forest is previewed
   (`--dry-run` prints each file and block it would write), repeatable (a second run changes nothing) and
   bounded.
 - `forest doctor` proves the connection instead of describing it: it sends a test turn through the tool's
-  real path and finds it in the lane, calls the MCP server as that agent and gets an answer, and shows when
-  the nightly upkeep will run.
+  real path and finds it in the lane, and calls the MCP server as that agent and gets an answer.
 - The guide travels with the package: `forest guide` prints the setup guide for agents. A page on the web
   is for people to read; an agent is never asked to fetch instructions from an address and follow them.
 - The guide is tested like code: for each supported tool, a new agent in an empty sandbox is given the one

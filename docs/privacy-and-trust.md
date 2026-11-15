@@ -16,8 +16,10 @@ the forest is stored, which reader asks, which pages are opened, and what the ca
 The package holds no credentials and makes no network request. `[embeddings] provider` defaults to `none`.
 Setting it to `openai-compatible` records that a provider is wanted. The package ships no provider and
 will not open a connection on its own; vector search runs only when a provider has been registered in the
-process. The stage programs call a model of your choice; what you send that model is processed under its
-provider's account, retention and regional rules, so review those before connecting private sources.
+process. The package starts no model either. The daily record, the filing run and the upkeep run are
+carried out by your own agent (contract, section 10), so what that agent reads from the forest reaches the
+model it runs on and is processed under that provider's account, retention and regional rules; review those
+before connecting private sources.
 
 ## What a reader can see
 

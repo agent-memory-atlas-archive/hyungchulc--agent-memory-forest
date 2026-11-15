@@ -1206,7 +1206,7 @@ below may still change while the code is ported; the design's milestones say whe
   first and its copy proven to hold the page's bytes before the page is written (section 4).
   `forest credentials candidates | judge` list the codes in quoted turns that wait for a reading and record
   a reader's judgement in the ledger of keyed digests.
-- **`forest registry build | find`** compiles the registry and finds a subject or a collection entry by any
+- **`forest registry build | show`** compiles the registry and finds a subject or a collection entry by any
   name or spelling.
 - **`forest check [NAME …]`** runs every registered check, or the ones it names: the structure of the
   pages, the derived lists against the pages, the pointers, the agents' lanes and ids, the levels due and
@@ -1220,18 +1220,24 @@ below may still change while the code is ported; the design's milestones say whe
   the two share. **`forest lint`** checks the rules (section 8).
 - **`forest timeline`**, **`forest search`**, **`forest read`** and **`forest mcp`** find things (design,
   sections 9 and 10).
-- **`forest stage`** supplies the stages' input, cursors, receipts and commit steps (design, section 11).
-  When a stage runs model work over many pages (rewrites, split plans, tags, board summaries), each result
-  is checked by code before it is written through the move tool or the locked edit, each with its
-  `## Update record` line. A merge proves that it kept every fact of the pages it merged.
+- **The stages** of section 10 have no command of their own: they read the lanes, the daily record and the
+  forest and write through the tools above (design, section 11). When a stage runs model work over many
+  pages (rewrites, split plans, tags, board summaries), each result is checked by code before it is
+  written through the move tool or the locked edit, each with its `## Update record` line. A merge proves
+  that it kept every fact of the pages it merged.
 
 ## 10. Who does what
+
+In the first release the owner's own agent carries out the daily stage, the filing run and the upkeep run,
+following this section and the routine part of the guide (`forest guide`); the package runs none of them
+and starts no model. Its part is to judge the result: `forest check`, `forest lint`, `forest levels` and
+`forest doctor`.
 
 - **The daily stage** writes `05 daily` only. It writes a notice (section 3) as `<agent> notified` at the
   time it was sent, never as a reply, and an agent's reply as that agent's reply beside the message it
   answers.
 - **The filing run** files each subject of its interval into the forest:
-  1. find the subject through the registry (`forest registry find "<name>"`, which also finds collection
+  1. find the subject through the registry (`forest registry show "<name>"`, which also finds collection
      entries) and search;
   2. update its leaf in place, or its entry on a collection page, or create a leaf for a new sub-topic in
      the subject's home, writing an episode as its section of the sub-topic's leaf (section 4);

@@ -12,8 +12,9 @@ All notable changes to Memory Forest are documented in this file. The project fo
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones. The
 `forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests.
 Milestone 2 now has intake, the search index, timeline, reader scopes and the MCP server. Setup
-(`forest setup`, `forest doctor` and the guide) is not, and neither are milestone 3's stage
-programs and nightly upkeep. Nothing is released. The 0.3 `memory-forest` command stays in the tree until
+(`forest setup`, `forest doctor` and the guide) is not. Milestone 3's daily record, filing run and nightly
+upkeep are carried out by the owner's own agent, following the contract (section 10); the package runs no
+stage. Nothing is released. The 0.3 `memory-forest` command stays in the tree until
 the version 1 commands replace it.
 
 ### Changed
@@ -405,6 +406,11 @@ The lane commit fixes `stored` and the turn id; ids, caller-key and source recor
 - the repository is `https://github.com/hyungchulc/agent-memory-forest` and the distribution is
   `agent-memory-forest`, the name the project is presented under; the import name `memory_forest` and the
   commands `forest` and `memory-forest` stay
+- no document promises an engine: the design (sections 11, 13, 14 and 15.3 to 15.4), the contract
+  (sections 9 and 10), the agents, privacy, comparison, concepts and tools pages say that the owner's own
+  agent carries out the daily record, the filing run and the upkeep run, and that the package runs no stage
+  and starts no model. The contract's filing run finds a subject with `forest registry show`, the command
+  this tree has
 - CI also runs on pushes to `v1`. The comparison states 2026-11-11 once, as the day the other projects'
   documents were read
 - the package version is `1.0.0b1`, a beta, defined once as `memory_forest.__version__`. The `forest` command and

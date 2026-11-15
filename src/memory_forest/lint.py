@@ -706,8 +706,8 @@ _TABLE: Final[tuple[LintCode, ...]] = (
              supplied_later("category_too_large")),
 )
 CODES: Final[dict[str, LintCode]] = {entry.code: entry for entry in _TABLE}
-# The codes whose detection a later milestone supplies (the stage programs); each is registered above
-# with a check that raises `NotChecked`. The derived lists (`maps`), the level rule (`levels`), the
+# The codes whose detection no program of the first release supplies; each is registered above with a
+# check that raises `NotChecked`. The derived lists (`maps`), the level rule (`levels`), the
 # category limit (`collections`) and the agents (`agents`) register their codes with `register` when
 # `lint` loads them.
 SUPPLIED_LATER: Final[tuple[str, ...]] = ("daily_section_unfiled",)

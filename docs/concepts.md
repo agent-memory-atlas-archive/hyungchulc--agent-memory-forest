@@ -19,7 +19,9 @@ A forest is a folder of plain Markdown pages in numbered layers. Two lanes feed 
 ```
 
 Things arrive at the bottom and are carried upward: a message lands in `06 istm`, the day's page in
-`05 daily` records it readably, and a filing run puts each fact in the leaf where it belongs. Placement
+`05 daily` records it readably, and a filing run puts each fact in the leaf where it belongs. The owner's
+own agent writes the day's page and carries out the filing run, following the contract (section 10); the
+package runs neither, and its checks judge what the agent wrote. Placement
 works the other way, from the top: the root index says which tree a kind of subject belongs to, the tree's
 index says which branch, the branch holds the leaf.
 

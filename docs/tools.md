@@ -476,7 +476,8 @@ forest levels check
 
 A tool turn records that the tool ran (`ran <name>`), not what it printed, unless `intake.tool_output` is
 `keep`. A forest stage's own session is not taken in: its first owner turn opens with the line
-`MEMORY_FOREST_INTERNAL`, the stage records it, and a hook sees the name in its environment. Setup is not part of this command. Search, read, timeline and the MCP server are the next
+`MEMORY_FOREST_INTERNAL`, a program that starts the session can also record it (`stage.prepare`), and a
+hook sees the name in its environment. Setup is not part of this command. Search, read, timeline and the MCP server are the next
 sections.
 
 ## `forest index`
