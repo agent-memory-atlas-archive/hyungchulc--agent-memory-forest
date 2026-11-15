@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import PurePath as Path
 from typing import Any
 
-from . import agents, groups, layout, names, system
+from . import agents, groups, layout, levels, names, system
 from .config import BOM, CONFIG_FILENAME, DEFAULT_CONFIG, Config, _toml_value, config_path, load_config, parse_config
 from .errors import MemoryForestError
 from .locking import atomic_write, writer_lock
@@ -209,6 +209,9 @@ def run(
         plan = _plan(root, config, agent_id, stored, recorded)
         if not dry_run:
             _apply(root, config, plan, agent_id, stored, recorded, now=now)
+    if plan.make_tree and not dry_run and _make_tree(root, agent_id) == levels.TREE_PENDING:
+        plan.changed[plan.changed.index(_tree_line(agent_id))] += (
+            " (pending: another writer holds the forest; this agent's first write makes it)")
     changed = ([f"a new forest in {shown_root} (time zone {config.timezone})"] if new else []) + plan.changed
     return _done(shown_root, agent_id, stored, recorded, changed, now=now, config=config, dry_run=dry_run, new=new)
 
@@ -233,6 +236,7 @@ class _Plan:
     orchestrators: tuple[str, ...]
     record_changed: bool
     make_transcript: bool
+    make_tree: bool = False
 
 
 def _plan(root: Path | None, config: Config, agent_id: str, stored: str, recorded: Mapping[str, Any]) -> _Plan:
@@ -255,6 +259,9 @@ def _plan(root: Path | None, config: Config, agent_id: str, stored: str, recorde
         make_transcript = root is None or system.kind(layout.resolve(root, file)) is None
         if make_transcript:
             changed.append(f"{file}: this agent's record file, empty")
+    make_tree = root is None or system.kind(layout.resolve(root, layout.tree_page(agent_id))) != "file"
+    if make_tree:
+        changed.append(_tree_line(agent_id))
     before = None if root is None else record(root, agent_id)
     old = (before or {}).get("answers") or {}
     record_changed = before is None or dict(old) != dict(recorded)
@@ -264,7 +271,24 @@ def _plan(root: Path | None, config: Config, agent_id: str, stored: str, recorde
         differences = [f"{key} was {old.get(key) or 'unset'}, now {recorded[key] or 'unset'}"
                        for key in RECORDED if old.get(key) != recorded[key]]
         changed.append(f"{SETUP_DIR}/{agent_id}.json: " + "; ".join(differences))
-    return _Plan(changed, add_known, wanted, record_changed, make_transcript)
+    return _Plan(changed, add_known, wanted, record_changed, make_transcript, make_tree)
+
+
+def _tree_line(agent_id: str) -> str:
+    return f"{layout.tree_page(agent_id)}: this agent's own tree"
+
+
+def _make_tree(root: Path, agent_id: str) -> str:
+    """Make the agent's own tree now, by the same code its first write would use.
+
+    A declared agent without its tree is a level ``forest check`` and ``forest lint`` call due, so a join
+    that left it for later would hand the next writer a forest its own judge does not pass."""
+    try:
+        return levels.agent_tree(root, agent_id, wait_seconds=30)
+    except MemoryForestError as exc:
+        if exc.code in ("lock_busy", "lock_already_held"):
+            return levels.TREE_PENDING
+        raise
 
 
 def _apply(root: Path, config: Config, plan: _Plan, agent_id: str, stored: str, recorded: Mapping[str, Any], *,
@@ -423,14 +447,19 @@ def todo(shown_root: str, agent_id: str, stored: str, recorded: Mapping[str, Any
             "why": f"The owner chose to bring in {which}, {since}. The forest grows from these turns.",
             "file": file,
             "record": {"fields": ["at", "session", "role", "text"],
+                       "optional": {"name": "the tool's name, on a turn whose role is tool",
+                                    "id": "your tool's own id of the turn, if it has one"},
                        "example": json.dumps({"at": f"{today}T09:00:00+00:00", "session": "s1", "role": "owner",
                                               "text": "Fire the blue bowls on Friday."}, ensure_ascii=False)},
-            "command": INTAKE_COMMAND.format(id=agent_id, file=shlex.quote(file), root=root),
+            "command": INTAKE_COMMAND.format(id=agent_id, file=shlex.quote(file), root=root) + " --json",
+            "empty_when": "the answer's entry for the file under `files` says `read_to_end`: true",
             "text": f"Write an exporter for where your own tool keeps your conversation: it appends one JSON line "
                     f"per turn ({which}, {since}) to {file}, then runs the command. Run it after each session, or "
                     "from your tool's own turn-end hook if it has one. Leave out what a tool printed, your own "
                     "memory-work sessions (they open with the line MEMORY_FOREST_INTERNAL) and anything the owner "
-                    "said not to record.",
+                    "said not to record. The file is a hand-over, not an archive: it holds the words unmasked "
+                    "and the lane keeps the masked copy, so the exporter empties it when the answer says the "
+                    "file was read to its end, and leaves it alone when it says something still waits.",
         })
         steps.append({
             "step": "own_turn",
@@ -454,7 +483,7 @@ def todo(shown_root: str, agent_id: str, stored: str, recorded: Mapping[str, Any
     steps.append({
         "step": "verify",
         "why": "The doctor proves by evidence that your memory works from end to end.",
-        "command": f"forest doctor --as {shlex.quote(stored)} --root {root} --json",
+        "command": f"forest doctor --as {agent_id} --root {root} --json",
         "text": "Run it and follow each check's next move until it says passed, then tell the owner in five lines "
                 "what was set up.",
     })

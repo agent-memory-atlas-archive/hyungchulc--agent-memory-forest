@@ -240,13 +240,41 @@ class SetupTests(Scratch):
     def test_dry_run_writes_nothing_for_a_new_forest_and_for_an_existing_one(self) -> None:
         code, body = as_json("setup", *answers(), "--timezone", "UTC", "--dry-run")
         self.assertEqual((code, body["next"], body["dry_run"]), (0, "done", True))
-        self.assertEqual(len(body["changed"]), 5, body["changed"])
+        self.assertEqual(len(body["changed"]), 6, body["changed"])
+        self.assertIn("02 ltm/kiln-bot_LTM.md: this agent's own tree", body["changed"])
         self.assertEqual(snapshot(self.base), {})
         self.setup_done(*answers())
         before = snapshot(self.root)
         code, body = as_json("setup", *answers(**{"as_name": "Ledger Bot", "keeper": "other"}), "--dry-run")
         self.assertEqual((code, body["agent"]["id"]), (0, "ledger-bot"))
         self.assertEqual(snapshot(self.root), before)
+
+    def test_a_join_leaves_a_forest_its_own_judge_passes(self) -> None:
+        """A declared agent without its tree is a level the judge calls due: setup makes the tree itself."""
+        first = self.setup_done(*answers())
+        self.assertIn("02 ltm/kiln-bot_LTM.md: this agent's own tree", first["changed"])
+        second = self.setup_done(*answers(**{"as_name": "Ledger Bot", "main": "no", "keeper": "other"}))
+        self.assertIn("02 ltm/ledger-bot_LTM.md: this agent's own tree", second["changed"])
+        for agent_id in ("kiln-bot", "ledger-bot"):
+            self.assertTrue((self.root / "02 ltm" / f"{agent_id}_LTM.md").is_file())
+        code, out, err = forest("check", "--sync", "--root", "studio-forest")
+        self.assertEqual((code, out, err), (0, "", ""))
+        code, out, err = forest("lint", "--root", "studio-forest")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("0 violations, 0 upkeep, 0 due", out)
+        code, report = as_json("doctor", "--as", "ledger-bot", "--root", "studio-forest")
+        agent = next(check for check in report["checks"] if check["name"] == "agent")
+        self.assertIn("tree: made", agent["evidence"])
+        # A repeat finds the tree and says nothing about it.
+        self.assertEqual(self.setup_done(*answers())["changed"], [])
+
+    def test_every_printed_command_names_the_agent_by_its_id(self) -> None:
+        done = self.setup_done(*answers(**{"as_name": "스카우트 봇"}))
+        agent_id = done["agent"]["id"]
+        for step in done["todo"]:
+            words = shlex.split(step["command"])
+            if "--as" in words:
+                self.assertEqual(words[words.index("--as") + 1], agent_id, step["step"])
 
     def test_a_second_keeper_is_asked_about_and_nothing_is_written(self) -> None:
         self.setup_done(*answers())
