@@ -697,8 +697,6 @@ that agent's own job.
   `forest timeline`, `forest navigate` and `forest log` take the same `--as` or `--as-group` and `--agent`.
 - `forest guide use` says when to look: when the owner names something, when a question reaches into the
   past, and before asking the owner something the forest may already hold. Version 1 ships no skill.
-- A session may open with a short card (who the owner is, what is in progress, the newest daily lines);
-  `connect.session_card` turns it off.
 
 ### 15.3 Upkeep
 
