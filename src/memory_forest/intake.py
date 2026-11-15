@@ -833,6 +833,7 @@ def _execute(
         _write_meta(root, adapter.name, meta)
     id_cache: dict[tuple[str, str], set[str]] = {}
     reports: list[str] = []
+    files: list[dict[str, Any]] = []
     total = 0
     total_unknown = 0
     receipts: list[dict[str, Any]] = []
@@ -859,12 +860,14 @@ def _execute(
                 )
             total += exc.wrote
             reports.append(f"{Path(label).name}: {exc.wrote} turns, then failed ({cause.__class__.__name__})")
+            files.append(_file_report(label, exc.wrote, 0, "failed", read_to_end=False))
             continue
         except Exception as exc:
             failures.append(exc)
             if not dry_run:
                 log_failure(root, exc.__class__.__name__ if not isinstance(exc, MemoryForestError) else exc.code, adapter.name)
             reports.append(f"{Path(label).name}: failed ({exc.__class__.__name__})")
+            files.append(_file_report(label, 0, 0, "failed", read_to_end=False))
             continue
         total += wrote
         total_unknown += unknown
@@ -874,9 +877,14 @@ def _execute(
         if note:
             line += f" ({note})"
         reports.append(line)
+        files.append(_file_report(
+            label, wrote, unknown, note,
+            read_to_end=not dry_run and not note.startswith("kept for ") and _read_to_end(root, adapter.name, item),
+        ))
     if not dry_run and failures and not receipts:
         raise failures[0]
     result = _result(adapter.name, agent, tuple(reports), total, dry_run=dry_run, placed=True, unknown=total_unknown)
+    result.data["files"] = files
     if not dry_run:
         result.data["stored"] = receipts
         result.data["ids"] = [row["id"] for row in receipts]
@@ -888,6 +896,27 @@ def _execute(
                      for name, state in result.data["derived"].items())
         return Result(tuple(lines), result.data)
     return result
+
+
+def _file_report(label: str, wrote: int, unknown: int, note: str, *, read_to_end: bool) -> dict[str, Any]:
+    """One transcript of a run, for a program that reads the answer: the same facts as its line of words."""
+    return {"note": note, "read_to_end": read_to_end, "transcript": Path(label).name, "turns": wrote,
+            "unknown": unknown}
+
+
+def _read_to_end(root, adapter_name: str, transcript: Transcript) -> bool:
+    """Whether this run left nothing in the file waiting: the stored cursor stands at the file's end.
+
+    True says every byte of the file as it is now has been read and decided (taken in, known already,
+    counted as unknown, or left out as memory work or as excluded), so whoever wrote the file may empty it.
+    A line that waits for the owner turn, for a sweep or for its newline leaves it False."""
+    cursor = _load_cursor(root, adapter_name, transcript.key, dry_run=True)
+    if cursor.get("long_line"):
+        return False
+    try:
+        return int(cursor.get("offset") or 0) >= transcript.path.stat().st_size
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def _one(

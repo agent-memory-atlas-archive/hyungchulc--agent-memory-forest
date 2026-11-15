@@ -276,6 +276,8 @@ class ReceiptTests(IntakeTestCase):
         expected_derived = {name: {'state': 'updated'} for name in ('ids', 'turns', 'sources')}
         self.assertEqual(json.loads(out), {'adapter': 'jsonl', 'agent': 'glaze-bot', 'dry_run': False,
                                           'ok': True, 'placed': True, 'transcripts': ['kiln.jsonl: 1 turn'],
+                                          'files': [{'note': '', 'read_to_end': True, 'transcript': 'kiln.jsonl',
+                                                     'turns': 1, 'unknown': 0}],
                                           'unknown': 0, 'wrote': 1, 'ids': ['ses-kiln-1:turn-1'],
                                           'stored': [{'id': 'ses-kiln-1:turn-1', 'stored': 'written',
                                                       'path': '06 istm/glaze-bot/2051-03-02.jsonl',
