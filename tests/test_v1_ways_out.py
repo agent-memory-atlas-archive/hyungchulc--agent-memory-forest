@@ -415,7 +415,11 @@ class DiskProductTests(WaysOutTests):
                 options = made if isinstance(made, dict) else {}
                 current = made if isinstance(made, Path) else root
                 with contextlib.ExitStack() as stack:
-                    stack.enter_context(mock.patch.object(system, "OPEN_DEADLINE_SECONDS", min(options.get("deadline", 0.15), 0.15)))
+                    # Only a shape that holds the index gets a short deadline. Everywhere else the real one
+                    # stands: on a busy machine a short one fired in cells where nothing blocks, and the two
+                    # output forms of one command then answered differently.
+                    if "deadline" in options:
+                        stack.enter_context(mock.patch.object(system, "OPEN_DEADLINE_SECONDS", min(options["deadline"], 0.15)))
                     if (step, value) == ("metadata", "busy"):
                         original = system.open_index
                         def opened(*args, **kwargs):

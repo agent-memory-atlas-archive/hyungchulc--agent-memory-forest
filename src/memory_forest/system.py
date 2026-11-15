@@ -1248,6 +1248,9 @@ def lock_free(path: str | os.PathLike[str]) -> bool:
 
 # The open by SQLite and its first statement are given this long; then the call answers busy.
 OPEN_DEADLINE_SECONDS = 10.0
+# What the helper process of ``probe_read`` may take. It is the time this machine needs to start an
+# interpreter, not the time an index may take to open, so a shorter open deadline never shortens it.
+PROBE_SECONDS = 10.0
 
 
 class IndexConnection(sqlite3.Connection):
@@ -1623,7 +1626,7 @@ def probe_read(path: str | os.PathLike[str]) -> None:
     _enter("open_file", path, "read")
     try:
         child = subprocess.run([sys.executable, "-c", _READ_PROBE, os.fspath(path)],
-                               capture_output=True, timeout=OPEN_DEADLINE_SECONDS, check=True)
+                               capture_output=True, timeout=PROBE_SECONDS, check=True)
         number = int(child.stdout)
     except (subprocess.SubprocessError, ValueError, OSError):
         # A helper failure is not evidence of a disk errno or corrupt index.

@@ -379,6 +379,21 @@ c.close()
             with self.assertRaises(RuntimeError):
                 system.probe_read(self.path)
 
+    def test_a_short_open_deadline_does_not_shorten_the_probe(self):
+        """The probe starts an interpreter: its allowance is the machine's, not the index's. With the two
+        tied together, a busy machine turned a short open deadline into a fault of the package's own code."""
+        asked = []
+        real = subprocess.run
+
+        def run(*args, **kwargs):
+            asked.append(kwargs.get("timeout"))
+            return real(*args, **kwargs)
+
+        with mock.patch.object(system, "OPEN_DEADLINE_SECONDS", 0.000001), mock.patch("subprocess.run", run):
+            system.probe_read(self.path)
+        self.assertEqual(asked, [system.PROBE_SECONDS])
+        self.assertGreaterEqual(system.PROBE_SECONDS, 5.0)
+
     def test_probing_a_sidecar_keeps_this_process_posix_locks(self):
         import fcntl
         path = self.path.with_name("probe-wal")
