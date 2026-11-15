@@ -123,6 +123,12 @@ python3 -m venv .venv
 python -m pip install -e .
 ```
 
+The package is on no package index. To install it into an environment without keeping a clone:
+
+```sh
+python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+```
+
 The version 1 commands are the `forest …` commands of the [design's package map](docs/v1-design.md#13-package-map).
 **Version 1.0.0b1 is this tree's beta, not a stable release.** The milestone 1 commands below are in this tree and installed with it.
 Milestone 2 has intake, the search index, timeline, reader scopes and the MCP server in this tree. Setup

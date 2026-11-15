@@ -121,6 +121,12 @@ python3 -m venv .venv
 python -m pip install -e .
 ```
 
+이 package는 어떤 package index에도 올라가 있지 않습니다. clone 없이 환경에 설치하려면:
+
+```sh
+python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+```
+
 버전 1의 명령은 [설계 문서의 package map](docs/v1-design.md#13-package-map)에 있는 `forest …` 명령들입니다.
 **버전 1.0.0b1은 이 트리의 beta이며, 안정 배포는 아닙니다.** 아래 milestone 1 명령은 이 저장소에 들어 있고 함께 설치됩니다.
 milestone 2에서는 intake, 검색 index, timeline, 읽기 범위, MCP server가 이 저장소에 있습니다. setup
