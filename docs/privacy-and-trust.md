@@ -52,8 +52,10 @@ and it does not show a turn that has not been filed onto the daily page. `forest
   which read as code and stay. A git hash, a UUID and the head of a base64 image are not masked by that
   rule unless a label stands before them. A value ends at white space, at a tag, and before a closing
   quote, bracket, comma or semicolon, so a pasted or quoted part keeps its tags.
-  Every record line a tool writes is masked, the daily writer masks the text a model hands it, and the
-  tools mask what they show; the lint reports a page line that still holds one (`credential_in_full`) and
+  Every record line a tool writes is masked. In version 1 the owner's agent writes the daily page itself:
+  numbers and sign-in values are masked at the doors (intake, `forest log` and `memory_log` mask a turn
+  before it reaches the lane), and `forest lint` judges the page the agent wrote. (In 0.3 the daily writer
+  masked the text a model handed it.) The tools mask what they show; the lint reports a page line that still holds one (`credential_in_full`) and
   `forest credentials fix` masks it after archiving the page. **What is kept:** the raw lane `06 istm`
   and the archive keep the bytes they were given, so protect them like the forest. A lane line written
   under an earlier masking rule keeps what that rule left: `forest credentials check` counts those lines

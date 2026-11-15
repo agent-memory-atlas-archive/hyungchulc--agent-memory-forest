@@ -1,7 +1,7 @@
 # The forest contract (version 1)
 
 This page states the rules every Agent Memory Forest keeps. Each rule is stated here once; the design
-([`v1-design.md`](v1-design.md)) describes the software around the rules, and the stage prompts, the tools
+([`v1-design.md`](v1-design.md)) describes the software around the rules, and the guide's routine part, the tools
 and the other documents point to a section of this page instead of repeating it. The words used in the
 examples (an owner called Juno who runs a pottery studio, a kiln, a supply shop, a few agents) belong to an
 invented world; nothing in them describes a real person, company or product.
@@ -1278,7 +1278,7 @@ and starts no model. Its part is to judge the result: `forest check`, `forest li
 
 ## 11. Changing the contract
 
-Change this page, the tools and the stage prompts together, in one change. In this repository a change of
+Change this page, the tools and the guide's routine part together, in one change. In this repository a change of
 logic is listed in `CHANGELOG.md`. A forest that adapts the contract for its own use keeps the same
 discipline and, for each change of logic, records in its own copy whose decision it follows, with their
 words and the date.

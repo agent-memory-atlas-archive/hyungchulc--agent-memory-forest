@@ -6,8 +6,9 @@ page did not say something, the table says "not stated" rather than guessing.
 Projects change quickly; check the linked pages before relying on a row. The other projects' documents
 were read on 2026-11-11.
 
-For Agent Memory Forest the row describes [the v1 design](v1-design.md). The code is being ported in
-milestones (design, section 14), so some of what the row describes is designed and not yet released. No
+For Agent Memory Forest the row describes [the v1 design](v1-design.md) as the first release, 1.0.0b1,
+carries it (design, section 14): the daily record, filing and upkeep are carried out by the owner's agent,
+not by an engine of the package. No
 benchmark results of Agent Memory Forest are published, and this page claims none.
 
 ## At a glance

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Memory Forest is alpha software. Security fixes are applied to the latest release line and the current `main` branch. Older snapshots may not receive backports.
+Agent Memory Forest is beta software (1.0.0b1). Security fixes are applied to the latest release line and the current `main` branch. Older snapshots may not receive backports.
 
 ## Reporting a vulnerability
 
