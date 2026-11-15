@@ -24,6 +24,5 @@ The forest is the four numbered layers `01 xltm` to `04 stm`; `05 daily` and `06
 | `subject-first` filing: facts in the subject's home, `noted by <agent>` tags, the agents' trees holding their runs and lessons | `04 stm/studio/kiln-two/`, `04 stm/kiln-bot/` |
 | two days of the daily record and a raw lane per agent | `05 daily/`, `06 istm/` |
 
-The code that checks these shapes (`forest lint`) arrives with milestone 1 of the
-[design](../../docs/v1-design.md); until then this tree is a reference to read, not a fixture the 0.3
-`memory-forest` command can validate.
+`forest lint` checks these shapes (milestone 1 of the [design](../../docs/v1-design.md)). The 0.3
+`memory-forest` command cannot validate this tree.

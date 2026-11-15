@@ -13,8 +13,9 @@ up. Nothing in them sends an agent to an address on the web.
 
 `forest setup` is run by the agent for its owner. Each call answers one object with `next`: `ask_owner`
 (the questions still unanswered, each with its `choices` and `why_owner`; nothing is written), `done`
-(`changed`, each file and block written, and `todo`) or a refusal from [the table](refusals.md). Every
-answer is a flag, and setup never fills one in by itself:
+(`changed`, each file and block written, and `todo`) or a refusal from [the table](refusals.md). It exits
+1 for `ask_owner`, 0 for `done` and 2 for a refusal. Every answer is a flag, and setup never fills one in
+by itself:
 
 | Flag | The owner decides |
 | --- | --- |
@@ -31,15 +32,16 @@ never asked. A forest has one keeper: a second agent that answers `--keeper this
 present keeper named.
 
 What `done` writes stays inside the forest's folder: the forest when it is new; the agent's
-`[agents.known.<id>]` table with its name, and its id in `agents.orchestrators` for the main agent, each
-patched into `forest.toml` keeping every other byte; the agent's empty record file
-`transcripts/<id>.jsonl`; and the setup record `.forest/setup/<id>.json` with the answers and when they
+`[agents.known.<id>]` table with its name, and its id added to `agents.orchestrators` for the main agent
+(taken out again when the answer turns to `no`), each patched into `forest.toml` keeping every other byte; the agent's empty record file
+`transcripts/<id>.jsonl` (not for `--conversations none`); and the setup record `.forest/setup/<id>.json` with the answers and when they
 were given. `--dry-run` prints the same list and writes nothing. A second run with the same answers
 changes nothing; a changed answer says what changed.
 
 `todo` is what the agent then does in its own tool, in order, with paths as the caller gave them:
 `register_mcp` (the `forest mcp` command line), `bring_turns` (the record's shape, the file the agent
-appends to, and the intake command), `own_turn` (`memory_log` or `forest log`), `routine` for the keeper
+appends to, and the intake command), `own_turn` (`memory_log` or `forest log`), both left out for
+`--conversations none`, `routine` for the keeper
 (`forest guide routine`, when, which model for which pass, and that the keeper schedules it itself), and
 `verify` (`forest doctor`).
 
@@ -54,7 +56,8 @@ every file in it to one agent.
 
 `forest doctor --as NAME` prints `result` (`passed`, `todo` or `problem`) and `checks`, each with its
 `state` (`ok`, `todo`, `problem` or `skipped`), its `evidence`, and, when it is not `ok`, its next move and
-command. It exits 0 only for `passed`, and writes nothing but its own phrase file.
+command. It exits 0 only for `passed`, 1 for `todo` or `problem` and 2 for a refusal, and writes nothing
+but its own phrase file.
 
 | Check | `ok` when |
 | --- | --- |
@@ -62,9 +65,11 @@ command. It exits 0 only for `passed`, and writes nothing but its own phrase fil
 | `setup` | the agent has a setup record |
 | `agent` | the name is an agent of the forest; its lane and its tree are shown (a pending tree is `ok`) |
 | `turns` | a phrase the doctor made came into the agent's lane its real way (skipped for `--conversations none`) |
-| `finding` | the index exists and is current, a search as the agent answers, and the agent was seen on a connection |
+| `finding` | the index exists and is current, a search as the agent answers, and the agent was seen on a connection: a call of an MCP tool from its own tool, which `.forest/mcp/seen.json` records (a search run as a command does not count) |
 | `routine` | for the keeper: every day of turns before today has its daily page; the lint's counts are shown |
 
 The proof of the turns is a turn that came the agent's real way. `forest doctor --as NAME --phrase` writes
 and prints a short new phrase; the agent says it in its conversation and brings that turn in; the next
 `forest doctor` finds it in the lane and names the turn's time and source.
+
+Every flag, each `todo` step and each check, with an example run, are in [tools](tools.md#forest-setup).

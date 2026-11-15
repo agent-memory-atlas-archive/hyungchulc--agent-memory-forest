@@ -11,8 +11,8 @@ with four sub-topics, an event list split by period, a changed fact with its upd
 daily pages and a raw lane per agent. It is the same invented world the [concepts](../docs/concepts.md)
 and [agents](../docs/multi-agent.md) guides use.
 
-It is a reference to read. The checker for its shapes, `forest lint`, arrives with milestone 1; the 0.3
-`memory-forest` command does not read version 1 forests. Keep any new example visibly invented and run the
+It is a reference to read, and `forest lint` checks its shapes; the 0.3 `memory-forest` command does not
+read version 1 forests. Keep any new example visibly invented and run the
 release audit before committing it.
 
 ## 0.3 examples

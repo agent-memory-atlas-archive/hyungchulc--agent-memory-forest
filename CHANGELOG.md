@@ -9,13 +9,13 @@ All notable changes to Memory Forest are documented in this file. The project fo
   bound mutation results. An independent watchdog ends a stalled native traceback. Sidecar read probes
   preserve live SQLite locks; a blocked opener is counted even after an index-path swap. Verification in this round ran on macOS.
 
-Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones. The
-`forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests.
-Milestone 2 now has intake, the search index, timeline, reader scopes and the MCP server. Setup
-(`forest setup`, `forest doctor` and the guide) is not. Milestone 3's daily record, filing run and nightly
-upkeep are carried out by the owner's own agent, following the contract (section 10); the package runs no
-stage. Nothing is released. The 0.3 `memory-forest` command stays in the tree until
-the version 1 commands replace it.
+Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones; 1.0.0b1 is
+its first public release, a beta. The `forest` commands of milestone 1, the structure tools, are in the
+tree and tested on made-up forests. Milestone 2 has intake, the search index, timeline, reader scopes, the
+MCP server, and the way an agent connects itself: `forest guide`, `forest setup` and `forest doctor`.
+Milestone 3's daily record, filing run and nightly upkeep are carried out by the owner's own agent,
+following the contract (section 10) and `forest guide routine`; the package runs no stage. The 0.3
+`memory-forest` command stays in the tree beside the version 1 commands.
 
 ### Added
 

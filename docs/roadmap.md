@@ -1,8 +1,8 @@
 # Roadmap
 
-Agent Memory Forest is alpha software. This page describes direction, not delivery commitments. Version 1
-is designed in [`v1-design.md`](v1-design.md) and its rules are in [`contract.md`](contract.md); the code
-is being ported in three milestones.
+Agent Memory Forest is beta software: 1.0.0b1 is the first public release of version 1. This page
+describes direction, not delivery commitments. Version 1 is designed in [`v1-design.md`](v1-design.md) and
+its rules are in [`contract.md`](contract.md); its code came in three milestones, all in this release.
 
 ## Version 1 milestones
 
@@ -13,27 +13,27 @@ is being ported in three milestones.
 2. **Connecting and finding.** Intake (`forest intake` with the generic `jsonl` adapter and the entry
    point group `memory_forest.adapters` for adapters written elsewhere, `forest log` and `memory_log`),
    the search index (`forest index`), time phrases (`forest timeline`), search with reader scopes
-   (`forest search`, `forest read`) and the MCP server (`forest mcp`) are in this tree. Being built: setup
-   that the owner's agent carries out itself (`forest setup`, `forest doctor`, the guide for agents).
-   Setup writes nothing into another program's settings; it tells the agent what to register in its own
-   tool.
+   (`forest search`, `forest read`) and the MCP server (`forest mcp`), and setup that the owner's agent
+   carries out itself (`forest guide`, `forest setup`, `forest doctor`). Setup writes nothing into another
+   program's settings; it tells the agent what to register in its own tool.
 3. **Growing.** The daily record from the raw lanes, the bounded filing run, and the nightly upkeep that
    applies levels, works the lint's upkeep list down, trims records and re-checks stale current-state
    lines. In the first release the owner's own agent carries these out, following the contract
-   (section 10) and the guide.
+   (section 10) and `forest guide routine`.
 
-The documents, the contract and the synthetic forest are written. None of the `forest` commands is released
-yet; the 0.3 `memory-forest` command stays in the tree until they replace it.
+The documents, the contract and the synthetic forest are written, and the `forest` commands of the three
+milestones are in 1.0.0b1. The 0.3 `memory-forest` command stays in the tree beside them.
 
 ## After the first release
 
-Not part of the first release:
+Not part of the first release, on purpose:
 
 - readers of particular agent programs' own transcripts. The package cannot keep up with every program's
-  format; whoever knows a program writes its reader as an adapter behind `memory_forest.adapters`;
+  format; an agent writes a small exporter of its own turns, and whoever knows a program can write its
+  reader as an adapter behind `memory_forest.adapters` ([adapters](adapters.md));
 - an engine that runs the daily, filing and upkeep stages itself.
 
-Candidate directions, not promises:
+Either may come later, and nobody promises either. Other candidate directions, not promises:
 
 - a migration path from a 0.3 forest to the version 1 layout, with a dry run, a backup manifest and the move
   log recording every old path;

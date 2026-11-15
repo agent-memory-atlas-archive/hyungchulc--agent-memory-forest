@@ -607,7 +607,7 @@ provider = "none"               # none | openai-compatible
 | `search`, `scope` | the search index, coarse-to-fine retrieval, reader scopes | `forest search`, `forest read` |
 | `mcp` | the MCP server, one agent or one group | `forest mcp` |
 | `stage` | the marker of a session opened for a stage: records the session, marks the prompt and the environment | |
-| `setup`, `doctor` | setup driven by the agent, the connection proof, the guide for agents | `forest setup`, `forest doctor`, `forest guide` |
+| `setup_agent`, `doctor`, `cli_setup`, `guide/` | setup driven by the agent, the connection proof, the guide for agents | `forest setup`, `forest doctor`, `forest guide` |
 
 ## 14. Milestones
 
@@ -694,8 +694,8 @@ that agent's own job.
   --as-group <group>` is the same server when several agents share that one connection: each call passes
   `agent`, and the name resolves only to a member (section 6). `forest search`, `forest read`,
   `forest timeline`, `forest navigate` and `forest log` take the same `--as` or `--as-group` and `--agent`.
-- A skill says when to look: when the owner names something, when a question reaches into the past, and
-  before asking the owner something the forest may already hold.
+- `forest guide use` says when to look: when the owner names something, when a question reaches into the
+  past, and before asking the owner something the forest may already hold. Version 1 ships no skill.
 - A session may open with a short card (who the owner is, what is in progress, the newest daily lines);
   `connect.session_card` turns it off.
 
@@ -708,9 +708,10 @@ budget. After each run the agent checks its work with `forest check`, `forest li
 
 ### 15.4 Setup is the agent's job
 
-- The owner says one sentence to their agent. The agent runs `forest setup`, which is written to be driven
-  by an agent: every output is one JSON object whose `next` is `ask_owner` (the question, the choices, and
-  why only the owner can answer), `done`, or one of the four moves of a refusal: `fix` (the call itself is
+- The owner says one sentence to their agent. The agent runs `forest guide` and follows it, and runs
+  `forest setup`, which is written to be driven by an agent: with `--json` every output is one JSON object
+  whose `next` is `ask_owner` (the questions, their choices, and why only the owner can answer), `done`, or
+  one of the four moves of a refusal: `fix` (the call itself is
   wrong, and a corrected call succeeds on the forest as it is: change what the message names and call
   again), `retry` (the same call succeeds later without anyone doing anything: call again after
   `after_seconds`), `run` (a command this caller may run now, which changes the state: the answer carries
@@ -727,23 +728,31 @@ refusal fields and unknown dictionaries carrying a refusal code. Named diagnosti
 errors retain their separate `code` fields. A refusal of any command or tool has the same form:
   `code`, `message`, `details` and `next`, with its `command` or `after_seconds`. Every code the package
   raises, with its next move, is in `docs/refusals.md`, and a test proves that list is the code's. The agent
-  asks, runs the command again with `--answer key=value`, and is finished when `forest doctor` passes. An
+  asks, runs the command again with every answer as its flag, and is finished when `forest doctor` passes. An
   agent that never read a guide, or lost its place, still ends in the right state by following the output.
 - **Asked** (only what the owner alone can decide): where the forest lives, or which forest to join; this
-  agent's name; which conversations are taken in and whether earlier ones are imported; whether the
-  machine's other agents are connected too. **Detected and shown as a proposal**: the timezone, the
-  language, the installed tools, the paths.
-- Setup writes nothing into another program's settings. It tells the agent what to register in its own
-  tool (the MCP entry that starts `forest mcp --as <agent>`, the command a hook runs, the lines of an
-  instruction file), and the agent registers them there. What setup writes in the forest is previewed
+  agent's name; whether it is the owner's main agent; which conversations are taken in and whether earlier
+  ones are imported; who keeps the forest and, for the keeper, when it runs the routine and which models it
+  may spend. **Detected and shown as a proposal**: the time zone of a new forest.
+- Setup writes nothing into another program's settings. It tells the agent, in `todo`, what to do in its own
+  tool (the MCP entry that starts `forest mcp --as <agent>`, the record file its exporter appends to and
+  the intake command it or a turn-end hook runs, `forest log` for its own turn, and for the keeper the
+  routine to schedule), and the agent does it there. What setup writes in the forest is previewed
   (`--dry-run` prints each file and block it would write), repeatable (a second run changes nothing) and
   bounded.
-- `forest doctor` proves the connection instead of describing it: it sends a test turn through the tool's
-  real path and finds it in the lane, and calls the MCP server as that agent and gets an answer.
-- The guide travels with the package: `forest guide` prints the setup guide for agents. A page on the web
+- `forest doctor` proves the connection instead of describing it. `--phrase` makes a new phrase; the agent
+  says it in its conversation and brings that turn in its real way, and the doctor finds it in the lane. It
+  reads from `.forest/mcp/seen.json` that the agent called the MCP server from its own tool, and runs a
+  search as that agent. For the keeper it reports the routine: the newest day of turns and the newest daily
+  page, the days before today that have turns and no daily page (then the check is `todo`, with
+  `forest guide routine`), and the lint's counts of violations, upkeep and due. It does not see the
+  schedule itself, only whether the daily record keeps up.
+- The guide travels with the package: `forest guide` prints the setup guide for agents, `forest guide
+  routine` the keeper's routine and `forest guide use` when and how to look things up. A page on the web
   is for people to read; an agent is never asked to fetch instructions from an address and follow them.
-- The guide is tested like code: for each supported tool, a new agent in an empty sandbox is given the one
-  sentence, and the run passes only when `forest doctor` does.
+- The guide's test today is two trials before the release: each time an agent of another engine, in an
+  empty sandbox, is given the one sentence, and the trial passes only when `forest doctor` does. It is not
+  an automated test per tool.
 
 ### 15.5 An app that runs several agents
 
