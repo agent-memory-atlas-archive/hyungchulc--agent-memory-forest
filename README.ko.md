@@ -200,8 +200,9 @@ branch가 leaf를 정합니다. 하루 한 번 스친 이름이 자기 tree를 �
 ## agent를 다섯 줄로
 
 여러 agent가 하나의 forest를 함께 씁니다. 모두에게 필요한 것은 공유 tree에, 각 agent 자신의 것은 agent마다
-하나씩 있는 tree에 두고, orchestrator는 전체를 읽습니다. agent의 tree는 저절로 생깁니다. agent가 자기 raw
-lane에 첫 줄을 쓰면, 다음 관리 단계가 그 tree를 만듭니다.
+하나씩 있는 tree에 두고, orchestrator는 전체를 읽습니다. `forest setup`으로 들어온 agent는 setup이 `done`을
+답할 때 이미 자기 tree가 있습니다. 다른 agent의 tree는 저절로 생깁니다. agent가 자기 raw lane에 첫 줄을
+쓰면, 다음 관리 단계가 그 tree를 만듭니다.
 
 ```sh
 ls "my-forest/06 istm/post-bot"            # agent가 여기에 첫 줄을 썼습니다

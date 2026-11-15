@@ -204,8 +204,9 @@ through one subject's life from a one-day mention to a tree of its own.
 ## Agents in five lines
 
 Several agents share one forest: shared trees for what everyone needs, a tree per agent for what is
-its own, and an orchestrator that reads all of it. An agent's tree comes by itself: when an agent writes
-the first line to its raw lane, the next upkeep step makes its tree.
+its own, and an orchestrator that reads all of it. An agent that joins with `forest setup` has its tree
+when setup answers `done`. Any other agent's tree comes by itself: when an agent writes the first line to
+its raw lane, the next upkeep step makes its tree.
 
 ```sh
 ls "my-forest/06 istm/post-bot"            # the agent wrote its first line here

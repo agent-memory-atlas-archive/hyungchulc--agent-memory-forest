@@ -34,7 +34,9 @@ present keeper named.
 What `done` writes stays inside the forest's folder: the forest when it is new; the agent's
 `[agents.known.<id>]` table with its name, and its id added to `agents.orchestrators` for the main agent
 (taken out again when the answer turns to `no`), each patched into `forest.toml` keeping every other byte; the agent's empty record file
-`transcripts/<id>.jsonl` (not for `--conversations none`); and the setup record `.forest/setup/<id>.json` with the answers and when they
+`transcripts/<id>.jsonl` (not for `--conversations none`); the agent's own tree, so that `forest check
+--sync` passes on the forest after `done` (when another writer holds the forest, the line says the tree is
+pending and the agent's first write makes it); and the setup record `.forest/setup/<id>.json` with the answers and when they
 were given. `--dry-run` prints the same list and writes nothing. A second run with the same answers
 changes nothing; a changed answer says what changed.
 

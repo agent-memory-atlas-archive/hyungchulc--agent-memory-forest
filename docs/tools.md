@@ -948,6 +948,9 @@ Setup writes only inside the forest's folder, under the writer lock:
 - in `forest.toml`, the agent's `[agents.known.<id>]` table with its name, and its id added to or taken out
   of `agents.orchestrators` by the answer to `--main`, every other byte of the file kept;
 - the agent's empty record file `transcripts/<id>.jsonl`, unless the answer is `--conversations none`;
+- the agent's own tree (`02 ltm/<id>_LTM.md`, its index `03 mtm/<id>/<id>_MTM.md` and its line under
+  `## Agents`), made by the code its first write would use, so `forest check --sync` passes on the forest after `done`; when another writer holds the forest,
+  the line says the tree is pending and the agent's first write makes it;
 - the setup record `.forest/setup/<id>.json`: the answers, when they were given, and the day turns are
   taken from.
 
@@ -981,12 +984,13 @@ forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all 
 # would write: a new forest in studio-forest (time zone America/Sao_Paulo)
 # would write: forest.toml: [agents.known.kiln-bot] name = "Kiln Bot"
 # would write: transcripts/kiln-bot.jsonl: this agent's record file, empty
+# would write: 02 ltm/kiln-bot_LTM.md: this agent's own tree
 # would write: .forest/setup/kiln-bot.json: the owner's answers
 # todo 1. register_mcp: …
 #   command: forest mcp --as kiln-bot --root studio-forest
 # …
 # todo 5. verify: …
-#   command: forest doctor --as 'Kiln Bot' --root studio-forest --json
+#   command: forest doctor --as kiln-bot --root studio-forest --json
 forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
   --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" \
   --timezone America/Sao_Paulo                 # the same, written: wrote: … instead of would write: …
@@ -995,6 +999,7 @@ forest setup --root studio-forest --as "Studio Hub" --main yes --conversations n
 # agent: Studio Hub (id studio-hub)
 # wrote: forest.toml: [agents.known.studio-hub] name = "Studio Hub"
 # wrote: forest.toml: studio-hub added to agents.orchestrators (the main agent)
+# wrote: 02 ltm/studio-hub_LTM.md: this agent's own tree
 # wrote: .forest/setup/studio-hub.json: the owner's answers
 # todo 1. register_mcp: …
 # todo 2. verify: …
@@ -1039,9 +1044,9 @@ forest doctor --as "Kiln Bot" --root studio-forest
 # result: passed
 # forest: ok: the forest opens; time zone America/Sao_Paulo; no journal; structure sound
 # setup: ok: answered at 2042-05-14T21:20:49.465656+00:00: conversations all, daily_model small model, earlier no, filing_model large model, keeper this, main no, when every night at 23:30
-# agent: ok: id kiln-bot; declared in forest.toml: yes; raw lane: yes; tree: pending (the next write or `forest levels apply` makes it)
+# agent: ok: id kiln-bot; declared in forest.toml: yes; raw lane: yes; tree: made
 # turns: ok: newest turn at 2042-05-14T21:20:50+00:00 through adapter:jsonl; the phrase "forest doctor phrase meadow willow marble" came in at 2042-05-14T21:20:50+00:00 through adapter:jsonl
-# finding: ok: index built 2042-05-14T21:20:50Z; a search as kiln-bot answers (trees: none); last seen on a connection at 2042-05-14T21:20:51Z (memory_search, stdio)
-# routine: ok: newest day of turns 2042-05-14, newest daily page none; every day before today has its daily page; lint: 0 violations, 0 upkeep, 2 due
+# finding: ok: index built 2042-05-14T21:20:50Z; a search as kiln-bot answers (trees: kiln-bot); last seen on a connection at 2042-05-14T21:20:51Z (memory_search, stdio)
+# routine: ok: newest day of turns 2042-05-14, newest daily page none; every day before today has its daily page; lint: 0 violations, 0 upkeep, 0 due
 forest doctor --as "Kiln Bot" --root studio-forest --json
 ```
