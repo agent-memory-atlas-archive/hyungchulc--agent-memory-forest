@@ -33,8 +33,9 @@ Windows에서는 WSL2를 쓰고 forest를 Linux filesystem 안에 두세요. 먼
 python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
 ```
 
-clone을 받았다면 그 폴더에서 `python -m pip install .`을 실행해도 됩니다. 그다음 내 agent에게 한 문장만
-말하면 됩니다.
+clone을 받았다면 그 폴더에서 `python -m pip install .`을 실행해도 됩니다. 설치는 `forest --version`으로
+확인합니다. `forest` 명령이 path에 없으면 `python -m memory_forest.forest`가 같은 명령입니다. 그다음 내
+agent에게 한 문장만 말하면 됩니다.
 
 > `forest guide`를 실행하고 그대로 따라 해 줘.
 
@@ -199,8 +200,9 @@ branch가 leaf를 정합니다. 하루 한 번 스친 이름이 자기 tree를 �
 ## agent를 다섯 줄로
 
 여러 agent가 하나의 forest를 함께 씁니다. 모두에게 필요한 것은 공유 tree에, 각 agent 자신의 것은 agent마다
-하나씩 있는 tree에 두고, orchestrator는 전체를 읽습니다. agent의 tree는 저절로 생깁니다. agent가 자기 raw
-lane에 첫 줄을 쓰면, 다음 관리 단계가 그 tree를 만듭니다.
+하나씩 있는 tree에 두고, orchestrator는 전체를 읽습니다. `forest setup`으로 들어온 agent는 setup이 `done`을
+답할 때 이미 자기 tree가 있습니다. 다른 agent의 tree는 저절로 생깁니다. agent가 자기 raw lane에 첫 줄을
+쓰면, 다음 관리 단계가 그 tree를 만듭니다.
 
 ```sh
 ls "my-forest/06 istm/post-bot"            # agent가 여기에 첫 줄을 썼습니다

@@ -117,7 +117,8 @@ A helper started for one task works as the agent that started it.
 
 - **A tree per agent, made by code, with no command to run.** An agent exists for the forest from its
   entry in the settings (`[agents.known.<id>]`, `name` and `role` optional) or from the first file in its
-  raw lane `06 istm/<id>/` (unless `agents.auto_create` is false). A turn written with `memory_log` or
+  raw lane `06 istm/<id>/` (unless `agents.auto_create` is false). `forest setup` makes the joining
+  agent's tree when it answers `done`, or names it pending when another writer holds the forest. A turn written with `memory_log` or
   `forest log` makes that one agent's tree, or leaves it pending while another writer holds the lock (the
   next write or the level pass makes it). `forest levels check` reports every
   other such agent without a tree as due one from its first day, and `forest levels apply` makes it through
@@ -696,8 +697,6 @@ that agent's own job.
   `forest timeline`, `forest navigate` and `forest log` take the same `--as` or `--as-group` and `--agent`.
 - `forest guide use` says when to look: when the owner names something, when a question reaches into the
   past, and before asking the owner something the forest may already hold. Version 1 ships no skill.
-- A session may open with a short card (who the owner is, what is in progress, the newest daily lines);
-  `connect.session_card` turns it off.
 
 ### 15.3 Upkeep
 

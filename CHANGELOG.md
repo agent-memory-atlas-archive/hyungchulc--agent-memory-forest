@@ -23,6 +23,13 @@ following the contract (section 10) and `forest guide routine`; the package runs
   package; setup asks the owner only what the owner decides (`next: ask_owner`), writes the agent into the
   forest and lists what the agent does in its own tool (`todo`); the doctor proves by evidence, a phrase
   brought in the agent's real way included, that its memory works from end to end ([setup](docs/setup.md)).
+- `forest intake --json` lists each record file it read under `files`, with `read_to_end`: `true` says
+  the exporter may empty the file, which holds the words unmasked ([tools](docs/tools.md#the-record-file-is-a-hand-over)).
+- `python -m memory_forest.forest` is the `forest` command where its script is not on the path.
+- `forest setup` makes the joining agent's own tree when it answers `done`, so `forest check --sync` passes
+  after a join; every command it prints takes the agent's id.
+- The guide checks the install, has the exporter empty the record file once intake has read it, shows the
+  keeper's first filing of a new name whole, and says what the masking recognises and what it does not.
 
 ### Changed
 

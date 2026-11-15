@@ -64,7 +64,7 @@ make check
 git diff --check
 ```
 
-For a CLI behavior change, also perform a clean initialization in a temporary directory, run `doctor`, `validate`, `audit`, `index`, `route`, `retrieve`, and metadata-only `search`, then verify that no existing target is overwritten.
+For a behavior change of the 0.3 command line (`memory-forest`, also `python -m memory_forest`), also perform a clean initialization in a temporary directory, run `doctor`, `validate`, `audit`, `index`, `route`, `retrieve`, and metadata-only `search`, then verify that no existing target is overwritten.
 
 ### Checking that the tests notice a guard
 

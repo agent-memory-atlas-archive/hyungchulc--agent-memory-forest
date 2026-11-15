@@ -369,7 +369,10 @@ forest numbers star "04 stm/bakery/ovens/deck-oven.md"
 A value sent to sign in or to pay is removed rather than starred: the line keeps who sent it, to whom and
 for which account, and `[REDACTED]` in the value's place (contract, section 4, Sign-in values). It is found
 by the word before it, from `credentials.label_words`; a forest that records other languages adds their
-words in `forest.toml`:
+words in `forest.toml`. A label word is found only as a word of its own before the value: a language
+written with spaces works this way ("Le code porte est 4471." is masked with the lines below), while a word
+with a particle joined to it ("비밀번호는 4471") is not found, even with the particle added to
+`joining_words`:
 
 ```toml
 [credentials]
@@ -484,6 +487,41 @@ A tool turn records that the tool ran (`ran <name>`), not what it printed, unles
 `MEMORY_FOREST_INTERNAL`, a program that starts the session can also record it (`stage.prepare`), and a
 hook sees the name in its environment. Setup is not part of this command. Search, read, timeline and the MCP server are the next
 sections.
+
+### The record file is a hand-over
+
+An agent that joined with `forest setup` has an exporter that appends its turns to `transcripts/<id>.jsonl`
+and then runs `forest intake --from jsonl --as <id> --transcript <file> --once --root <forest> --json`. The
+file holds the words as they were said, unmasked, until it is emptied; the lane keeps the masked copy. So
+the file is a hand-over, not an archive, and the answer says when it may be emptied. `files` has one entry
+per record file the run read, with `transcript`, `turns`, `unknown`, `note` and `read_to_end`.
+`read_to_end: true` says every byte of the file was read and decided, so the exporter may empty it. A turn
+that still waits keeps it `false`: an agent's turn whose session has no owner turn yet (`note: waiting for
+the owner turn`), or a last line without its newline. A dry run never says `true`. Appending, intake and
+emptying are one run of the exporter, and only one run goes at a time.
+
+```sh
+forest intake --from jsonl --as kiln-bot --transcript studio-forest/transcripts/kiln-bot.jsonl --once --root studio-forest --json
+# {
+#   "adapter": "jsonl",
+#   "agent": "kiln-bot",
+#   …
+#   "files": [
+#     {
+#       "note": "",
+#       "read_to_end": true,
+#       "transcript": "kiln-bot.jsonl",
+#       "turns": 2,
+#       "unknown": 0
+#     }
+#   ],
+#   …
+#   "wrote": 2
+# }
+: > studio-forest/transcripts/kiln-bot.jsonl   # read to its end: the exporter empties the file
+```
+
+After the file is emptied, the next lines appended to it are read from its start, once.
 
 ## `forest index`
 
@@ -913,6 +951,9 @@ Setup writes only inside the forest's folder, under the writer lock:
 - in `forest.toml`, the agent's `[agents.known.<id>]` table with its name, and its id added to or taken out
   of `agents.orchestrators` by the answer to `--main`, every other byte of the file kept;
 - the agent's empty record file `transcripts/<id>.jsonl`, unless the answer is `--conversations none`;
+- the agent's own tree (`02 ltm/<id>_LTM.md`, its index `03 mtm/<id>/<id>_MTM.md` and its line under
+  `## Agents`), made by the code its first write would use, so `forest check --sync` passes on the forest after `done`; when another writer holds the forest,
+  the line says the tree is pending and the agent's first write makes it;
 - the setup record `.forest/setup/<id>.json`: the answers, when they were given, and the day turns are
   taken from.
 
@@ -926,9 +967,12 @@ for a forest that does not exist yet.
 1. `register_mcp`: the `forest mcp --as <id> --root <forest>` line to register as an MCP server in the
    agent's own tool; a tool without MCP uses the same doors as commands.
 2. `bring_turns` (not for `--conversations none`): the record's `fields` and an `example` line, the `file`
-   the agent's exporter appends to, and the intake command that reads it,
-   `forest intake --from jsonl --as <id> --transcript <forest>/transcripts/<id>.jsonl --once --root <forest>`.
-3. `own_turn` (not for `--conversations none`): `memory_log`, or `forest log` with the turn on stdin.
+   the agent's exporter appends to, the intake command that reads it,
+   `forest intake --from jsonl --as <id> --transcript <forest>/transcripts/<id>.jsonl --once --root <forest> --json`,
+   and `empty_when`: the exporter empties the file when the answer's entry for it under `files` says
+   `read_to_end: true` ([the hand-over](#the-record-file-is-a-hand-over)).
+3. `own_turn` (not for `--conversations none`): `memory_log`, or `forest log` with the turn on stdin;
+   nothing to do when the exporter brings the agent's turns in.
 4. `routine` (for `--keeper this` only): `forest guide routine`, with `when` and the `models` for the daily,
    filing and upkeep passes; the agent schedules the routine itself.
 5. `verify`: the `forest doctor` command.
@@ -943,12 +987,13 @@ forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all 
 # would write: a new forest in studio-forest (time zone America/Sao_Paulo)
 # would write: forest.toml: [agents.known.kiln-bot] name = "Kiln Bot"
 # would write: transcripts/kiln-bot.jsonl: this agent's record file, empty
+# would write: 02 ltm/kiln-bot_LTM.md: this agent's own tree
 # would write: .forest/setup/kiln-bot.json: the owner's answers
 # todo 1. register_mcp: …
 #   command: forest mcp --as kiln-bot --root studio-forest
 # …
 # todo 5. verify: …
-#   command: forest doctor --as 'Kiln Bot' --root studio-forest --json
+#   command: forest doctor --as kiln-bot --root studio-forest --json
 forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
   --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" \
   --timezone America/Sao_Paulo                 # the same, written: wrote: … instead of would write: …
@@ -957,6 +1002,7 @@ forest setup --root studio-forest --as "Studio Hub" --main yes --conversations n
 # agent: Studio Hub (id studio-hub)
 # wrote: forest.toml: [agents.known.studio-hub] name = "Studio Hub"
 # wrote: forest.toml: studio-hub added to agents.orchestrators (the main agent)
+# wrote: 02 ltm/studio-hub_LTM.md: this agent's own tree
 # wrote: .forest/setup/studio-hub.json: the owner's answers
 # todo 1. register_mcp: …
 # todo 2. verify: …
@@ -1001,9 +1047,9 @@ forest doctor --as "Kiln Bot" --root studio-forest
 # result: passed
 # forest: ok: the forest opens; time zone America/Sao_Paulo; no journal; structure sound
 # setup: ok: answered at 2042-05-14T21:20:49.465656+00:00: conversations all, daily_model small model, earlier no, filing_model large model, keeper this, main no, when every night at 23:30
-# agent: ok: id kiln-bot; declared in forest.toml: yes; raw lane: yes; tree: pending (the next write or `forest levels apply` makes it)
+# agent: ok: id kiln-bot; declared in forest.toml: yes; raw lane: yes; tree: made
 # turns: ok: newest turn at 2042-05-14T21:20:50+00:00 through adapter:jsonl; the phrase "forest doctor phrase meadow willow marble" came in at 2042-05-14T21:20:50+00:00 through adapter:jsonl
-# finding: ok: index built 2042-05-14T21:20:50Z; a search as kiln-bot answers (trees: none); last seen on a connection at 2042-05-14T21:20:51Z (memory_search, stdio)
-# routine: ok: newest day of turns 2042-05-14, newest daily page none; every day before today has its daily page; lint: 0 violations, 0 upkeep, 2 due
+# finding: ok: index built 2042-05-14T21:20:50Z; a search as kiln-bot answers (trees: kiln-bot); last seen on a connection at 2042-05-14T21:20:51Z (memory_search, stdio)
+# routine: ok: newest day of turns 2042-05-14, newest daily page none; every day before today has its daily page; lint: 0 violations, 0 upkeep, 0 due
 forest doctor --as "Kiln Bot" --root studio-forest --json
 ```

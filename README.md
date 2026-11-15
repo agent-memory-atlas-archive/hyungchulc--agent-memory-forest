@@ -34,7 +34,9 @@ address:
 python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
 ```
 
-or from a clone, with `python -m pip install .` in its folder. Then say one sentence to your agent:
+or from a clone, with `python -m pip install .` in its folder. `forest --version` checks the install;
+where the `forest` command is not on the path, `python -m memory_forest.forest` is the same command. Then
+say one sentence to your agent:
 
 > Run `forest guide` and follow it.
 
@@ -202,8 +204,9 @@ through one subject's life from a one-day mention to a tree of its own.
 ## Agents in five lines
 
 Several agents share one forest: shared trees for what everyone needs, a tree per agent for what is
-its own, and an orchestrator that reads all of it. An agent's tree comes by itself: when an agent writes
-the first line to its raw lane, the next upkeep step makes its tree.
+its own, and an orchestrator that reads all of it. An agent that joins with `forest setup` has its tree
+when setup answers `done`. Any other agent's tree comes by itself: when an agent writes the first line to
+its raw lane, the next upkeep step makes its tree.
 
 ```sh
 ls "my-forest/06 istm/post-bot"            # the agent wrote its first line here
