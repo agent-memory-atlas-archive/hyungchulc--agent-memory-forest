@@ -12,28 +12,118 @@
 Agent Memory Forest is a Python package and a `forest` command that keep what agents learn as plain
 Markdown pages in a few numbered folders on your own disk. Every fact has one home, decided by rules rather
 than by the chat or the agent that brought it in, and code, not a model, decides where a page belongs and
-when a subject has grown enough to get pages of its own. Several agents share one forest: shared trees for
-what everyone needs, a tree per agent for what is its own, and an orchestrator that reads all of it. An
-agent's tree comes by itself: when an agent writes the first line to its raw lane, the next upkeep step
-makes its tree.
+when a subject has grown enough to get pages of its own.
 
-```sh
-ls "my-forest/06 istm/post-bot"            # the agent wrote its first line here
-# 2042-05-15.jsonl
-forest levels apply --root my-forest       # one command, the same upkeep step that settles every level
-# post-bot: none -> tree (agent; its raw lane holds a file)
-ls my-forest/"02 ltm"
-# post-bot_LTM.md   studio_LTM.md          # its tree page: role, instructions, lessons, current state, branches
-```
-
-Version 1 is a new generation of the 0.3 Memory Forest. Its rules are written down in full; its code is
-being ported in three milestones (see [Status](#status)).
+**Status:** version `1.0.0b1`, a beta: the first public release of version 1. The 0.3 `memory-forest`
+command stays installed beside it ([archive](docs/archive-0.3/cli.md)).
 
 > [!IMPORTANT]
 > Agent Memory Forest is not a hosted service, an authorization system, or a promise that an agent will
 > remember correctly. Memory is grounding data: a caller still opens the page it was routed to, checks how
 > fresh it is, and applies its own authority and safety rules. The forest holds no credentials, and
 > everything except optional vector search works with no network.
+
+## Start here
+
+You need Python 3.11 or newer and a POSIX filesystem; there are no runtime dependencies outside the
+standard library. On Windows, use WSL2 and keep the forest on the Linux filesystem; read the
+[WSL2 guide](docs/wsl2.md) first. The package is on no package index. Install it from the repository's
+address:
+
+```sh
+python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+```
+
+or from a clone, with `python -m pip install .` in its folder. Then say one sentence to your agent:
+
+> Run `forest guide` and follow it.
+
+The agent connects itself. It runs `forest setup`, which hands it the questions to ask you, and asks you
+each of them: where the forest lives, the agent's name, whether it is your main agent, which conversations
+come in, and who keeps the forest growing. Every question that is yours to answer comes to you; the agent
+never answers one itself. It then sets the forest up or joins the one you named, registers the finding
+server in its own tool, brings its own conversation in, and proves the result with `forest doctor`.
+
+## What you get
+
+- **The forest and its rules.** Numbered folders of plain pages, and one contract every forest keeps:
+  [contract](docs/contract.md), explained for a new reader in [concepts](docs/concepts.md).
+- **The structure tools.** `forest init`, `registry`, `move`, `levels`, `collections`, `record`,
+  `archive`, `check`, `lint`, `numbers`, `credentials` and `recover`: [tools](docs/tools.md).
+- **Finding.** `forest search`, `read`, `timeline` and `navigate` as commands, and `forest mcp`, an MCP
+  server with five tools (`memory_search`, `memory_read`, `memory_timeline`, `memory_navigate`,
+  `memory_log`): [tools](docs/tools.md#forest-mcp).
+- **Two write doors.** `forest log` or `memory_log` for an agent's own turn, and records in the lane's
+  shape, read by `forest intake --from jsonl`: [tools](docs/tools.md#forest-intake).
+- **A tree per agent.** Shared trees for what everyone needs, a tree of its own for each agent, and reader
+  scopes: [agents](docs/multi-agent.md).
+- **The guide, setup and doctor.** `forest guide` (setup, routine, use), `forest setup` and
+  `forest doctor`: [connecting an agent](docs/setup.md) and [tools](docs/tools.md#forest-guide).
+
+## What it does not do
+
+- **It reads no particular agent program's transcripts.** Every program keeps its conversation in its own
+  format, and the package cannot keep up with all of them; shipping readers for a few would promise what it
+  cannot keep. Your agent knows its own program: following the guide, it writes a small exporter that
+  appends its turns as records. Someone who knows a program well can write a reader for it
+  ([adapters](docs/adapters.md)).
+- **It has no engine and no timer.** The daily record, the filing run and the upkeep run are carried out by
+  your agent, on its own schedule and with its own model, following `forest guide routine`. The package is
+  the judge: `forest check`, `forest lint`, `forest levels` and `forest doctor`.
+- **It writes nothing into another program's settings**, and it has no plugins. Setup writes only inside
+  the forest's folder and tells the agent what to register in its own tool.
+
+## By hand
+
+Without an agent, the same path is a few commands. Setup with no answers lists the questions; with every
+answer it writes the forest and prints its `todo`:
+
+```sh
+forest setup                                   # next: ask_owner, and each question with its flag
+forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
+  --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model"
+# next: done
+# todo 1. register_mcp  2. bring_turns  3. own_turn  4. routine  5. verify, each with its command
+```
+
+Carry out the `todo`: register `forest mcp --as kiln-bot --root studio-forest` in your MCP client, and
+bring turns in with the printed `forest intake` command or with `forest log`. Then prove it:
+
+```sh
+forest doctor --as "Kiln Bot" --root studio-forest --phrase   # prints a new phrase to say
+forest log --as kiln-bot --root studio-forest <<'TURN'
+Kiln Two fires to cone 5 for now. forest doctor phrase orchid maple amber
+TURN
+forest index build --root studio-forest
+forest doctor --as "Kiln Bot" --root studio-forest              # result: passed (exit 0), or todo (exit 1)
+```
+
+The phrase is new each time; bring in the one your doctor printed. The `finding` check passes once an MCP
+client has called the server once; until then the doctor says `todo` and prints the `forest mcp` command to
+register.
+
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [Concepts](docs/concepts.md) | the forest for a new reader: layers, a subject's life, one home, what goes up, records, moves, the lint |
+| [Contract](docs/contract.md) | every rule a forest keeps, stated once |
+| [Connecting an agent](docs/setup.md) | what `forest setup` asks and writes, and what `forest doctor` proves |
+| [Agents](docs/multi-agent.md) | agent trees, the two filing policies, reader scopes, the single writer |
+| [Design](docs/v1-design.md) | the package: on-disk layout, settings, package map, milestones |
+| [Tools](docs/tools.md) | `forest move`, `levels`, `collections`, `check`, `lint`, `record`, `numbers`, `intake`, `index`, `search`, `timeline`, `log`, `mcp`, `guide`, `setup` and `doctor` |
+| [Writing a reader](docs/adapters.md) | a reader of one agent program's own transcripts, for someone who knows that program |
+| `forest guide` | the setup guide: the steps an agent follows to connect itself |
+| `forest guide routine` | the routine guide: the daily record, the filing run and the upkeep run, for the agent that keeps the forest |
+| `forest guide use` | the use guide: when and how an agent looks things up |
+| [Comparison](docs/comparison.md) | how this differs from Mem0, GBrain, the LLM Wiki idea and plain vector RAG |
+| [Privacy and trust](docs/privacy-and-trust.md) | what stays local, what a reader can see, memory as untrusted data |
+| [Roadmap](docs/roadmap.md) | the three milestones and what may come later |
+| [WSL2](docs/wsl2.md) | running on Windows through WSL2 |
+| [Archive of 0.3](docs/archive-0.3/) | the 0.3 documents that version 1 replaces |
+
+The three guides ship inside the package (`src/memory_forest/guide/`) and those commands print them, so an
+agent reads the copy that matches the version it has installed.
 
 ## Why this exists
 
@@ -109,76 +199,20 @@ through one subject's life from a one-day mention to a tree of its own.
 | `06 istm/` | the raw record, append-only, one lane per agent (a lane) |
 | `.forest/` | the compiled registry, the move log, the archive, indexes and locks |
 
-## Quick start
-
-Agent Memory Forest needs Python 3.11 or newer, a POSIX filesystem, and no runtime dependencies outside the
-standard library. On Windows, use WSL2 and keep the forest on the Linux filesystem; read the
-[WSL2 guide](docs/wsl2.md) first.
-
-```sh
-git clone https://github.com/hyungchulc/agent-memory-forest.git
-cd agent-memory-forest
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
-```
-
-The package is on no package index. To install it into an environment without keeping a clone:
-
-```sh
-python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
-```
-
-The version 1 commands are the `forest …` commands of the [design's package map](docs/v1-design.md#13-package-map).
-**Version 1.0.0b1 is this tree's beta, not a stable release.** The milestone 1 commands below are in this tree and installed with it.
-Milestone 2 has intake, the search index, timeline, reader scopes and the MCP server in this tree. Setup
-(`forest setup`, `forest doctor` and the guide for agents) is being built. Readers of particular agent
-programs' own transcripts, and an engine that runs the daily, filing and upkeep stages, are not part of the
-first release: an agent brings its conversation in through `forest log`, `memory_log`, the `jsonl` adapter
-or an adapter someone who knows its program plugs in, and the owner's own agent carries out the stages
-(contract, section 10). The 0.3 `memory-forest` command (documented in
-[`docs/archive-0.3/`](docs/archive-0.3/cli.md)) stays installed beside them.
-
-`forest init` is the only command that creates a forest. The others use `--root` when you pass it, and
-otherwise the nearest folder at or above the current one that holds `forest.toml`. The block below creates
-a forest and enters it, so each following line finds that file.
-
-```sh
-# Milestone 1: skeleton and structure tools
-forest init my-forest                          # settings, layers, root index
-cd my-forest                                   # this folder is the forest the commands below use
-forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"   # or let its lane make it
-forest registry build                          # compile every ## Subjects section
-forest levels check                            # which subjects and agents are due a new level
-forest levels apply                            # carry them out through the move tool, logged
-forest check --sync                            # bring derived lists up to the pages, then every check
-forest lint                                    # every rule with a shape, by code
-forest repeats check                           # fact lines two leaves of one subject share
-forest record kinds                            # the update records' lines by kind
-forest numbers check --all                     # account, card, identity and phone numbers in full
-
-# Milestone 2: intake, the index, search, timeline and the MCP server are in this tree; setup is not
-forest intake --from jsonl --once              # new records in the lane's shape into the agent's raw lane
-forest intake status                           # lines an adapter did not understand
-forest index build                             # .forest/index.sqlite, rebuildable
-forest search "the old oven" --as till-bot     # aliases first, then words, inside the reader's scope
-forest timeline query "yesterday evening" --as till-bot
-forest mcp --as till-bot                       # search, read, timeline, navigate, memory_log
-forest mcp --as-group studio-counter           # several agents, one connection; each call names its agent
-forest log --as kiln-bot                       # the turn is read from stdin
-forest agents                                  # groups, lanes, and when each agent was last seen
-forest setup                                   # being built: run by your agent
-forest doctor                                  # being built: proves a turn arrives and the MCP server answers
-
-# Milestone 3: growing. Your own agent carries out the daily, filing and upkeep stages
-# (contract, section 10); an engine that runs them is not part of the first release.
-```
-
-To see what a forest looks like before any code runs, read the invented
-[synthetic forest](examples/synthetic-forest/README.md): an owner, three shared trees, an orchestrator and
-two bots, two days of daily pages and a raw lane, about forty small files.
-
 ## Agents in five lines
+
+Several agents share one forest: shared trees for what everyone needs, a tree per agent for what is
+its own, and an orchestrator that reads all of it. An agent's tree comes by itself: when an agent writes
+the first line to its raw lane, the next upkeep step makes its tree.
+
+```sh
+ls "my-forest/06 istm/post-bot"            # the agent wrote its first line here
+# 2042-05-15.jsonl
+forest levels apply --root my-forest       # one command, the same upkeep step that settles every level
+# post-bot: none -> tree (agent; its raw lane holds a file)
+ls my-forest/"02 ltm"
+# post-bot_LTM.md   studio_LTM.md          # its tree page: role, instructions, lessons, current state, branches
+```
 
 1. An agent (an orchestrator, a bot, a scheduled stage) is a subject that is a tree from its first day.
    A turn it writes with `forest log` or `memory_log` makes the tree, or leaves it pending for the next
@@ -198,46 +232,76 @@ If a crash loses the answer, the caller cannot know whether the turn was stored;
 
 Details: [Agents](docs/multi-agent.md).
 
-## Documentation
+## All the commands
 
-| Document | What it covers |
-| --- | --- |
-| [Concepts](docs/concepts.md) | the forest for a new reader: layers, a subject's life, one home, what goes up, records, moves, the lint |
-| [Contract](docs/contract.md) | every rule a forest keeps, stated once |
-| [Agents](docs/multi-agent.md) | agent trees, the two filing policies, reader scopes, the single writer |
-| [Design](docs/v1-design.md) | the package: on-disk layout, settings, package map, milestones |
-| [Tools](docs/tools.md) | `forest move`, `levels`, `collections`, `check`, `lint`, `record`, `numbers`, `intake`, `index`, `search`, `timeline` and `mcp` |
-| [Comparison](docs/comparison.md) | how this differs from Mem0, GBrain, the LLM Wiki idea and plain vector RAG |
-| [Privacy and trust](docs/privacy-and-trust.md) | what stays local, what a reader can see, memory as untrusted data |
-| [Roadmap](docs/roadmap.md) | the three milestones and what comes after |
-| [WSL2](docs/wsl2.md) | running on Windows through WSL2 |
-| [Archive of 0.3](docs/archive-0.3/) | the 0.3 documents that version 1 replaces |
+The commands use `--root` when you pass it, and otherwise the nearest folder at or above the current one
+that holds `forest.toml`. `forest init` and `forest setup` create a forest; `forest guide` needs none. The
+block below creates a forest and enters it, so each following line finds that file.
+
+```sh
+# Milestone 1: skeleton and structure tools
+forest init my-forest                          # settings, layers, root index
+cd my-forest                                   # this folder is the forest the commands below use
+forest move new-agent studio-hub --name "Studio Hub" --role "orchestrator"   # or let its lane make it
+forest registry build                          # compile every ## Subjects section
+forest levels check                            # which subjects and agents are due a new level
+forest levels apply                            # carry them out through the move tool, logged
+forest check --sync                            # bring derived lists up to the pages, then every check
+forest lint                                    # every rule with a shape, by code
+forest repeats check                           # fact lines two leaves of one subject share
+forest record kinds                            # the update records' lines by kind
+forest numbers check --all                     # account, card, identity and phone numbers in full
+
+# Milestone 2: connecting and finding
+forest intake --from jsonl --as kiln-bot --transcript transcripts/kiln-bot.jsonl --once
+                                               # records an exporter appended, into the agent's raw lane
+forest intake status                           # lines an adapter did not understand
+forest log --as kiln-bot                       # the turn is read from stdin
+forest index build                             # .forest/index.sqlite, rebuildable
+forest search "cone 5" --as kiln-bot           # aliases first, then words, inside the reader's scope
+forest timeline query "yesterday evening" --as kiln-bot
+forest navigate --as kiln-bot                  # one level down from the root index
+forest mcp --as kiln-bot                       # search, read, timeline, navigate, memory_log
+forest agents                                  # groups, lanes, and when each agent was last seen
+forest guide                                   # the setup guide; `routine` and `use` are the other parts
+forest setup                                   # run by your agent: the owner's questions, then its todo
+forest doctor --as kiln-bot                    # proves a turn arrives and the MCP server was called
+
+# Milestone 3: growing. Your own agent carries out the daily record, the filing run and the upkeep run,
+# following `forest guide routine`; the commands above judge what it wrote.
+```
+
+To see what a forest looks like before any code runs, read the invented
+[synthetic forest](examples/synthetic-forest/README.md): an owner, three shared trees, an orchestrator and
+two bots, two days of daily pages and a raw lane, about forty small files.
 
 ## Status
 
-Agent Memory Forest is beta software. The version in this tree is 1.0.0b1.
+Agent Memory Forest is beta software. The version in this tree is 1.0.0b1, the first public release of
+version 1.
 
 - **Written:** the contract, the design, the concepts and agents guides, and an invented synthetic forest
   that follows the contract.
-- **Milestone 1, skeleton (in this tree, unreleased):** the `forest` structure commands (registry, move,
-  levels, collections, record with its history files, archive, `check`, `lint`, number starring,
-  `recover`), agents' trees made from their lanes or settings, and an undo journal for every commit, with
-  tests on made-up forests and the synthetic forest passing every check.
-- **Milestone 2, connecting and finding (intake, the index, search and the MCP server are in this tree):**
-  `forest intake` reads records in the lane's shape (the `jsonl` adapter, or an adapter someone plugs in
-  through the entry point group `memory_forest.adapters`) into that agent's raw lane. `forest index` builds
-  the search index (`.forest/index.sqlite` until `forest index reset` points at a new file).
-  `forest search`, `forest read` and `forest timeline` answer from it, inside
-  `agents.readable_trees`, and `forest mcp` serves search, read, timeline, navigate and `memory_log`.
-  Setup carried out by the owner's agent (`forest setup`, `forest doctor`, the guide) is being built
+- **Milestone 1, skeleton:** the `forest` structure commands (registry, move, levels, collections, record
+  with its history files, archive, `check`, `lint`, number starring, `recover`), agents' trees made from
+  their lanes or settings, and an undo journal for every commit, with tests on made-up forests and the
+  synthetic forest passing every check.
+- **Milestone 2, connecting and finding:** `forest intake` reads records in the lane's shape (the `jsonl`
+  adapter, or an adapter someone plugs in through the entry point group `memory_forest.adapters`) into that
+  agent's raw lane, and `forest log` and `memory_log` write an agent's own turn. `forest index` builds the
+  search index (`.forest/index.sqlite` until `forest index reset` points at a new file). `forest search`,
+  `forest read`, `forest timeline` and `forest navigate` answer from it, inside `agents.readable_trees`,
+  and `forest mcp` serves search, read, timeline, navigate and `memory_log`. The owner's agent connects
+  itself with `forest guide`, `forest setup` and `forest doctor`
   ([design, section 15](docs/v1-design.md#15-connecting-agents)).
 - **Milestone 3, growing:** the daily record, the filing run and the nightly upkeep are carried out by the
-  owner's own agent, following the contract (section 10) and the guide.
-- **Not part of the first release:** readers of particular agent programs' own transcripts (whoever knows
-  a program writes its reader as an adapter), and an engine that runs the daily, filing and upkeep stages.
+  owner's own agent, following the contract (section 10) and `forest guide routine`.
+- **Not part of this release:** readers of particular agent programs' own transcripts (whoever knows a
+  program writes its reader, [adapters](docs/adapters.md)), and an engine that runs the daily, filing and
+  upkeep stages.
 
-The 0.3 code (`memory-forest`) stays in this tree until the version 1 commands replace it. It is suitable
-for evaluation and adaptation, not for unattended high-stakes decisions.
+The 0.3 code (`memory-forest`) stays in this tree beside version 1. It is suitable for evaluation and
+adaptation, not for unattended high-stakes decisions.
 
 ## Contributing
 

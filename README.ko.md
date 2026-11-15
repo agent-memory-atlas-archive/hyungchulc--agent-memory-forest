@@ -12,27 +12,116 @@
 Agent Memory Forest는 agent가 알게 된 것을 내 디스크의 번호 붙은 몇 개 폴더 안에 평범한 Markdown 페이지로
 남기는 Python 패키지이자 `forest` 명령입니다. 사실마다 집이 하나 있고, 그 집은 사실을 가져온 대화나 agent가
 아니라 규칙이 정합니다. 페이지가 어디에 있어야 하는지, 어떤 subject가 자기 페이지를 가질 만큼 자랐는지는
-model이 아니라 코드가 판단합니다. 여러 agent가 하나의 forest를 함께 씁니다. 모두에게 필요한 것은 공유 tree에,
-각 agent 자신의 것은 agent마다 하나씩 있는 tree에 두고, orchestrator는 전체를 읽습니다. agent의 tree는 저절로
-생깁니다. agent가 자기 raw lane에 첫 줄을 쓰면, 다음 관리 단계가 그 tree를 만듭니다.
+model이 아니라 코드가 판단합니다.
 
-```sh
-ls "my-forest/06 istm/post-bot"            # agent가 여기에 첫 줄을 썼습니다
-# 2042-05-15.jsonl
-forest levels apply --root my-forest       # 명령 하나: 모든 subject의 단계를 정하는 바로 그 관리 단계
-# post-bot: none -> tree (agent; its raw lane holds a file)
-ls my-forest/"02 ltm"
-# post-bot_LTM.md   studio_LTM.md          # tree 페이지: 역할, 지시, 교훈, 현재 상태, branch
-```
-
-버전 1은 0.3 Memory Forest의 다음 세대입니다. 규칙은 모두 문서로 정리되어 있고, 코드는 세 단계에 걸쳐
-옮기는 중입니다. 자세한 내용은 [현재 상태](#현재-상태)를 보세요.
+**현재 상태:** 버전 `1.0.0b1`, beta입니다. 버전 1의 첫 공개 배포입니다. 0.3의 `memory-forest` 명령도
+나란히 설치된 채로 남아 있습니다([archive](docs/archive-0.3/cli.md)).
 
 > [!IMPORTANT]
 > Agent Memory Forest는 hosted service도, 권한 시스템도, agent가 정확히 기억한다는 보장도 아닙니다. 메모리는
 > 판단의 근거일 뿐입니다. 호출하는 쪽이 안내받은 페이지를 직접 열어 얼마나 최신인지 확인하고, 자기 권한과
 > 안전 규칙을 따로 적용해야 합니다. forest는 credential을 보관하지 않으며, 선택 사항인 vector 검색을 빼면
 > 모든 기능이 network 없이 동작합니다.
+
+## 여기서 시작하세요
+
+Python 3.11 이상과 POSIX filesystem이 필요하며, 표준 라이브러리 밖의 runtime dependency는 없습니다.
+Windows에서는 WSL2를 쓰고 forest를 Linux filesystem 안에 두세요. 먼저 [WSL2 guide](docs/wsl2.md)를 읽어
+주세요. 이 패키지는 어떤 package index에도 올라가 있지 않습니다. 저장소 주소로 설치합니다.
+
+```sh
+python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+```
+
+clone을 받았다면 그 폴더에서 `python -m pip install .`을 실행해도 됩니다. 그다음 내 agent에게 한 문장만
+말하면 됩니다.
+
+> `forest guide`를 실행하고 그대로 따라 해 줘.
+
+그러면 agent가 스스로 연결합니다. `forest setup`을 실행하면 주인에게 물어볼 질문들이 나오고, agent는 그
+질문을 하나씩 주인에게 묻습니다. forest를 어디에 둘지, agent의 이름, 주인의 main agent인지, 어떤 대화를
+들여올지, 누가 forest를 키울지입니다. 주인이 답해야 하는 질문은 모두 주인에게 가고, agent가 대신 답하는
+일은 없습니다. 이어서 agent는 forest를 새로 만들거나 주인이 고른 forest에 들어가고, 찾기 server를 자기
+도구에 등록하고, 자기 대화를 들여온 뒤, `forest doctor`로 결과를 증명합니다.
+
+## 들어 있는 것
+
+- **forest와 그 규칙.** 번호 붙은 폴더에 담긴 평범한 페이지, 그리고 모든 forest가 지키는 contract 하나:
+  [contract](docs/contract.md). 처음 읽는 사람을 위한 설명은 [concepts](docs/concepts.md)에 있습니다.
+- **구조 도구.** `forest init`, `registry`, `move`, `levels`, `collections`, `record`, `archive`,
+  `check`, `lint`, `numbers`, `credentials`, `recover`: [tools](docs/tools.md).
+- **찾기.** 명령으로는 `forest search`, `read`, `timeline`, `navigate`가 있고, `forest mcp`는 도구 다섯
+  개(`memory_search`, `memory_read`, `memory_timeline`, `memory_navigate`, `memory_log`)를 가진 MCP
+  server입니다: [tools](docs/tools.md#forest-mcp).
+- **쓰기 입구 둘.** agent가 자기 턴을 쓰는 `forest log`와 `memory_log`, 그리고 lane 모양의 기록을 읽는
+  `forest intake --from jsonl`: [tools](docs/tools.md#forest-intake).
+- **agent마다 tree 하나.** 모두에게 필요한 것은 공유 tree에, agent 자신의 것은 그 agent의 tree에 두고,
+  읽기 범위로 나눕니다: [agents](docs/multi-agent.md).
+- **guide, setup, doctor.** `forest guide`(setup, routine, use), `forest setup`, `forest doctor`:
+  [agent 연결하기](docs/setup.md), [tools](docs/tools.md#forest-guide).
+
+## 하지 않는 것
+
+- **특정 agent 프로그램의 대화 기록은 읽지 않습니다.** 프로그램마다 대화를 자기 형식으로 남기고, 패키지가
+  그 형식을 모두 따라갈 수는 없습니다. 몇 개만 골라 reader를 넣으면 지킬 수 없는 약속을 하는 셈입니다. 자기
+  프로그램은 agent가 압니다. agent는 guide를 따라 자기 턴을 기록으로 덧붙이는 작은 exporter를 직접
+  씁니다. 어떤 프로그램을 잘 아는 사람은 그 프로그램의 reader를 만들 수 있습니다([adapters](docs/adapters.md)).
+- **엔진도 타이머도 없습니다.** daily 기록, 정리 실행, 관리 실행은 주인의 agent가 `forest guide routine`을
+  따라 자기 일정과 자기 model로 합니다. 패키지는 판정을 맡습니다: `forest check`, `forest lint`,
+  `forest levels`, `forest doctor`.
+- **다른 프로그램의 설정에는 아무것도 쓰지 않고**, plugin도 없습니다. setup은 forest 폴더 안에만 쓰고,
+  자기 도구에 무엇을 등록할지는 agent에게 알려 줍니다.
+
+## 직접 하기
+
+agent 없이 하면 같은 과정이 명령 몇 줄입니다. 답 없이 setup을 실행하면 질문 목록이 나오고, 답을 모두 주면
+forest를 쓰고 `todo`를 출력합니다.
+
+```sh
+forest setup                                   # next: ask_owner, 질문마다 그 flag와 함께
+forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
+  --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model"
+# next: done
+# todo 1. register_mcp  2. bring_turns  3. own_turn  4. routine  5. verify, 각각 명령과 함께
+```
+
+`todo`를 그대로 합니다. MCP client에 `forest mcp --as kiln-bot --root studio-forest`를 등록하고, 출력된
+`forest intake` 명령이나 `forest log`로 턴을 들여옵니다. 그다음 증명합니다.
+
+```sh
+forest doctor --as "Kiln Bot" --root studio-forest --phrase   # 말할 새 phrase를 출력
+forest log --as kiln-bot --root studio-forest <<'TURN'
+Kiln Two fires to cone 5 for now. forest doctor phrase orchid maple amber
+TURN
+forest index build --root studio-forest
+forest doctor --as "Kiln Bot" --root studio-forest              # result: passed (exit 0) 또는 todo (exit 1)
+```
+
+phrase는 매번 새로 만들어지니, 내 doctor가 출력한 것을 들여오세요. `finding` 검사는 MCP client가 server를
+한 번 호출해야 통과합니다. 그 전까지 doctor는 `todo`라고 답하고 등록할 `forest mcp` 명령을 보여 줍니다.
+
+## 문서
+
+| 문서 | 내용 |
+| --- | --- |
+| [Concepts](docs/concepts.md) | 처음 읽는 사람을 위한 설명: 계층, subject의 일생, 사실의 집, 위로 올라가는 것, 기록, 이동, lint |
+| [Contract](docs/contract.md) | forest가 지켜야 할 모든 규칙을 한 번씩 |
+| [agent 연결하기](docs/setup.md) | `forest setup`이 묻고 쓰는 것, `forest doctor`가 증명하는 것 |
+| [Agents](docs/multi-agent.md) | agent tree, 두 가지 정리 방식, 읽기 범위, writer 하나 원칙 |
+| [Design](docs/v1-design.md) | 패키지: 디스크 구조, 설정, package map, milestone |
+| [Tools](docs/tools.md) | `forest move`, `levels`, `collections`, `check`, `lint`, `record`, `numbers`, `intake`, `index`, `search`, `timeline`, `log`, `mcp`, `guide`, `setup`, `doctor` |
+| [reader 만들기](docs/adapters.md) | 어떤 agent 프로그램을 잘 아는 사람이 그 프로그램의 대화 기록을 읽는 reader를 만드는 법 |
+| `forest guide` | setup guide: agent가 스스로 연결할 때 따르는 단계 |
+| `forest guide routine` | routine guide: forest를 키우는 agent를 위한 daily 기록, 정리 실행, 관리 실행 |
+| `forest guide use` | use guide: agent가 언제, 어떻게 찾아보는지 |
+| [Comparison](docs/comparison.md) | Mem0, GBrain, LLM Wiki 아이디어, 일반 vector RAG와 무엇이 다른지 |
+| [Privacy and trust](docs/privacy-and-trust.md) | 무엇이 로컬에 남는지, 읽는 쪽이 무엇을 볼 수 있는지, 신뢰할 수 없는 데이터로서의 메모리 |
+| [Roadmap](docs/roadmap.md) | 세 milestone과 나중에 올 수도 있는 것 |
+| [WSL2](docs/wsl2.md) | Windows에서 WSL2로 쓰는 법 |
+| [0.3 archive](docs/archive-0.3/) | 버전 1이 대체한 0.3 문서 |
+
+guide 셋은 패키지 안(`src/memory_forest/guide/`)에 들어 있고 위 명령이 출력합니다. 그래서 agent는 자기가
+설치한 버전에 맞는 guide를 읽습니다. 문서는 영어로 쓰여 있습니다.
 
 ## 왜 만들었나
 
@@ -107,38 +196,39 @@ branch가 leaf를 정합니다. 하루 한 번 스친 이름이 자기 tree를 �
 | `06 istm/` | 덧붙이기만 하는 원본 기록, agent마다 하나 (lane) |
 | `.forest/` | 컴파일된 registry, 이동 기록, archive, index, lock |
 
-## 빠른 시작
+## agent를 다섯 줄로
 
-Python 3.11 이상과 POSIX filesystem이 필요하며, 표준 라이브러리 밖의 runtime dependency는 없습니다.
-Windows에서는 WSL2를 쓰고 forest를 Linux filesystem 안에 두세요. 먼저 [WSL2 guide](docs/wsl2.md)를 읽어
-주세요.
-
-```sh
-git clone https://github.com/hyungchulc/agent-memory-forest.git
-cd agent-memory-forest
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
-```
-
-이 package는 어떤 package index에도 올라가 있지 않습니다. clone 없이 환경에 설치하려면:
+여러 agent가 하나의 forest를 함께 씁니다. 모두에게 필요한 것은 공유 tree에, 각 agent 자신의 것은 agent마다
+하나씩 있는 tree에 두고, orchestrator는 전체를 읽습니다. agent의 tree는 저절로 생깁니다. agent가 자기 raw
+lane에 첫 줄을 쓰면, 다음 관리 단계가 그 tree를 만듭니다.
 
 ```sh
-python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+ls "my-forest/06 istm/post-bot"            # agent가 여기에 첫 줄을 썼습니다
+# 2042-05-15.jsonl
+forest levels apply --root my-forest       # 명령 하나: 모든 subject의 단계를 정하는 바로 그 관리 단계
+# post-bot: none -> tree (agent; its raw lane holds a file)
+ls my-forest/"02 ltm"
+# post-bot_LTM.md   studio_LTM.md          # tree 페이지: 역할, 지시, 교훈, 현재 상태, branch
 ```
 
-버전 1의 명령은 [설계 문서의 package map](docs/v1-design.md#13-package-map)에 있는 `forest …` 명령들입니다.
-**버전 1.0.0b1은 이 트리의 beta이며, 안정 배포는 아닙니다.** 아래 milestone 1 명령은 이 저장소에 들어 있고 함께 설치됩니다.
-milestone 2에서는 intake, 검색 index, timeline, 읽기 범위, MCP server가 이 저장소에 있습니다. setup
-(`forest setup`, `forest doctor`, 에이전트용 안내)은 만드는 중입니다. 특정 에이전트 프로그램의 대화 기록을
-읽는 reader와, daily·정리·관리 단계를 돌리는 엔진은 첫 배포에 들어가지 않습니다. 에이전트는 `forest log`,
-`memory_log`, `jsonl` 어댑터, 또는 그 프로그램을 아는 사람이 꽂아 넣는 어댑터로 자기 대화를 들여오고,
-그 단계들은 주인의 에이전트가 직접 합니다(contract 10장). 0.3의 `memory-forest` 명령([`docs/archive-0.3/`](docs/archive-0.3/cli.md)에
-설명)도 나란히 설치된 채로 남아 있습니다.
+1. agent(orchestrator, bot, 예약 실행 단계)는 첫날부터 tree인 subject입니다. 설정 항목이나 raw lane의 첫
+   파일만 있으면 되고, tree는 `forest levels apply`가 만듭니다. `forest log`와 `memory_log`는 바로
+   tree를 만들거나 다른 writer가 lock을 잡고 있으면 `pending`으로 답합니다. lock이 풀린 뒤 다음
+   write가 tree를 만듭니다. forest 전체에서 정확한 저장 id, 이름 key 순서로 agent를 찾고 나서
+   group 멤버인지 확인합니다. 이미 허용한 이름은 페이지 문법에 맞게 인코딩하며 다시 거절하지 않습니다.
+2. agent의 tree 페이지에는 역할, 고정 지시, 교훈, 현재 상태, branch가 있습니다.
+3. 기본값인 `subject-first`는 사실을 그 subject의 집에 두고 `noted by <agent>`라고 표시합니다.
+   `agent-first`는 agent의 tree에 두고 `about:`으로 가리키다가, 두 agent가 같은 사실을 알게 되면 공유합니다.
+4. orchestrator는 forest 전체를 읽고, 다른 agent는 공유 tree와 자기 tree를 읽습니다.
+5. agent마다 자기 raw lane에 덧붙이기만 하고, forest에는 lock을 잡은 정리 실행 하나만 씁니다.
 
-`forest init`만 새 forest를 만듭니다. 다른 명령은 `--root`를 주면 그 폴더를 쓰고, 아니면 현재 폴더와 그
-위쪽에서 `forest.toml`이 있는 가장 가까운 폴더를 씁니다. 아래는 forest를 만든 뒤 그 폴더로 들어가서,
-이어지는 줄이 그 파일을 찾게 합니다.
+자세한 내용은 [Agents](docs/multi-agent.md)에 있습니다.
+
+## 명령 한눈에 보기
+
+명령은 `--root`를 주면 그 폴더를 쓰고, 아니면 현재 폴더와 그 위쪽에서 `forest.toml`이 있는 가장 가까운
+폴더를 씁니다. forest를 만드는 명령은 `forest init`과 `forest setup`이고, `forest guide`는 forest가
+없어도 됩니다. 아래는 forest를 만든 뒤 그 폴더로 들어가서, 이어지는 줄이 그 파일을 찾게 합니다.
 
 ```sh
 # Milestone 1: 뼈대와 구조 도구
@@ -154,84 +244,51 @@ forest repeats check                           # 한 subject의 두 leaf가 함�
 forest record kinds                            # update record의 줄을 종류별로
 forest numbers check --all                     # 가리지 않고 다 적힌 계좌·카드·신분증·전화번호
 
-# Milestone 2: intake, index, 검색, timeline, MCP server는 이 저장소에 있음. setup은 아직 없음
-forest intake --from jsonl --once              # lane 모양의 새 기록만 그 agent의 raw lane으로
+# Milestone 2: 연결하고 찾기
+forest intake --from jsonl --as kiln-bot --transcript transcripts/kiln-bot.jsonl --once
+                                               # exporter가 덧붙인 기록을 그 agent의 raw lane으로
 forest intake status                           # 어댑터가 알아보지 못한 줄의 수
-forest index build                             # .forest/index.sqlite, 지우고 다시 만들 수 있음
-forest search "the old oven" --as till-bot     # 별칭을 먼저, 그다음 단어, 읽는 쪽의 범위 안에서
-forest timeline query "yesterday evening" --as till-bot
-forest mcp --as till-bot                       # search, read, timeline, navigate, memory_log
-forest mcp --as-group studio-counter           # 에이전트 여럿이 연결 하나. 호출마다 자기 이름을 냄
 forest log --as kiln-bot                       # 턴은 stdin으로
+forest index build                             # .forest/index.sqlite, 지우고 다시 만들 수 있음
+forest search "cone 5" --as kiln-bot           # 별칭을 먼저, 그다음 단어, 읽는 쪽의 범위 안에서
+forest timeline query "yesterday evening" --as kiln-bot
+forest navigate --as kiln-bot                  # root index에서 한 단계 아래로
+forest mcp --as kiln-bot                       # search, read, timeline, navigate, memory_log
 forest agents                                  # 그룹, lane, 연결에서 마지막으로 보인 때
-forest setup                                   # 만드는 중: 에이전트가 실행
-forest doctor                                  # 만드는 중: 턴이 들어오고 MCP server가 답하는지 확인
+forest guide                                   # setup guide. 나머지 둘은 `routine`과 `use`
+forest setup                                   # agent가 실행: 주인에게 물을 질문, 그다음 todo
+forest doctor --as kiln-bot                    # 턴이 들어오고 MCP server가 호출됐는지 증명
 
-# Milestone 3: 자라기. daily, 정리, 관리 단계는 주인의 에이전트가 직접 합니다
-# (contract 10장). 그 단계를 돌리는 엔진은 첫 배포에 들어가지 않습니다.
+# Milestone 3: 자라기. daily 기록, 정리 실행, 관리 실행은 주인의 agent가 `forest guide routine`을
+# 따라 직접 하고, 위 명령들이 그 결과를 판정합니다.
 ```
 
 코드가 돌기 전에 forest가 어떻게 생겼는지 보고 싶다면 가상의 [synthetic forest](examples/synthetic-forest/README.md)를
 읽어 보세요. 주인 한 명, 공유 tree 셋, orchestrator와 bot 둘, 이틀치 daily 페이지와 raw lane까지 작은 파일
 마흔 개 남짓으로 되어 있습니다.
 
-## agent를 다섯 줄로
-
-1. agent(orchestrator, bot, 예약 실행 단계)는 첫날부터 tree인 subject입니다. 설정 항목이나 raw lane의 첫
-   파일만 있으면 되고, tree는 `forest levels apply`가 만듭니다. `forest log`와 `memory_log`는 바로
-   tree를 만들거나 다른 writer가 lock을 잡고 있으면 `pending`으로 답합니다. lock이 풀린 뒤 다음
-   write가 tree를 만듭니다. forest 전체에서 정확한 저장 id, 이름 key 순서로 agent를 찾고 나서
-   group 멤버인지 확인합니다. 이미 허용한 이름은 페이지 문법에 맞게 인코딩하며 다시 거절하지 않습니다.
-2. agent의 tree 페이지에는 역할, 고정 지시, 교훈, 현재 상태, branch가 있습니다.
-3. 기본값인 `subject-first`는 사실을 그 subject의 집에 두고 `noted by <agent>`라고 표시합니다.
-   `agent-first`는 agent의 tree에 두고 `about:`으로 가리키다가, 두 agent가 같은 사실을 알게 되면 공유합니다.
-4. orchestrator는 forest 전체를 읽고, 다른 agent는 공유 tree와 자기 tree를 읽습니다.
-5. agent마다 자기 raw lane에 덧붙이기만 하고, forest에는 lock을 잡은 정리 실행 하나만 씁니다.
-
-자세한 내용은 [Agents](docs/multi-agent.md)에 있습니다.
-
-## 문서
-
-| 문서 | 내용 |
-| --- | --- |
-| [Concepts](docs/concepts.md) | 처음 읽는 사람을 위한 설명: 계층, subject의 일생, 사실의 집, 위로 올라가는 것, 기록, 이동, lint |
-| [Contract](docs/contract.md) | forest가 지켜야 할 모든 규칙을 한 번씩 |
-| [Agents](docs/multi-agent.md) | agent tree, 두 가지 정리 방식, 읽기 범위, writer 하나 원칙 |
-| [Design](docs/v1-design.md) | 패키지: 디스크 구조, 설정, package map, milestone |
-| [Tools](docs/tools.md) | `forest move`, `levels`, `collections`, `check`, `lint`, `record`, `numbers`, `intake`, `index`, `search`, `timeline`, `mcp` |
-| [Comparison](docs/comparison.md) | Mem0, GBrain, LLM Wiki 아이디어, 일반 vector RAG와 무엇이 다른지 |
-| [Privacy and trust](docs/privacy-and-trust.md) | 무엇이 로컬에 남는지, 읽는 쪽이 무엇을 볼 수 있는지, 신뢰할 수 없는 데이터로서의 메모리 |
-| [Roadmap](docs/roadmap.md) | 세 milestone과 그 다음 |
-| [WSL2](docs/wsl2.md) | Windows에서 WSL2로 쓰는 법 |
-| [0.3 archive](docs/archive-0.3/) | 버전 1이 대체한 0.3 문서 |
-
-문서는 영어로 쓰여 있습니다.
-
 ## 현재 상태
 
-Agent Memory Forest는 beta 단계이며, 이 트리의 버전은 1.0.0b1입니다.
+Agent Memory Forest는 beta 단계입니다. 이 트리의 버전은 1.0.0b1이고, 버전 1의 첫 공개 배포입니다.
 
 - **작성 완료:** contract, 설계, concepts와 agents 안내서, contract를 따르는 가상의 synthetic forest.
-- **Milestone 1, 뼈대 (이 저장소에 있음, 미배포):** `forest` 구조 명령(registry, move, levels, collections,
-  history 파일을 쓰는 record, archive, `check`, `lint`, 번호 가리기, `recover`), lane이나 설정에서 만들어지는
-  agent tree, 모든 commit의 되돌리기 journal. 가상 forest로 하는 테스트가 있고, synthetic forest는 모든
-  검사를 통과합니다.
-- **Milestone 2, 연결하고 찾기 (intake, index, 검색, MCP server는 이 저장소에 있음):** `forest intake`가
-  lane 모양의 기록(`jsonl` 어댑터, 또는 entry point group `memory_forest.adapters`로 꽂아 넣은 어댑터)을
-  그 agent의 raw lane으로 받습니다. `forest index`가 `.forest/index.sqlite`를 만들고,
-  `forest search`, `forest read`, `forest timeline`이 그 index에서 `agents.readable_trees` 범위로 답합니다.
-  `forest mcp`는 search, read, timeline, navigate, `memory_log`를 제공합니다. `--as-group`은 에이전트
-  여럿이 연결 하나를 쓸 때입니다. 에이전트는 그 이름이고(어느 문자로 쓴 이름이든), 그룹은 서로를 막는 벽이
-  아닙니다. 호출 하나가 턴 하나이고, `forest log`는 그 쓰기의 명령입니다. 주인의 agent가 직접 하는
-  설치(`forest setup`, `forest doctor`, 안내)는 만드는 중입니다
-  ([design 15장](docs/v1-design.md#15-connecting-agents)).
-- **Milestone 3, 자라기:** daily 기록, 정리 실행, 야간 관리는 주인의 에이전트가 contract(10장)와 안내를
-  따라 직접 합니다.
-- **첫 배포에 들어가지 않는 것:** 특정 에이전트 프로그램의 대화 기록을 읽는 reader(프로그램을 아는 사람이
-  어댑터로 만듭니다), daily·정리·관리 단계를 돌리는 엔진.
+- **Milestone 1, 뼈대:** `forest` 구조 명령(registry, move, levels, collections, history 파일을 쓰는
+  record, archive, `check`, `lint`, 번호 가리기, `recover`), lane이나 설정에서 만들어지는 agent tree, 모든
+  commit의 되돌리기 journal. 가상 forest로 하는 테스트가 있고, synthetic forest는 모든 검사를 통과합니다.
+- **Milestone 2, 연결하고 찾기:** `forest intake`가 lane 모양의 기록(`jsonl` 어댑터, 또는 entry point
+  group `memory_forest.adapters`로 꽂아 넣은 어댑터)을 그 agent의 raw lane으로 받고, `forest log`와
+  `memory_log`는 agent가 자기 턴을 씁니다. `forest index`가 검색 index를 만듭니다(`forest index reset`이 새
+  파일을 가리키기 전까지는 `.forest/index.sqlite`). `forest search`, `forest read`, `forest timeline`,
+  `forest navigate`가 그 index에서 `agents.readable_trees` 범위로 답하고, `forest mcp`는 search, read,
+  timeline, navigate, `memory_log`를 제공합니다. 주인의 agent는 `forest guide`, `forest setup`,
+  `forest doctor`로 스스로 연결합니다([design 15장](docs/v1-design.md#15-connecting-agents)).
+- **Milestone 3, 자라기:** daily 기록, 정리 실행, 야간 관리는 주인의 agent가 contract(10장)와
+  `forest guide routine`을 따라 직접 합니다.
+- **이번 배포에 들어가지 않는 것:** 특정 agent 프로그램의 대화 기록을 읽는 reader(프로그램을 아는 사람이
+  만듭니다, [adapters](docs/adapters.md)), daily·정리·관리 단계를 돌리는 엔진.
 
-0.3 코드(`memory-forest`)는 버전 1 명령이 대신할 때까지 저장소에 남아 있습니다. 평가하고 응용해 보기에는
-알맞지만, 사람이 지켜보지 않는 중요한 결정에 쓸 수준은 아닙니다.
+0.3 코드(`memory-forest`)는 버전 1 옆에 그대로 남아 있습니다. 평가하고 응용해 보기에는 알맞지만, 사람이
+지켜보지 않는 중요한 결정에 쓸 수준은 아닙니다.
 
 ## 기여
 
