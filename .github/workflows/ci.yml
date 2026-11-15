@@ -33,6 +33,7 @@ jobs:
         shell: bash
         run: |
           smoke_root="${RUNNER_TEMP}/memory-forest-wheel-smoke"
+          python -c 'import sys, zipfile; names = set(zipfile.ZipFile(sys.argv[1]).namelist()); missing = [part for part in ("setup", "routine", "use") if f"memory_forest/guide/{part}.md" not in names]; assert not missing, f"the wheel lacks the guide files {missing}"' dist/*.whl
           python -m venv "$smoke_root/venv"
           "$smoke_root/venv/bin/python" -m pip install --no-index --no-deps dist/*.whl
           "$smoke_root/venv/bin/python" -c 'import memory_forest; from importlib.metadata import version; assert memory_forest.__version__ == "1.0.0b1" == version("agent-memory-forest")'
