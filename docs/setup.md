@@ -6,8 +6,9 @@ settings. An agent knows where its own conversation is kept and how its own tool
 a hook. It does those things itself, and `forest doctor` proves the result.
 
 The agent's instructions travel with the package: `forest guide` prints the setup guide, `forest guide
-routine` how the forest grows when that agent keeps it, and `forest guide use` when and how to look things
-up. Nothing in them sends an agent to an address on the web.
+routine` how the forest grows when that agent keeps it, `forest guide use` when and how to look things
+up, and `forest guide contract` the forest's rules, which the routine points to. Nothing in the three
+guides sends an agent to an address on the web.
 
 ## What setup asks
 
@@ -29,7 +30,10 @@ by itself:
 
 The time zone of a new forest is shown as a proposal from the system and changed with `--timezone`; it is
 never asked. A forest has one keeper: a second agent that answers `--keeper this` is asked again, with the
-present keeper named.
+present keeper named. The keeper reads every agent's turns to write the daily record, and only the main
+agent's scope holds them, so `--keeper this` with `--main no` is asked again too, and nothing is written.
+An agent is found by the name in its settings or by the name its tree carries now: after
+`forest move rename`, either name is the same agent.
 
 What `done` writes stays inside the forest's folder: the forest when it is new; the agent's
 `[agents.known.<id>]` table with its name, and its id added to `agents.orchestrators` for the main agent
@@ -41,7 +45,8 @@ were given. `--dry-run` prints the same list and writes nothing. A second run wi
 changes nothing; a changed answer says what changed.
 
 `todo` is what the agent then does in its own tool, in order, with paths as the caller gave them:
-`register_mcp` (the `forest mcp` command line), `bring_turns` (the record's shape, the file the agent
+`register_mcp` (the `forest mcp` command line), `no_recording` for `--conversations none` (turn off any
+exporter or hook of its own and empty its record file), `bring_turns` (the record's shape, the file the agent
 appends to, the intake command, and when the exporter empties the file), `own_turn` (`memory_log` or `forest log`, when no exporter brings the turns in), both left out for
 `--conversations none`, `routine` for the keeper
 (`forest guide routine`, when, which model for which pass, and that the keeper schedules it itself), and
@@ -59,6 +64,13 @@ time. A forest whose settings set `path` under
 `[intake.tools.jsonl]` is refused with `setup_jsonl_path_set` (`report`): a sweep of that folder would give
 every file in it to one agent.
 
+The owner's answer about conversations is held by the forest, not only by the agent. For an agent whose
+answer is `none`, `forest intake`, `forest log` and `memory_log` refuse with `recording_off` (`report`)
+before they read or write anything, so an exporter or a hook set up under an earlier answer brings
+nothing in from the moment the owner says none. What is already in the lane stays; removing it is the
+owner's decision. Which conversations count as asked for, with `asked`, only the agent can know: the
+forest takes what the agent brings.
+
 ## What doctor proves
 
 `forest doctor --as NAME` prints `result` (`passed`, `todo` or `problem`) and `checks`, each with its
@@ -70,9 +82,9 @@ but its own phrase file.
 | --- | --- |
 | `forest` | the forest opens, no unfinished commit's journal stands, and the structure checks find nothing |
 | `setup` | the agent has a setup record |
-| `agent` | the name is an agent of the forest; its lane and its tree are shown (a pending tree is `ok`) |
+| `agent` | the name is an agent of the forest, by the name in its settings or the one its tree carries; its lane and its tree are shown (a pending tree is `ok`) |
 | `turns` | a phrase the doctor made came into the agent's lane its real way (skipped for `--conversations none`) |
-| `finding` | the index exists and is current, a search as the agent answers, and the agent was seen on a connection: a call of an MCP tool from its own tool, which `.forest/mcp/seen.json` records (a search run as a command does not count) |
+| `finding` | the index exists and is current, a search as the agent answers, and the agent was seen on a connection: a call of an MCP tool from its own tool, which `.forest/mcp/seen.json` records (a search run as a command does not count). A tool without MCP runs `forest doctor --doors commands`: the commands are its doors, and the search the doctor runs as the agent is the proof |
 | `routine` | for the keeper: every day of turns before today has its daily page; the lint's counts are shown |
 
 The proof of the turns is a turn that came the agent's real way. `forest doctor --as NAME --phrase` writes

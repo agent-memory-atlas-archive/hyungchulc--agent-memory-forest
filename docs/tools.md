@@ -889,8 +889,8 @@ Those processes are additional to the clean, closed-index counts above.
 ## `forest guide`
 
 `forest guide [part]` prints a guide an agent follows. The guides ship inside the package, so the text
-matches the installed version, and nothing in them sends an agent to an address on the web. The command
-needs no forest and reads none. There are three parts:
+matches the installed version, and nothing in the three guides sends an agent to an address on the web.
+The command needs no forest and reads none. There are four parts:
 
 - `setup` (the default): read by every agent its owner asks to connect itself. Install, run
   `forest setup` and ask the owner its questions, register the finding server, bring its conversation in,
@@ -900,8 +900,11 @@ needs no forest and reads none. There are three parts:
   how the agent schedules them itself.
 - `use`: read by every connected agent from then on. When to look, which tool answers which question, and
   memory as grounding data.
+- `contract`: the forest's rules, the same text as [the contract](contract.md). The routine points to it
+  (where a subject lives, what a leaf holds, what goes up to the boards, who does what), and an installed
+  package prints it without the repository.
 
-`--json` prints `{"part": …, "text": …}`. A part that is not one of the three is refused with
+`--json` prints `{"part": …, "text": …}`. A part that is not one of the four is refused with
 `arguments_invalid` (`fix`), exit 2. The examples of these three sections, like the guides, use the
 invented studio of the [synthetic forest](../examples/synthetic-forest/README.md).
 
@@ -909,6 +912,7 @@ invented studio of the [synthetic forest](../examples/synthetic-forest/README.md
 forest guide                                   # the setup guide
 forest guide routine
 forest guide use --json
+forest guide contract                          # the forest's rules
 ```
 
 ## `forest setup`
@@ -933,7 +937,7 @@ Every answer is a flag, and setup never fills one in by itself:
 | `--main yes\|no` | whether this agent is the owner's main agent, which reads the whole forest |
 | `--conversations all\|asked\|none` | which of this agent's conversations are brought in: all from now on, those the owner asks for, or none |
 | `--earlier yes\|no` | whether conversations from before today come in too; not asked for `none` |
-| `--keeper this\|other\|nobody` | who keeps the forest growing: this agent, another agent, or nobody yet |
+| `--keeper this\|other\|nobody` | who keeps the forest growing: this agent, another agent, or nobody yet; the keeper reads every agent's turns, so it is the main agent |
 | `--when TEXT` | when the keeper runs the routine, free text; asked for `--keeper this` |
 | `--daily-model TEXT` | which of the owner's models the daily record may use; asked for `--keeper this` |
 | `--filing-model TEXT` | which of the owner's models filing and upkeep may use; asked for `--keeper this` |
@@ -942,6 +946,10 @@ Every answer is a flag, and setup never fills one in by itself:
 with this flag; a name the system does not know is refused (`arguments_invalid`). A choice outside its list
 is refused the same way. A forest has one keeper: an agent that answers `--keeper this` where another agent
 already keeps the forest gets `ask_owner` again, naming the keeper, with the choices `other` and `nobody`.
+The keeper reads every agent's turns to write the daily record, and only the main agent's scope holds
+them: `--keeper this` with `--main no` gets `ask_owner` with the one question `main`, and nothing is
+written. An agent is found by the name in its settings or by the name its tree carries now, so an agent
+renamed with `forest move rename` is the same agent under either name, never a second one.
 A name that is the name of more than one agent of the forest is `agent_ambiguous` (`fix`), and a forest
 whose settings set `path` under `[intake.tools.jsonl]` is `setup_jsonl_path_set` (`report`).
 
@@ -965,27 +973,37 @@ for a forest that does not exist yet.
 `text`, paths as the caller gave them:
 
 1. `register_mcp`: the `forest mcp --as <id> --root <forest>` line to register as an MCP server in the
-   agent's own tool; a tool without MCP uses the same doors as commands.
-2. `bring_turns` (not for `--conversations none`): the record's `fields` and an `example` line, the `file`
+   agent's own tool; a tool without MCP uses the same doors as commands and runs the doctor with
+   `--doors commands`.
+2. `no_recording` (for `--conversations none` only; its `command` is empty): the agent turns off any
+   exporter, hook or schedule of its own that brings its turns in, and empties its record file if it made
+   one. What is already in its lane stays; removing it is the owner's decision.
+3. `bring_turns` (not for `--conversations none`): the record's `fields` and an `example` line, the `file`
    the agent's exporter appends to, the intake command that reads it,
    `forest intake --from jsonl --as <id> --transcript <forest>/transcripts/<id>.jsonl --once --root <forest> --json`,
    and `empty_when`: the exporter empties the file when the answer's entry for it under `files` says
    `read_to_end: true` ([the hand-over](#the-record-file-is-a-hand-over)).
-3. `own_turn` (not for `--conversations none`): `memory_log`, or `forest log` with the turn on stdin;
+4. `own_turn` (not for `--conversations none`): `memory_log`, or `forest log` with the turn on stdin;
    nothing to do when the exporter brings the agent's turns in.
-4. `routine` (for `--keeper this` only): `forest guide routine`, with `when` and the `models` for the daily,
+5. `routine` (for `--keeper this` only): `forest guide routine`, with `when` and the `models` for the daily,
    filing and upkeep passes; the agent schedules the routine itself.
-5. `verify`: the `forest doctor` command.
+6. `verify`: the `forest doctor` command.
+
+The forest holds the owner's answer about conversations itself. For an agent whose answer is `none`,
+`forest intake`, `forest log` and `memory_log` refuse with `recording_off` (`report`) before they read or
+write anything, so an exporter or a hook set up under an earlier answer brings nothing in from the moment
+the owner says none. An agent that never went through setup has no recorded answer and is not refused.
 
 ```sh
 forest setup --json                            # next: ask_owner, every question, exit 1
-forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
+forest setup --root studio-forest --as "Kiln Bot" --main yes --conversations all --earlier no \
   --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" \
   --timezone America/Sao_Paulo --dry-run
 # next: done
 # agent: Kiln Bot (id kiln-bot)
 # would write: a new forest in studio-forest (time zone America/Sao_Paulo)
 # would write: forest.toml: [agents.known.kiln-bot] name = "Kiln Bot"
+# would write: forest.toml: kiln-bot added to agents.orchestrators (the main agent)
 # would write: transcripts/kiln-bot.jsonl: this agent's record file, empty
 # would write: 02 ltm/kiln-bot_LTM.md: this agent's own tree
 # would write: .forest/setup/kiln-bot.json: the owner's answers
@@ -994,26 +1012,29 @@ forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all 
 # …
 # todo 5. verify: …
 #   command: forest doctor --as kiln-bot --root studio-forest --json
-forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
+forest setup --root studio-forest --as "Kiln Bot" --main yes --conversations all --earlier no \
   --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" \
   --timezone America/Sao_Paulo                 # the same, written: wrote: … instead of would write: …
-forest setup --root studio-forest --as "Studio Hub" --main yes --conversations none --keeper other
+forest setup --root studio-forest --as "Ledger Bot" --main no --conversations none --keeper other
 # next: done
-# agent: Studio Hub (id studio-hub)
-# wrote: forest.toml: [agents.known.studio-hub] name = "Studio Hub"
-# wrote: forest.toml: studio-hub added to agents.orchestrators (the main agent)
-# wrote: 02 ltm/studio-hub_LTM.md: this agent's own tree
-# wrote: .forest/setup/studio-hub.json: the owner's answers
+# agent: Ledger Bot (id ledger-bot)
+# wrote: forest.toml: [agents.known.ledger-bot] name = "Ledger Bot"
+# wrote: 02 ltm/ledger-bot_LTM.md: this agent's own tree
+# wrote: .forest/setup/ledger-bot.json: the owner's answers
 # todo 1. register_mcp: …
-# todo 2. verify: …
+# todo 2. no_recording: The owner chose to bring none of this agent's conversations into the forest.
+# todo 3. verify: …
+forest log --as ledger-bot --root studio-forest < turn.txt
+# forest: recording_off: The owner chose to bring none of this agent's conversations into the forest, so no turn of it is written. …
+#   next: report
 ```
 
 [Connecting an agent](setup.md) tells the same from the owner's side.
 
 ## `forest doctor`
 
-`forest doctor --as NAME` proves by evidence that this agent's memory works from end to end. `--as` takes
-the agent's name or id. Each check says what it found, with times, in `evidence`, and its `state`: `ok`,
+`forest doctor --as NAME [--doors mcp|commands]` proves by evidence that this agent's memory works from
+end to end. `--as` takes the agent's name or id. Each check says what it found, with times, in `evidence`, and its `state`: `ok`,
 `todo`, `problem` or `skipped`. A check that is not `ok` names its next move and, where there is one, the
 command to run.
 
@@ -1021,9 +1042,9 @@ command to run.
 | --- | --- | --- |
 | `forest` | the forest opens, no unfinished commit's journal stands, and the journal and structure checks find nothing | `problem`, with `forest recover` or `forest check` |
 | `setup` | the agent has a setup record; its answers are shown | `todo`, with the `forest setup` command |
-| `agent` | the name is an agent of the forest; its id, whether `forest.toml` declares it, its raw lane and its tree are shown, and a pending tree is `ok` | `todo`, with the `forest setup` command |
+| `agent` | the name is an agent of the forest, by the name in its settings or the name its tree carries now; its id, whether `forest.toml` declares it, its raw lane and its tree are shown, and a pending tree is `ok` | `todo`, with the `forest setup` command |
 | `turns` | a phrase the doctor made is in the agent's lane; the turn's time and source are shown | `todo` until a phrase exists and its turn came in; `skipped` for `--conversations none` |
-| `finding` | the search index exists and is current, a search as the agent answers, and the agent was seen on an MCP connection | `todo`, with `forest index build` or the `forest mcp` command; `problem` when a search is refused |
+| `finding` | the search index exists and is current, a search as the agent answers, and the agent was seen on an MCP connection (with `--doors commands`, for a tool without MCP, the search itself is the proof) | `todo`, with `forest index build` or the `forest mcp` command; `problem` when a search is refused |
 | `routine` | for the keeper: every day of turns before today has its daily page; the lint's counts are shown | `todo`, with `forest guide routine`, naming the days with no daily page; `skipped` for an agent that does not keep the forest |
 
 `result` is `passed` when no check is `todo` or `problem`, `problem` when one is a problem, and `todo`
@@ -1033,7 +1054,10 @@ missing forest, for example).
 `--phrase` writes and prints a new phrase of three words, `.forest/setup/<id>.phrase`, the only file the
 doctor writes. The agent says it in its conversation and brings that turn in its real way; the next doctor
 finds it in the lane. The `finding` check reads `.forest/mcp/seen.json`, which the MCP server keeps: a
-search run as a command does not count, a call of `memory_search` from the agent's own tool does.
+search run as a command does not count, a call of `memory_search` from the agent's own tool does. A tool
+that has no MCP says so with `--doors commands`: the commands are its doors, a command leaves no record
+of having been seen, and the check is then the search the doctor itself runs as the agent. Every command
+a check prints names the agent by its id and keeps the doors the caller named.
 
 ```sh
 forest doctor --as "Kiln Bot" --root studio-forest --phrase
@@ -1041,15 +1065,19 @@ forest doctor --as "Kiln Bot" --root studio-forest --phrase
 # phrase: forest doctor phrase meadow willow marble  (say it in your conversation, bring that turn in, run doctor)
 # …
 # turns: todo: no turn in the lane since the phrase was made; the phrase "forest doctor phrase meadow willow marble" …
-#   next: run  command: forest doctor --as 'Kiln Bot' --root studio-forest
+#   next: run  command: forest doctor --as kiln-bot --root studio-forest
 # (the phrase said and brought in with the intake command, the index built, memory_search called once)
 forest doctor --as "Kiln Bot" --root studio-forest
 # result: passed
 # forest: ok: the forest opens; time zone America/Sao_Paulo; no journal; structure sound
-# setup: ok: answered at 2042-05-14T21:20:49.465656+00:00: conversations all, daily_model small model, earlier no, filing_model large model, keeper this, main no, when every night at 23:30
+# setup: ok: answered at 2042-05-14T21:20:49.465656+00:00: conversations all, daily_model small model, earlier no, filing_model large model, keeper this, main yes, when every night at 23:30
 # agent: ok: id kiln-bot; declared in forest.toml: yes; raw lane: yes; tree: made
 # turns: ok: newest turn at 2042-05-14T21:20:50+00:00 through adapter:jsonl; the phrase "forest doctor phrase meadow willow marble" came in at 2042-05-14T21:20:50+00:00 through adapter:jsonl
 # finding: ok: index built 2042-05-14T21:20:50Z; a search as kiln-bot answers (trees: kiln-bot); last seen on a connection at 2042-05-14T21:20:51Z (memory_search, stdio)
 # routine: ok: newest day of turns 2042-05-14, newest daily page none; every day before today has its daily page; lint: 0 violations, 0 upkeep, 0 due
 forest doctor --as "Kiln Bot" --root studio-forest --json
+forest doctor --as ledger-bot --root studio-forest --doors commands   # a tool without MCP
+# result: passed
+# …
+# finding: ok: index built 2042-05-14T21:20:50Z; a search as ledger-bot answers (trees: ledger-bot); this agent's tool has no MCP and uses the commands, which is how this search ran
 ```

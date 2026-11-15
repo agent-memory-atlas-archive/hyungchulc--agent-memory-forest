@@ -334,9 +334,9 @@ def _emit(result: dict[str, Any], *, compact: bool) -> None:
 # FOREST_COMMANDS: its words, the function, its help and its arguments. Every
 # command except `init` takes `--root` and `--json`. The forest root is `--root`
 # when it is given, otherwise the nearest folder at or above the working
-# directory that holds forest.toml. `init` is the only command that creates a
-# forest. Any other command, when there is no such folder, stops before it
-# writes anything.
+# directory that holds forest.toml. `init` creates a forest, and so does `setup`
+# when its `--root` is a new or empty folder. Any other command, when there is
+# no such folder, stops before it writes anything.
 
 _ROOT_HELP = (
     "the forest root; when omitted, the nearest folder at or above the current one that holds forest.toml"
@@ -372,8 +372,8 @@ def _no_forest(root: str | None) -> MemoryForestError:
 def forest_root(arguments: argparse.Namespace) -> Path:
     """``--root`` when given, else the nearest folder at or above the working directory with forest.toml.
 
-    A folder without that file is not a forest. ``init`` is the only command that creates one, and it does
-    not call this.
+    A folder without that file is not a forest. ``init`` creates one, and ``setup`` does for a new or empty
+    ``--root``; neither calls this.
     """
     chosen = getattr(arguments, "root", None)
     if chosen:

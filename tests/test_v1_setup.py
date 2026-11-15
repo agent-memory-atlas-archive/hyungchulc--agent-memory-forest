@@ -560,7 +560,7 @@ class GuideTests(unittest.TestCase):
         parser = cli.build_forest_parser()
         flags = option_strings(parser)
         counted = 0
-        for part in cli_setup.GUIDE_PARTS:
+        for part in cli_setup.WALK_PARTS:
             text = cli_setup.guide_text(part)
             self.assertNotRegex(text, r"https?://", f"{part}: the guide sends no reader to the web")
             for block in re.findall(r"```sh\n(.*?)```", text, re.DOTALL):

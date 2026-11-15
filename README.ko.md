@@ -58,7 +58,7 @@ agent에게 한 문장만 말하면 됩니다.
   `forest intake --from jsonl`: [tools](docs/tools.md#forest-intake).
 - **agent마다 tree 하나.** 모두에게 필요한 것은 공유 tree에, agent 자신의 것은 그 agent의 tree에 두고,
   읽기 범위로 나눕니다: [agents](docs/multi-agent.md).
-- **guide, setup, doctor.** `forest guide`(setup, routine, use), `forest setup`, `forest doctor`:
+- **guide, setup, doctor.** `forest guide`(setup, routine, use, contract), `forest setup`, `forest doctor`:
   [agent 연결하기](docs/setup.md), [tools](docs/tools.md#forest-guide).
 
 ## 하지 않는 것
@@ -80,7 +80,7 @@ forest를 쓰고 `todo`를 출력합니다.
 
 ```sh
 forest setup                                   # next: ask_owner, 질문마다 그 flag와 함께
-forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
+forest setup --root studio-forest --as "Kiln Bot" --main yes --conversations all --earlier no \
   --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model"
 # next: done
 # todo 1. register_mcp  2. bring_turns  3. own_turn  4. routine  5. verify, 각각 명령과 함께
@@ -100,6 +100,12 @@ forest doctor --as "Kiln Bot" --root studio-forest              # result: passed
 
 phrase는 매번 새로 만들어지니, 내 doctor가 출력한 것을 들여오세요. `finding` 검사는 MCP client가 server를
 한 번 호출해야 통과합니다. 그 전까지 doctor는 `todo`라고 답하고 등록할 `forest mcp` 명령을 보여 줍니다.
+MCP client가 없으면 명령이 곧 입구입니다. doctor 줄에 `--doors commands`를 붙이면 doctor가 직접 실행한
+검색이 증거가 됩니다.
+
+주인의 답은 forest가 지킵니다. forest를 키우는 agent는 모든 agent의 턴을 읽어야 하므로 main agent여야
+합니다(`--keeper this`에 `--main no`를 주면 다시 묻습니다). 그리고 어떤 agent에 `--conversations none`이라고
+답하면, exporter나 hook이 아직 돌고 있어도 forest가 그 agent의 턴을 거절합니다(`recording_off`).
 
 ## 문서
 
@@ -115,13 +121,14 @@ phrase는 매번 새로 만들어지니, 내 doctor가 출력한 것을 들여�
 | `forest guide` | setup guide: agent가 스스로 연결할 때 따르는 단계 |
 | `forest guide routine` | routine guide: forest를 키우는 agent를 위한 daily 기록, 정리 실행, 관리 실행 |
 | `forest guide use` | use guide: agent가 언제, 어떻게 찾아보는지 |
+| `forest guide contract` | 설치된 패키지가 출력하는 contract |
 | [Comparison](docs/comparison.md) | Mem0, GBrain, LLM Wiki 아이디어, 일반 vector RAG와 무엇이 다른지 |
 | [Privacy and trust](docs/privacy-and-trust.md) | 무엇이 로컬에 남는지, 읽는 쪽이 무엇을 볼 수 있는지, 신뢰할 수 없는 데이터로서의 메모리 |
 | [Roadmap](docs/roadmap.md) | 세 milestone과 나중에 올 수도 있는 것 |
 | [WSL2](docs/wsl2.md) | Windows에서 WSL2로 쓰는 법 |
 | [0.3 archive](docs/archive-0.3/) | 버전 1이 대체한 0.3 문서 |
 
-guide 셋은 패키지 안(`src/memory_forest/guide/`)에 들어 있고 위 명령이 출력합니다. 그래서 agent는 자기가
+guide 셋과 contract는 패키지 안(`src/memory_forest/guide/`)에 들어 있고 위 명령이 출력합니다. 그래서 agent는 자기가
 설치한 버전에 맞는 guide를 읽습니다. 문서는 영어로 쓰여 있습니다.
 
 ## 왜 만들었나
@@ -247,6 +254,8 @@ forest record kinds                            # update record의 줄을 종류�
 forest numbers check --all                     # 가리지 않고 다 적힌 계좌·카드·신분증·전화번호
 
 # Milestone 2: 연결하고 찾기
+forest setup --root . --as "Kiln Bot" --main yes --conversations all --earlier no --keeper nobody
+                                               # 주인의 답: agent, 그 tree, 그 기록 파일
 forest intake --from jsonl --as kiln-bot --transcript transcripts/kiln-bot.jsonl --once
                                                # exporter가 덧붙인 기록을 그 agent의 raw lane으로
 forest intake status                           # 어댑터가 알아보지 못한 줄의 수
@@ -257,9 +266,9 @@ forest timeline query "yesterday evening" --as kiln-bot
 forest navigate --as kiln-bot                  # root index에서 한 단계 아래로
 forest mcp --as kiln-bot                       # search, read, timeline, navigate, memory_log
 forest agents                                  # 그룹, lane, 연결에서 마지막으로 보인 때
-forest guide                                   # setup guide. 나머지 둘은 `routine`과 `use`
-forest setup                                   # agent가 실행: 주인에게 물을 질문, 그다음 todo
-forest doctor --as kiln-bot                    # 턴이 들어오고 MCP server가 호출됐는지 증명
+forest guide                                   # setup guide. 나머지는 `routine`, `use`, `contract`
+forest setup                                   # 답 없이: agent가 주인에게 물을 질문 (exit 1)
+forest doctor --as kiln-bot                    # 턴이 들어오고 MCP server가 호출됐는지 증명 (둘 다 되기 전에는 exit 1)
 
 # Milestone 3: 자라기. daily 기록, 정리 실행, 관리 실행은 주인의 agent가 `forest guide routine`을
 # 따라 직접 하고, 위 명령들이 그 결과를 판정합니다.

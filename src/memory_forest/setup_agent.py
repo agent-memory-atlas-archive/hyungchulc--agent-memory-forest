@@ -210,10 +210,11 @@ def run(
                                               "forest has one keeper. Does another agent keep it, or nobody yet? "
                                               f"To make this agent the keeper, first run setup for {keeper} "
                                               "with --keeper other.", choices=("other", "nobody")).as_dict()],
-                        "proposals": _proposals(proposed)}
+                        "proposals": {} if not new else _proposals(proposed)}
         if keeper_not_main:
+            # Reached only in a forest that was there: a new one is asked before anything is made.
             return {"next": "ask_owner", "agent": {"id": agent_id, "name": display(stored)}, "written": False,
-                    "questions": keeper_not_main, "proposals": _proposals(proposed)}
+                    "questions": keeper_not_main, "proposals": {}}
         if recorded["conversations"] != "none" and config.intake.tool("jsonl").path:
             raise MemoryForestError(
                 "setup_jsonl_path_set",

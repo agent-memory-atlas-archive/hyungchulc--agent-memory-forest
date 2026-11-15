@@ -22,6 +22,21 @@ carried out by your own agent (contract, section 10), so what that agent reads f
 model it runs on and is processed under that provider's account, retention and regional rules; review those
 before connecting private sources.
 
+## What the owner's answers hold
+
+`forest setup` records what only the owner decides, and two of those answers are held by the forest
+itself, not left to the agent's care:
+
+- **Which conversations come in.** For an agent whose owner answered `--conversations none`,
+  `forest intake`, `forest log` and `memory_log` refuse with `recording_off` before they read or write
+  anything. An exporter or a hook that was set up under an earlier answer brings nothing in from the
+  moment the answer is `none`; the turns already in the lane stay until the owner removes them. With
+  `asked`, which conversations the owner asked for is something only the agent knows: the forest takes
+  what the agent brings.
+- **Who reads everything.** Only an agent the owner named as the main agent reads every agent's raw lane.
+  The agent that keeps the forest must read them, so setup asks again when the keeper is not the main
+  agent, and writes nothing.
+
 ## What a reader can see
 
 Every reader of a forest has an id, taken from its connection and never from the text of its question. An

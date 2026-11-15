@@ -1,8 +1,10 @@
-"""The guide ships: its three files exist and the package data in ``pyproject.toml`` covers them.
+"""The guide ships: its four files exist and the package data in ``pyproject.toml`` covers them.
 
 ``forest guide`` reads its parts from the installed package, so a wheel without them would print nothing
-an agent can follow. This reads the files and the settings only; it builds nothing. The wheel smoke step of
-the CI workflow checks the built wheel's file list for the same three files.
+an agent can follow. The fourth part is the contract the other three point to: the same bytes as
+``docs/contract.md``, so the rules an installed package prints are the rules the repository states. This
+reads the files and the settings only; it builds nothing. The wheel smoke step of the CI workflow checks
+the built wheel's file list for the same four files.
 """
 
 from __future__ import annotations
@@ -17,14 +19,19 @@ from memory_forest import cli_setup
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 PACKAGE = REPOSITORY / "src" / "memory_forest"
-PARTS = ("setup", "routine", "use")
+PARTS = ("setup", "routine", "use", "contract")
 
 
 class GuidePackageDataTests(unittest.TestCase):
     def setUp(self) -> None:
         self.settings = tomllib.loads((REPOSITORY / "pyproject.toml").read_text(encoding="utf-8"))
 
-    def test_the_guide_has_its_three_parts(self) -> None:
+    def test_the_contract_the_guide_prints_is_the_documents_contract(self) -> None:
+        shipped = (PACKAGE / "guide" / "contract.md").read_bytes()
+        stated = (REPOSITORY / "docs" / "contract.md").read_bytes()
+        self.assertEqual(shipped, stated, "copy docs/contract.md over src/memory_forest/guide/contract.md")
+
+    def test_the_guide_has_its_four_parts(self) -> None:
         self.assertEqual(tuple(cli_setup.GUIDE_PARTS), PARTS)
         self.assertEqual(Path(cli_setup.GUIDE_DIR).resolve(), (PACKAGE / "guide").resolve())
         for part in PARTS:

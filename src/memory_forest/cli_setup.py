@@ -18,7 +18,10 @@ from .cli import ForestCommand, _print_json, _print_lines, arg, forest_root
 from .errors import MemoryForestError
 
 GUIDE_DIR = Path(__file__).parent / "guide"
-GUIDE_PARTS = ("setup", "routine", "use")
+# The three parts an agent walks through, and the contract they point to: the forest's rules, the same text
+# as docs/contract.md (a test keeps the two files equal), so the keeper reads them without the repository.
+WALK_PARTS = ("setup", "routine", "use")
+GUIDE_PARTS = (*WALK_PARTS, "contract")
 
 
 def _as_agent_door(arguments: argparse.Namespace) -> None:
@@ -34,7 +37,7 @@ def cmd_guide(arguments: argparse.Namespace) -> int:
     _as_agent_door(arguments)
     part = arguments.part or "setup"
     if part not in GUIDE_PARTS:
-        raise MemoryForestError("arguments_invalid", "The guide's parts are setup, routine and use.",
+        raise MemoryForestError("arguments_invalid", "The guide's parts are setup, routine, use and contract.",
                                 details={"parts": list(GUIDE_PARTS)}, next_step="fix")
     text = guide_text(part)
     if arguments.json:
@@ -103,8 +106,9 @@ _ANSWER = "the owner's answer; setup never fills it in"
 COMMANDS: list[ForestCommand] = [
     ForestCommand(
         ("guide",), cmd_guide,
-        "Print the guide an agent follows: setup (the default), routine or use. It ships with the package.",
-        (arg("part", nargs="?", default=None, help="setup, routine or use"),), uses_root=False,
+        "Print the guide an agent follows: setup (the default), routine or use, or the contract they point "
+        "to. It ships with the package.",
+        (arg("part", nargs="?", default=None, help="setup, routine, use or contract"),), uses_root=False,
     ),
     ForestCommand(
         ("setup",), cmd_setup,

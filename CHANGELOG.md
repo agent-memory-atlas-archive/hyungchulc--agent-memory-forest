@@ -28,6 +28,15 @@ following the contract (section 10) and `forest guide routine`; the package runs
 - `python -m memory_forest.forest` is the `forest` command where its script is not on the path.
 - `forest setup` makes the joining agent's own tree when it answers `done`, so `forest check --sync` passes
   after a join; every command it prints takes the agent's id.
+- The owner's answer `--conversations none` is held by the write doors: `forest intake`, `forest log` and
+  `memory_log` refuse for that agent with `recording_off`, and setup's `todo` gains `no_recording`.
+- The keeper reads every agent's turns, so it is the main agent: `--keeper this` with `--main no` is asked
+  again and writes nothing.
+- An agent renamed with `forest move rename` is found by either name, by `forest setup` and by
+  `forest doctor`; no second agent is admitted under the new name.
+- `forest doctor --doors commands` for a tool without MCP: the search the doctor runs as the agent is the
+  proof of finding. The doctor's follow-up commands name the agent by its id.
+- `forest guide contract` prints the contract from the installed package.
 - The guide checks the install, has the exporter empty the record file once intake has read it, shows the
   keeper's first filing of a new name whole, and says what the masking recognises and what it does not.
 

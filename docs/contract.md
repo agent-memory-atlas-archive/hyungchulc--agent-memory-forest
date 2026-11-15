@@ -1130,8 +1130,8 @@ How the lint holds a run:
 
 ## 9. Tools
 
-The tools are the `forest …` commands of the design's package map (design, section 13). Subcommand names
-below may still change while the code is ported; the design's milestones say when each arrives.
+The tools are the `forest …` commands of the design's package map (design, section 13). Every command
+named below is in the package; `docs/tools.md` gives each one's flags and answers.
 
 - **`forest move`** moves a leaf; promotes a subject to a branch or a tree; merges two subjects; renames a
   branch or a subject; archives a page; moves a branch with its board, folder and registry lines to

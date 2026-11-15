@@ -59,7 +59,7 @@ server in its own tool, brings its own conversation in, and proves the result wi
   shape, read by `forest intake --from jsonl`: [tools](docs/tools.md#forest-intake).
 - **A tree per agent.** Shared trees for what everyone needs, a tree of its own for each agent, and reader
   scopes: [agents](docs/multi-agent.md).
-- **The guide, setup and doctor.** `forest guide` (setup, routine, use), `forest setup` and
+- **The guide, setup and doctor.** `forest guide` (setup, routine, use, contract), `forest setup` and
   `forest doctor`: [connecting an agent](docs/setup.md) and [tools](docs/tools.md#forest-guide).
 
 ## What it does not do
@@ -82,7 +82,7 @@ answer it writes the forest and prints its `todo`:
 
 ```sh
 forest setup                                   # next: ask_owner, and each question with its flag
-forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no \
+forest setup --root studio-forest --as "Kiln Bot" --main yes --conversations all --earlier no \
   --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model"
 # next: done
 # todo 1. register_mcp  2. bring_turns  3. own_turn  4. routine  5. verify, each with its command
@@ -102,7 +102,13 @@ forest doctor --as "Kiln Bot" --root studio-forest              # result: passed
 
 The phrase is new each time; bring in the one your doctor printed. The `finding` check passes once an MCP
 client has called the server once; until then the doctor says `todo` and prints the `forest mcp` command to
-register.
+register. With no MCP client the commands are the doors: add `--doors commands` to the doctor line, and
+the search the doctor runs is the proof.
+
+The answers hold. The agent that keeps the forest reads every agent's turns, so it is your main agent
+(`--keeper this` with `--main no` is asked again). And when you answer `--conversations none` for an
+agent, the forest itself refuses that agent's turns (`recording_off`), whatever exporter or hook still
+runs.
 
 ## Documentation
 
@@ -118,14 +124,15 @@ register.
 | `forest guide` | the setup guide: the steps an agent follows to connect itself |
 | `forest guide routine` | the routine guide: the daily record, the filing run and the upkeep run, for the agent that keeps the forest |
 | `forest guide use` | the use guide: when and how an agent looks things up |
+| `forest guide contract` | the contract, as the installed package prints it |
 | [Comparison](docs/comparison.md) | how this differs from Mem0, GBrain, the LLM Wiki idea and plain vector RAG |
 | [Privacy and trust](docs/privacy-and-trust.md) | what stays local, what a reader can see, memory as untrusted data |
 | [Roadmap](docs/roadmap.md) | the three milestones and what may come later |
 | [WSL2](docs/wsl2.md) | running on Windows through WSL2 |
 | [Archive of 0.3](docs/archive-0.3/) | the 0.3 documents that version 1 replaces |
 
-The three guides ship inside the package (`src/memory_forest/guide/`) and those commands print them, so an
-agent reads the copy that matches the version it has installed.
+The three guides and the contract ship inside the package (`src/memory_forest/guide/`) and those commands
+print them, so an agent reads the copy that matches the version it has installed.
 
 ## Why this exists
 
@@ -256,6 +263,8 @@ forest record kinds                            # the update records' lines by ki
 forest numbers check --all                     # account, card, identity and phone numbers in full
 
 # Milestone 2: connecting and finding
+forest setup --root . --as "Kiln Bot" --main yes --conversations all --earlier no --keeper nobody
+                                               # the owner's answers: the agent, its tree, its record file
 forest intake --from jsonl --as kiln-bot --transcript transcripts/kiln-bot.jsonl --once
                                                # records an exporter appended, into the agent's raw lane
 forest intake status                           # lines an adapter did not understand
@@ -266,9 +275,9 @@ forest timeline query "yesterday evening" --as kiln-bot
 forest navigate --as kiln-bot                  # one level down from the root index
 forest mcp --as kiln-bot                       # search, read, timeline, navigate, memory_log
 forest agents                                  # groups, lanes, and when each agent was last seen
-forest guide                                   # the setup guide; `routine` and `use` are the other parts
-forest setup                                   # run by your agent: the owner's questions, then its todo
-forest doctor --as kiln-bot                    # proves a turn arrives and the MCP server was called
+forest guide                                   # the setup guide; `routine`, `use` and `contract` are the other parts
+forest setup                                   # with no answers: the questions an agent asks its owner (exit 1)
+forest doctor --as kiln-bot                    # proves a turn arrives and the MCP server was called (exit 1 until both)
 
 # Milestone 3: growing. Your own agent carries out the daily record, the filing run and the upkeep run,
 # following `forest guide routine`; the commands above judge what it wrote.
