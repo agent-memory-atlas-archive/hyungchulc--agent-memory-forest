@@ -172,8 +172,11 @@ tool in milestone 1.
 
 ## Intake
 
-The raw lane is not edited by the agent. `forest intake` is the only writer. Each tool has an adapter,
-which knows where that tool keeps transcripts and how a turn is shaped. A hook runs
+The raw lane is not edited by the agent. `forest intake` is the only writer. It reads through an adapter,
+which knows where a tool keeps transcripts and how a turn is shaped. The package ships the generic one,
+`jsonl`, for records already in the lane's shape; a reader of a particular program is written by whoever
+knows that program and plugged in through the entry point group `memory_forest.adapters`. An agent can
+also write its own turn with `forest log` or `memory_log`. A hook runs
 `forest intake --from <tool> --hook` and reads only the transcript it was called for. A missed hook on
 that same transcript is caught by the next hook of it. Any other transcript is caught by a sweep,
 `forest intake --from <tool>`. The first sweep of a tool turns intake on for it; a hook never does.
@@ -184,21 +187,8 @@ different transcripts of one tool. A transcript whose cursor names another agent
 is not read, and `forest intake rename-agent OLD NEW` moves that agent's lane and ids and the name in its
 cursors when the configured name was changed.
 
-A hook exits 0 and prints nothing. What the clients on this machine do with a hook's exit code and
-output, from their own help text and Grok's user guide (Hooks, Exit Codes):
-
-- Claude Code. Before a tool runs, exit 0 shows nothing, exit 2 shows stderr to the model and blocks
-  the tool call, and any other exit shows stderr to the user and continues. After a tool runs, exit 0
-  leaves stdout for transcript mode, exit 2 shows stderr to the model immediately, and any other exit
-  shows stderr to the user only. JSON on stdout may carry `additionalContext`, which is injected into
-  the model's context.
-- Codex. Exit 2 on submitting a prompt or before a tool is a block, and the reason is stderr. Exit 2
-  after a tool is feedback to the model. Exit 2 on stop is a continuation prompt taken from stderr.
-  Some events can emit `additionalContext` into the model's context.
-- Grok. Exit 0 allows. Exit 2 denies a tool, blocks a stop, or feeds stderr to the model after a tool;
-  the guide tells a logging hook to exit 0 so a checker's exit 2 is not handed to the model. Any other
-  exit is recorded and does not block. Stdout JSON can add `additionalContext`, which is delivered to
-  the model inside a reminder tag. A hook that allowed leaves no trace, and its stdout is not shown.
+A hook exits 0 and prints nothing: a client can treat a hook's exit 2 as a block, and can show its
+stderr or add its stdout to the model's context.
 
 Which conversations are taken in is set per tool, and intake stays off until that tool is enabled. The
 folders a session ran in can be included or excluded. While a source is excluded its cursor follows the
@@ -209,16 +199,10 @@ raw in `source`, and a later stage treats it like `headless`. A session another 
 `headless`. A parent session id alone does not make a session a sub-agent's. A sub-agent's work is a
 tool turn of the agent that started it, so a later stage does not read it as the owner speaking.
 
-What a transcript marks, and what it does not. Claude Code marks a side chain, an `isMeta` line, an
-`isCompactSummary` line, a `system-reminder` block, local-command and shell output (`local-command-stdout`,
-`bash-stdout`, `bash-stderr`), and a summary or compaction line; those are `system` or a `harness` span.
-A reminder with none of those marks cannot be told from the owner. Codex marks provenance
-(`user` against `harness`, `developer_instructions`, `agents_md`, `tool`) and a developer message. Only
-a user item of `user` provenance, or of none, is taken as the owner, except an instruction or
-environment block (`user_instructions`, `environment_context`, `subagent_notification`,
-`turn_aborted`), which is harness. A compacted line is `system`. Grok's
-update lines carry no per-span provenance. A `system-reminder` tag inside a user chunk is a harness span;
-an untagged reminder cannot be separated. The record and the writer's rules are in the contract, section 1.
+What a transcript marks is the adapter's to read. Text a program inserts into a user turn, where the
+program marks it, is `system` or a `harness` span; text inserted without a mark cannot be told from the
+owner. The record and
+the writer's rules are in the contract, section 1.
 
 Two rules hold for whoever files with a model. A line the model writes to state what quoted turns say is
 filed only after a second reading of the same turns has kept, corrected or dropped it: code can check that

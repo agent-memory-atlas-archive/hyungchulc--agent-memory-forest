@@ -54,25 +54,6 @@ class Interrupted(Exception):
     """An interruption injected at one write step. Not an OSError: any failure after an append counts."""
 
 
-def _grok_session(base: Path, session: str, tool_id: str, stamp: int) -> None:
-    folder = base / "studio" / session
-    folder.mkdir(parents=True)
-    (folder / "summary.json").write_text(
-        json.dumps({"info": {"id": session, "cwd": "/studio/kiln"}, "session_kind": "interactive"}), encoding="utf-8"
-    )
-    lines = [
-        {"method": "session/update", "timestamp": stamp,
-         "params": {"update": {"sessionUpdate": "user_message_chunk", "prompt_id": "p1",
-                               "content": {"type": "text", "text": f"Look at the kiln ({session})."}}}},
-        {"method": "session/update", "timestamp": stamp + 1,
-         "params": {"update": {"sessionUpdate": "tool_call", "toolCallId": tool_id,
-                               "_meta": {"x.ai/tool": {"name": "read_file"}}}}},
-        {"method": "session/update", "timestamp": stamp + 2,
-         "params": {"update": {"sessionUpdate": "tool_call_update", "toolCallId": tool_id, "status": "completed"}}},
-    ]
-    (folder / "updates.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
-
-
 class TurnOnceTests(IntakeTestCase):
     """B: a turn is written once."""
 
@@ -139,18 +120,28 @@ class TurnOnceTests(IntakeTestCase):
         listed = [line for line in ids.split("\n") if line]
         self.assertEqual(len(listed), len(set(listed)), listed)
 
-    def test_grok_tool_ids_are_composed_with_the_session_unless_their_form_stands_alone(self) -> None:
-        grok = self.base / "grok"
-        _grok_session(grok, "ses-grok-1", "call_1", 2560000000000)
-        _grok_session(grok, "ses-grok-2", "call_1", 2560000100000)
+    def test_an_adapter_decides_per_id_whether_it_stands_alone_or_is_composed_with_the_session(self) -> None:
+        from plugin_adapter import plugged
+
+        logs = self.base / "kiln-logs"
+        logs.mkdir()
         opaque = "call_" + "a1b2c3d4" * 4
-        _grok_session(grok, "ses-grok-3", opaque, 2560000200000)
-        root = self.forest(f"\n[intake.tools.grok]\npath = {json.dumps(str(grok))}\nimport_earlier = true\n"
+        for index, (session, tool_id) in enumerate(
+            (("ses-kiln-1", "call_1"), ("ses-kiln-2", "call_1"), ("ses-kiln-3", opaque)), start=1
+        ):
+            lines = [
+                {"head": {"session": session, "cwd": "/studio/kiln", "origin": "desk"}},
+                {"at": f"2051-03-02T09:0{index}:00+00:00", "role": "owner", "text": f"Look at the kiln ({session})."},
+                {"at": f"2051-03-02T09:0{index}:01+00:00", "role": "tool", "name": "read_file", "id": tool_id},
+            ]
+            (logs / f"{session}.kiln").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+        root = self.forest(f"\n[intake.tools.kiln-log]\npath = {json.dumps(str(logs))}\nimport_earlier = true\n"
                            "agent = \"glaze-bot\"\n")
-        self.invoke(root, "--from", "grok", "--once")
+        with plugged():
+            self.invoke(root, "--from", "kiln-log", "--once")
         tools = [row for row in self.rows(root) if row["role"] == "tool"]
         self.assertEqual(len(tools), 3)
-        self.assertEqual(sorted(row["session"] for row in tools), ["ses-grok-1", "ses-grok-2", "ses-grok-3"])
+        self.assertEqual(sorted(row["session"] for row in tools), ["ses-kiln-1", "ses-kiln-2", "ses-kiln-3"])
         self.assertIn(opaque, [row["id"] for row in tools])
 
     def test_reread_never_goes_before_the_point_intake_started_from(self) -> None:
@@ -342,34 +333,21 @@ class HookTests(IntakeTestCase):
         self.assertTrue(stage.session_recorded(root, "ses-stage-1"))
 
     def test_the_marker_name_outside_the_first_owner_turn_never_drops_a_session(self) -> None:
-        from test_v1_intake import _claude
-
-        folder = self.base / "claude"
+        folder = self.base / "notes"
         folder.mkdir()
-        tool = {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu-1", "name": "Bash",
-                                                  "input": {"MEMORY_FOREST_INTERNAL": "1",
-                                                            "nested": {"MEMORY_FOREST_INTERNAL": True}}}]}
-        marked = json.loads(_claude("user", "A later line.", turn="c-3"))
-        marked["MEMORY_FOREST_INTERNAL"] = "1"
-        (folder / "ses-kiln-1.jsonl").write_text(
-            _claude("user", "Fire the kiln.", turn="c-1")
-            + _claude("assistant", "", turn="c-2", message=tool)
-            + json.dumps(marked) + "\n"
-            + _claude("user", "MEMORY_FOREST_INTERNAL", turn="c-4"),
+        arguments = json.dumps({"MEMORY_FOREST_INTERNAL": "1", "nested": {"MEMORY_FOREST_INTERNAL": True}})
+        (folder / "kiln.jsonl").write_text(
+            record(id="turn-1", text="Owner first.")
+            + record(id="turn-2", text="Then.", internal=True)
+            + record(id="turn-3", role="tool", name="Bash", text="", arguments=arguments)
+            + record(id="turn-4", text="A later line.", MEMORY_FOREST_INTERNAL="1")
+            + record(id="turn-5", text="MEMORY_FOREST_INTERNAL"),
             encoding="utf-8",
         )
-        notes = self.base / "notes"
-        notes.mkdir()
-        (notes / "kiln.jsonl").write_text(
-            record(id="turn-1", text="Owner first.") + record(id="turn-2", text="Then.", internal=True),
-            encoding="utf-8",
-        )
-        root = self.forest(self.tool(notes) + f"\n[intake.tools.claude-code]\npath = {json.dumps(str(folder))}\n"
-                           "import_earlier = true\nagent = \"glaze-bot\"\n")
-        self.invoke(root, "--from", "claude-code", "--once")
+        root = self.forest(self.tool(folder))
         self.invoke(root, "--from", "jsonl", "--once")
         texts = [row["text"] for row in self.rows(root)]
-        for text in ("Fire the kiln.", "A later line.", "MEMORY_FOREST_INTERNAL", "Owner first.", "Then."):
+        for text in ("Owner first.", "Then.", "A later line.", "MEMORY_FOREST_INTERNAL"):
             self.assertIn(text, texts)
         self.assertEqual(len([row for row in self.rows(root) if row["role"] == "tool"]), 1)
 

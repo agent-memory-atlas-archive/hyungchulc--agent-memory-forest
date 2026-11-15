@@ -1,9 +1,11 @@
 """Transcript adapters, one module per tool.
 
-The package ships four, behind the entry point group ``memory_forest.adapters``.
-Another tool is another module in that group. When the package is imported from
-a checkout that has not been installed, the four built-in adapters are used
-directly, because the entry points are registered by installing it.
+The package ships one, ``jsonl``, behind the entry point group
+``memory_forest.adapters``: it reads records already in the lane's shape. A
+reader of a particular program's own transcripts is another module in that
+group, written by whoever knows that program. When the package is imported from
+a checkout that has not been installed, the built-in adapter is used directly,
+because the entry points are registered by installing it.
 """
 
 from __future__ import annotations
@@ -33,9 +35,6 @@ class Adapter(Protocol):
 
 
 _BUILTINS: dict[str, str] = {
-    "claude-code": "memory_forest.adapters.claude_code",
-    "codex": "memory_forest.adapters.codex",
-    "grok": "memory_forest.adapters.grok",
     "jsonl": "memory_forest.adapters.jsonl",
 }
 
@@ -62,7 +61,7 @@ def _same_adapter(left: Adapter, right: Adapter) -> bool:
 
 
 def load_adapters() -> dict[str, Adapter]:
-    """Every adapter the entry point group names, plus the four this package ships.
+    """Every adapter the entry point group names, plus the one this package ships.
 
     A third-party module that registers a built-in name is an error that names both.
     A plugin that fails to load disables only itself.

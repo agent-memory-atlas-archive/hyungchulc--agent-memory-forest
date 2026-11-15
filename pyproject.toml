@@ -47,9 +47,6 @@ memory-forest = "memory_forest.cli:main"
 forest = "memory_forest.cli:forest_main"
 
 [project.entry-points."memory_forest.adapters"]
-claude-code = "memory_forest.adapters.claude_code:adapter"
-codex = "memory_forest.adapters.codex:adapter"
-grok = "memory_forest.adapters.grok:adapter"
 jsonl = "memory_forest.adapters.jsonl:adapter"
 
 [tool.setuptools]

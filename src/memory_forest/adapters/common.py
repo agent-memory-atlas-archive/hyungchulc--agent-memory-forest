@@ -9,7 +9,6 @@ the next read. A line this package does not understand is skipped and counted;
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -21,9 +20,6 @@ from ..errors import MemoryForestError
 
 
 MARKER: str = "MEMORY_FOREST_INTERNAL"
-# A hook that has to search for a session stops after this many transcript files.
-# Past that, the sweep walks the tree. Measured as a directory listing, not a read of each file.
-HOOK_WALK_FILES: int = 48
 # The first line of a prompt a stage sends. Intake treats that line, in a session's
 # first message, as the same mark as the environment variable.
 MARKER_LINE: str = MARKER
@@ -43,28 +39,6 @@ _MARKS: tuple[tuple[str, str], ...] = (
 )
 _MARK_RE = re.compile(
     "|".join(rf"<(?P<tag{index}>{tag})\b[^>]*>(?P<body{index}>.*?)</{tag}>" for index, (tag, _) in enumerate(_MARKS)),
-    re.DOTALL,
-)
-# Harness text a tool inserts into a user turn. A turn that is only this is not the owner.
-_HARNESS_TAGS: tuple[str, ...] = (
-    "system-reminder",
-    "task-notification",
-    "local-command-caveat",
-    "local-command-stdout",
-    "local-command-stderr",
-    "bash-stdout",
-    "bash-stderr",
-    "command-name",
-    "command-message",
-    "command-args",
-    "scheduled-task",
-    "user_instructions",
-    "environment_context",
-    "subagent_notification",
-    "turn_aborted",
-)
-_HARNESS_RE = re.compile(
-    "|".join(rf"<{tag}\b[^>]*>.*?</{tag}>" for tag in _HARNESS_TAGS),
     re.DOTALL,
 )
 
@@ -156,14 +130,6 @@ def session_token(value: object) -> str | None:
     return text
 
 
-def name_has_id(name: str, session_id: str) -> bool:
-    """``session_id`` is the whole file name or a whole piece of it, never a substring."""
-    stem = name[:-6] if name.endswith(".jsonl") else name
-    if name == session_id or stem == session_id:
-        return True
-    return stem.endswith("-" + session_id) or stem.endswith("_" + session_id)
-
-
 def relative_key(path: Path, root: Path) -> str:
     """``path`` relative to the tool's transcript root. Never an absolute home path."""
     return path.resolve().relative_to(root.resolve()).as_posix()
@@ -210,39 +176,6 @@ def confine_file(raw: str, root: Path) -> Path:
             details={"path": real.name},
         )
     return require_file(real)
-
-
-def stated_version(value: object) -> str:
-    """A short version string the transcript itself states, or empty."""
-    found = _version_in(value, 0)
-    return found or ""
-
-
-def _version_in(value: object, depth: int) -> str:
-    if depth > 4:
-        return ""
-    if isinstance(value, dict):
-        for key in ("version", "cli_version", "cliVersion"):
-            raw = value.get(key)
-            if isinstance(raw, str) and 0 < len(raw) <= 40 and "\n" not in raw and "/" not in raw:
-                return raw.strip()
-            if isinstance(raw, int) and not isinstance(raw, bool) and 0 <= raw <= 1_000_000:
-                return str(raw)
-        for item in value.values():
-            found = _version_in(item, depth + 1)
-            if found:
-                return found
-    return ""
-
-
-def harness_parts(text: str) -> tuple[Part, ...]:
-    """Spans of harness text inside ``text``. The text itself is not changed."""
-    found: list[Part] = []
-    for match in _HARNESS_RE.finditer(text):
-        start, end = match.span()
-        if end > start:
-            found.append(Part(start, end, "harness"))
-    return tuple(found)
 
 
 def counts_of(items: dict[str, int]) -> tuple[tuple[str, int], ...]:
@@ -401,47 +334,11 @@ def find_marks(text: str) -> tuple[Part, ...]:
     return tuple(found)
 
 
-def harness_only(text: str) -> bool:
-    """Whether ``text`` is only text the tool inserted, with nothing of the owner left."""
-    stripped = _HARNESS_RE.sub("", text)
-    return not stripped.strip()
-
-
 def place_of(offset: int, index: int = 0) -> str:
     """Where in the transcript a turn was read. ``index`` separates turns that share a line."""
     if index:
         return f"byte {offset}#{index}"
     return f"byte {offset}"
-
-
-def walk_jsonl(root: Path, name_ok) -> list[Path]:
-    """Regular ``.jsonl`` files under ``root``, not through a symlink."""
-    if not root.is_dir() or root.is_symlink():
-        return []
-    found: list[Path] = []
-    for dirpath, dirs, files in os.walk(root):
-        dirs[:] = [
-            name
-            for name in dirs
-            if not name.startswith(".") and not Path(dirpath, name).is_symlink()
-        ]
-        for name in sorted(files):
-            if name.startswith(".") or not name_ok(name):
-                continue
-            path = Path(dirpath) / name
-            if path.is_symlink() or not path.is_file():
-                continue
-            found.append(path)
-    return found
-
-
-def tool_home(*parts: str, override: str = "") -> Path | None:
-    """``override`` when it is set, otherwise a directory under the home. None when that is absent."""
-    if override:
-        path = Path(override).expanduser()
-        return path if path.is_dir() and not path.is_symlink() else None
-    path = Path.home().joinpath(*parts)
-    return path if path.is_dir() and not path.is_symlink() else None
 
 
 def origin_or(value: object, default: str) -> str:

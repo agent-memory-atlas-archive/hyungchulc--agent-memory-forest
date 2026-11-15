@@ -318,7 +318,6 @@ REFUSALS: dict[str, tuple[str, str]] = {
     "time_phrase_unknown": ("fix", ""),
     "tool_failed": ("report", ""),
     "transaction_conflict": ("fix", ""),
-    "transcript_deferred": ("report", ""),
     "transcript_missing": ("report", ""),
     "tree_exists": ("fix", ""),
     "tree_not_empty": ("fix", ""),

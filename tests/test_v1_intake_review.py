@@ -16,10 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_v1_intake import IntakeTestCase, _claude, record  # noqa: E402
+from plugin_adapter import plugged  # noqa: E402
+from test_v1_intake import IntakeTestCase, record  # noqa: E402
 
 from memory_forest.adapters.common import speaks_as_owner  # noqa: E402
-from memory_forest.adapters.codex import _find_rollout  # noqa: E402
 from memory_forest.intake import cursor_file  # noqa: E402
 from memory_forest.layout import initialize  # noqa: E402
 from memory_forest.stage import prepare  # noqa: E402
@@ -332,112 +332,95 @@ class HookSafetyTests(IntakeTestCase):
         root = self.forest(self.tool(folder))
         self.invoke(root, "--from", "jsonl", "--once")
         self.assertEqual(self.rows(root)[0]["origin"], "unknown")
-        codex = self.base / "codex"
-        codex.mkdir()
-        parent = {
-            "timestamp": "2051-03-02T09:00:00+00:00",
-            "type": "session_meta",
-            "payload": {
-                "id": "ses-parent-1",
-                "cwd": "/studio/kiln",
-                "source": "cli",
-                "thread_source": "user",
-                "parent_thread_id": "ses-older-1",
-                "cli_version": "0.0-test",
-            },
-        }
-        message = {
-            "timestamp": "2051-03-02T09:00:01+00:00",
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "id": "msg-parent-1",
-                "content": [{"type": "input_text", "text": "Still the owner."}],
-            },
-        }
-        (codex / "rollout-parent.jsonl").write_text(json.dumps(parent) + "\n" + json.dumps(message) + "\n", encoding="utf-8")
+        logs = self.base / "kiln-logs"
+        logs.mkdir()
+        lines = [
+            {"head": {"session": "ses-parent-1", "cwd": "/studio/kiln", "origin": "desk",
+                      "parent": "ses-older-1", "version": "0.0-test"}},
+            {"at": "2051-03-02T09:00:01+00:00", "role": "owner", "text": "Still the owner.", "id": "k-parent-1"},
+        ]
+        (logs / "parent.kiln").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
         settings = root / "forest.toml"
         settings.write_text(
-            settings.read_text(encoding="utf-8") + f"\n[intake.tools.codex]\npath = {json.dumps(str(codex))}\nimport_earlier = true\nagent = \"glaze-bot\"\n",
+            settings.read_text(encoding="utf-8")
+            + f"\n[intake.tools.kiln-log]\npath = {json.dumps(str(logs))}\nimport_earlier = true\nagent = \"glaze-bot\"\n",
             encoding="utf-8",
         )
-        self.invoke(root, "--from", "codex", "--once")
-        row = next(item for item in self.rows(root) if item["text"] == "Still the owner.")
-        self.assertEqual(row["origin"], "interactive")
-        self.assertEqual(row["source"]["parent"], "ses-older-1")
-        self.assertEqual(row["source"]["origin_raw"], "user")
-        code, out, _ = self.invoke(root, "status")
+        with plugged():
+            self.invoke(root, "--from", "kiln-log", "--once")
+            row = next(item for item in self.rows(root) if item["text"] == "Still the owner.")
+            self.assertEqual(row["origin"], "interactive")
+            self.assertEqual(row["source"]["parent"], "ses-older-1")
+            self.assertEqual(row["source"]["origin_raw"], "desk")
+            code, out, _ = self.invoke(root, "status")
         self.assertIn("version 0.0-test", out)
 
-    def test_harness_lines_are_not_the_owner(self) -> None:
-        folder = self.base / "claude"
-        folder.mkdir()
+    def test_a_system_turn_and_a_harness_span_an_adapter_names_are_kept(self) -> None:
+        logs = self.base / "kiln-logs"
+        logs.mkdir()
+        mixed = "Hello.\n<kiln-note>a note</kiln-note>"
         lines = [
-            _claude("user", "<system-reminder>check the kiln</system-reminder>", turn="c-meta"),
-            _claude("user", "Hello.\n<system-reminder>a note</system-reminder>", turn="c-mixed"),
-            _claude("user", " compaction summary ", turn="c-sum"),
+            {"head": {"session": "ses-kiln-1", "cwd": "/studio/kiln", "origin": "desk"}},
+            {"at": "2051-03-02T09:00:00+00:00", "role": "system", "text": "<kiln-note>check the kiln</kiln-note>",
+             "id": "k-meta", "parts": [[0, 38, "harness"]]},
+            {"at": "2051-03-02T09:00:01+00:00", "role": "owner", "text": mixed, "id": "k-mixed",
+             "parts": [[7, len(mixed), "harness"]]},
         ]
-        # The third line is rewritten as a summary record below.
-        body = "".join(lines)
-        summary = {
-            "type": "summary",
-            "uuid": "c-summary",
-            "timestamp": "2051-03-02T09:05:00+00:00",
-            "sessionId": "ses-kiln-1",
-            "cwd": "/studio/kiln",
-            "entrypoint": "cli",
-            "summary": "The kiln was compacted.",
-        }
-        (folder / "ses-kiln-1.jsonl").write_text(body + json.dumps(summary) + "\n", encoding="utf-8")
+        (logs / "kiln.kiln").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
         root = self.forest(
-            f"\n[intake.tools.claude-code]\npath = {json.dumps(str(folder))}\nimport_earlier = true\nagent = \"glaze-bot\"\n"
+            f"\n[intake.tools.kiln-log]\npath = {json.dumps(str(logs))}\nimport_earlier = true\nagent = \"glaze-bot\"\n"
         )
-        self.invoke(root, "--from", "claude-code", "--once")
+        with plugged():
+            self.invoke(root, "--from", "kiln-log", "--once")
         rows = self.rows(root)
         meta = next(row for row in rows if "check the kiln" in row["text"])
         self.assertEqual(meta["role"], "system")
-        mixed = next(row for row in rows if row["text"].startswith("Hello."))
-        self.assertEqual(mixed["role"], "owner")
-        self.assertTrue(any(part["kind"] == "harness" for part in mixed["parts"]))
-        self.assertEqual(next(row for row in rows if "compacted" in row["text"])["role"], "system")
+        self.assertEqual([part["kind"] for part in meta["parts"]], ["harness"])
+        owner = next(row for row in rows if row["text"].startswith("Hello."))
+        self.assertEqual(owner["role"], "owner")
+        self.assertEqual(owner["origin"], "interactive")
+        span = next(part for part in owner["parts"] if part["kind"] == "harness")
+        self.assertEqual(owner["text"][span["start"]:span["end"]], "<kiln-note>a note</kiln-note>")
 
-    def test_each_adapter_hook_runs_when_intake_is_enabled(self) -> None:
-        root = self.forest(self._enabled_adapters())
-        self.turn_on(root, "claude-code", "codex", "grok")
-        self._claude_file()
-        self._codex_file()
-        self._grok_file()
-        claude = self.base / "claude" / "ses-hook-1.jsonl"
-        code, out, err = self.invoke(root, "--from", "claude-code", "--hook", stdin=json.dumps({
-            "transcript_path": str(claude), "cwd": "/studio/kiln", "session_id": "ses-hook-1",
+    def test_a_hook_runs_for_the_built_in_and_for_a_plugged_in_adapter_when_enabled(self) -> None:
+        notes = self.base / "notes"
+        notes.mkdir()
+        (notes / "kiln.jsonl").write_text(record(id="turn-hook", text="Record hook."), encoding="utf-8")
+        logs = self.base / "kiln-logs"
+        logs.mkdir()
+        (logs / "helper.kiln").write_text(
+            json.dumps({"head": {"session": "ses-helper-1", "cwd": "/studio/kiln", "origin": "desk"}}) + "\n"
+            + json.dumps({"at": "2051-03-02T09:00:00+00:00", "role": "owner", "text": "Check the glaze.",
+                          "id": "k-ask"}) + "\n"
+            + json.dumps({"at": "2051-03-02T09:00:01+00:00", "role": "tool", "name": "glaze-helper",
+                          "text": "Helper hook.", "id": "k-helper"}) + "\n",
+            encoding="utf-8",
+        )
+        root = self.forest(
+            self.tool(notes).replace("import_earlier = true", "import_earlier = true\nenabled = true")
+            + f"\n[intake.tools.kiln-log]\nenabled = true\npath = {json.dumps(str(logs))}\n"
+            "import_earlier = true\nagent = \"glaze-bot\"\n"
+        )
+        settings = root / "forest.toml"
+        settings.write_text(settings.read_text(encoding="utf-8").replace('tool_output = "omit"', 'tool_output = "keep"', 1),
+                            encoding="utf-8")
+        self.turn_on(root, "jsonl", "kiln-log")
+        code, out, err = self.invoke(root, "--from", "jsonl", "--hook", stdin=json.dumps({
+            "transcript_path": str(notes / "kiln.jsonl"), "cwd": "/studio/kiln", "session_id": "ses-kiln-1",
         }))
         self.assertEqual((code, out, err), (0, "", ""))
-        code, out, err = self.invoke(root, "--from", "codex", "--hook", stdin=json.dumps({
-            "transcript_path": str(self.base / "codex" / "rollout-hook.jsonl"),
-            "cwd": "/studio/kiln",
-            "session_id": "ses-hook-codex",
-        }))
+        with plugged():
+            code, out, err = self.invoke(root, "--from", "kiln-log", "--hook", stdin=json.dumps({
+                "kiln_log": str(logs / "helper.kiln"), "helper": True,
+            }))
         self.assertEqual((code, out, err), (0, "", ""))
-        code, out, err = self.invoke(root, "--from", "grok", "--hook", stdin=json.dumps({
-            "sessionId": "ses-hook-grok", "cwd": "/studio/kiln",
-        }))
-        self.assertEqual((code, out, err), (0, "", ""))
-        texts = [row["text"] for row in self.rows(root)]
-        self.assertIn("Claude hook.", texts)
-        self.assertIn("Codex hook.", texts)
-        self.assertIn("Grok hook.", texts)
-
-    def test_a_session_id_matches_the_whole_name(self) -> None:
-        root = self.base / "codex-ids"
-        root.mkdir()
-        (root / "rollout-abc.jsonl").write_text("abc\n", encoding="utf-8")
-        (root / "rollout-abcdef.jsonl").write_text("abcdef\n", encoding="utf-8")
-        found = _find_rollout(root, "abc")
-        self.assertIsNotNone(found)
-        self.assertEqual(found.name, "rollout-abc.jsonl")
-        self.assertIsNone(_find_rollout(root, "../abc"))
-        self.assertIsNone(_find_rollout(root, "abc/def"))
+        rows = self.rows(root)
+        self.assertIn("Record hook.", [row["text"] for row in rows])
+        helper = next(row for row in rows if row["text"] == "Helper hook.")
+        # The hook named a helper's transcript: its turns are a sub-agent's, whatever the file's head says.
+        self.assertEqual((helper["role"], helper["origin"]), ("tool", "subagent"))
+        self.assertEqual(next(row for row in rows if row["text"] == "Check the glaze.")["origin"], "subagent")
+        self.assertEqual(helper["source"]["adapter"], "kiln-log")
 
     def test_status_names_a_source_ahead_of_its_cursor(self) -> None:
         folder = self.base / "notes"
@@ -487,60 +470,13 @@ class HookSafetyTests(IntakeTestCase):
         self.assertNotIn("From the list.", texts)
         self.assertNotIn("The stage prompt.", texts)
 
-    def _enabled_adapters(self) -> str:
-        return (
-            f"\n[intake.tools.claude-code]\nenabled = true\npath = {json.dumps(str(self.base / 'claude'))}\n"
-            "import_earlier = true\nagent = \"glaze-bot\"\n"
-            f"\n[intake.tools.codex]\nenabled = true\npath = {json.dumps(str(self.base / 'codex'))}\n"
-            "import_earlier = true\nagent = \"glaze-bot\"\n"
-            f"\n[intake.tools.grok]\nenabled = true\npath = {json.dumps(str(self.base / 'grok'))}\n"
-            "import_earlier = true\nagent = \"glaze-bot\"\n"
-        )
-
-    def _claude_file(self) -> None:
-        folder = self.base / "claude"
-        folder.mkdir(exist_ok=True)
-        (folder / "ses-hook-1.jsonl").write_text(
-            _claude("user", "Claude hook.", turn="c-hook", session="ses-hook-1"),
-            encoding="utf-8",
-        )
-
-    def _codex_file(self) -> None:
-        folder = self.base / "codex"
-        folder.mkdir(exist_ok=True)
-        lines = [
-            {"timestamp": "2051-03-02T09:00:00+00:00", "type": "session_meta",
-             "payload": {"id": "ses-hook-codex", "cwd": "/studio/kiln", "source": "cli", "thread_source": "user"}},
-            {"timestamp": "2051-03-02T09:00:01+00:00", "type": "response_item",
-             "payload": {"type": "message", "role": "user", "id": "msg-hook",
-                         "content": [{"type": "input_text", "text": "Codex hook."}]}},
-        ]
-        (folder / "rollout-hook.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
-
-    def _grok_file(self) -> None:
-        session = self.base / "grok" / "studio" / "ses-hook-grok"
-        session.mkdir(parents=True)
-        (session / "summary.json").write_text(
-            json.dumps({"info": {"id": "ses-hook-grok", "cwd": "/studio/kiln"}, "session_kind": "interactive"}),
-            encoding="utf-8",
-        )
-        line = {
-            "method": "session/update",
-            "params": {"sessionId": "ses-hook-grok", "update": {
-                "sessionUpdate": "user_message_chunk", "prompt_id": "p1",
-                "content": {"type": "text", "text": "Grok hook."},
-            }},
-            "timestamp": 2560000000000,
-        }
-        (session / "updates.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
-
 
 class PluginTests(IntakeTestCase):
     def test_a_name_clash_names_both_and_a_failed_plugin_disables_only_itself(self) -> None:
         from memory_forest import adapters as adapter_loader
 
         class Other:
-            name = "claude-code"
+            name = "jsonl"
 
             def load(self):
                 return object()
@@ -561,9 +497,9 @@ class PluginTests(IntakeTestCase):
         adapter_loader.clear_adapter_cache()
         try:
             loaded = adapter_loader.load_adapters()
-            self.assertIn("claude-code", loaded)
-            self.assertEqual(loaded["claude-code"].name, "claude-code")
-            self.assertEqual(adapter_loader.load_failures().get("claude-code"), "intake_adapter_clash")
+            self.assertIn("jsonl", loaded)
+            self.assertEqual(loaded["jsonl"].name, "jsonl")
+            self.assertEqual(adapter_loader.load_failures().get("jsonl"), "intake_adapter_clash")
         finally:
             adapter_loader.entry_points = real
             adapter_loader.clear_adapter_cache()

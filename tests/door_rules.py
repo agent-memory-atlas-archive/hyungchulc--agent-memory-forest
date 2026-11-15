@@ -18,9 +18,7 @@ PACKAGE = Path(memory_forest.__file__).resolve().parent
 NOT_YET: dict[str, str] = {
     "intake.py": "the intake branch (v1-intake), merged by its own round",
     "cli_intake.py": "the intake branch (v1-intake), merged by its own round",
-    "adapters/codex.py": "the intake branch (v1-intake), merged by its own round",
     "adapters/common.py": "the intake branch (v1-intake), merged by its own round",
-    "adapters/grok.py": "the intake branch (v1-intake), merged by its own round",
     "adapters/jsonl.py": "the intake branch (v1-intake), merged by its own round",
     "stage.py": "the stages branch (v1-stages), merged by its own round",
     "archive.py": "round 8: the owner's commands through the door",
@@ -32,7 +30,7 @@ NOT_YET: dict[str, str] = {
 }
 # The intake modules: they may run while an agent's command runs, and do not go through the door yet.
 INTAKE = frozenset(name for name, owner in NOT_YET.items() if "intake branch" in owner) | {
-    "adapters/__init__.py", "adapters/claude_code.py",
+    "adapters/__init__.py",
 }
 DOOR = "system.py"
 

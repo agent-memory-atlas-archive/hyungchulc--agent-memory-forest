@@ -15,7 +15,6 @@ import sys
 import unittest
 
 import bounds  # installs a deadline for every unittest invocation
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -455,272 +454,62 @@ class WriterTests(IntakeTestCase):
 
 
 class AdapterTests(IntakeTestCase):
-    def test_claude_code_codex_and_grok(self) -> None:
-        root = self.forest(self._adapters())
-        self._claude()
-        self._codex()
-        self._grok()
-        code, out, err = self.invoke(root, "--from", "claude-code", "--as", "glaze-bot", "--once")
-        self.assertEqual(code, 0, err + out)
-        code, out, err = self.invoke(root, "--from", "codex", "--as", "glaze-bot", "--once")
-        self.assertEqual(code, 0, err + out)
-        code, out, err = self.invoke(root, "--from", "grok", "--as", "glaze-bot", "--once")
-        self.assertEqual(code, 0, err + out)
-        rows = self.rows(root)
-        texts = [row["text"] for row in rows]
-        self.assertTrue(any(text.startswith("The glaze crawled.") for text in texts))
-        self.assertIn("ran read", texts)
-        self.assertNotIn("secret kiln log", "\n".join(texts))
-        self.assertEqual(next(row["origin"] for row in rows if row["text"] == "Run it."), "headless")
-        self.assertEqual(next(row["origin"] for row in rows if row["text"] == "How hot is the kiln?"), "headless")
-        self.assertTrue(any(row["origin"] == "subagent" and row["role"] == "tool" for row in rows))
-        self.assertFalse(any(row["role"] == "owner" and row["origin"] == "subagent" for row in rows))
-        owners = [row["text"] for row in rows if row["role"] == "owner"]
-        self.assertNotIn("The helper heard this.", owners)
-        code, out, _ = self.invoke(root, "status")
-        self.assertIn("unknown 1", out)
-        # A second run of each adapter adds nothing.
-        before = len(rows)
-        for name in ("claude-code", "codex", "grok"):
-            self.invoke(root, "--from", name, "--as", "glaze-bot", "--once")
-        self.assertEqual(len(self.rows(root)), before)
+    """The package ships the generic reader. A reader of another program plugs in through the entry points."""
 
-    def test_claude_keeps_tool_output_and_a_file_part(self) -> None:
-        self._claude()
+    def test_an_adapter_plugged_in_through_the_entry_points_is_read_like_the_built_in(self) -> None:
+        from plugin_adapter import plugged
+
+        folder = self.base / "kiln-logs"
+        folder.mkdir()
+        lines = [
+            {"head": {"session": "ses-batch-1", "cwd": "/studio/kiln", "origin": "batch"}},
+            {"at": "2051-03-02T09:00:00+00:00", "role": "owner", "text": "Run it.", "id": "k-1"},
+            {"at": "2051-03-02T09:00:01+00:00", "role": "tool", "name": "read", "text": "secret kiln log",
+             "id": "k-2"},
+            {"at": "2051-03-02T09:00:02+00:00", "role": "narrator", "text": "not a turn"},
+        ]
+        (folder / "batch.kiln").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+        root = self.forest(f"\n[intake.tools.kiln-log]\npath = {json.dumps(str(folder))}\nimport_earlier = true\n")
+        with plugged():
+            code, out, err = self.invoke(root, "--from", "kiln-log", "--as", "glaze-bot", "--once")
+            self.assertEqual(code, 0, err + out)
+            rows = self.rows(root)
+            self.assertEqual([row["text"] for row in rows], ["Run it.", "ran read"])
+            self.assertEqual({row["origin"] for row in rows}, {"headless"})
+            self.assertEqual(rows[0]["source"]["adapter"], "kiln-log")
+            self.assertEqual(rows[0]["source"]["origin_raw"], "batch")
+            self.assertNotIn("secret kiln log", self.lane(root))
+            code, out, _ = self.invoke(root, "status")
+            self.assertIn("kiln-log: off, agent (not set), unknown 1 (record 1)", out)
+            # A second run adds nothing.
+            self.invoke(root, "--from", "kiln-log", "--as", "glaze-bot", "--once")
+            self.assertEqual(len(self.rows(root)), len(rows))
+        code, _out, err = self.invoke(root, "--from", "kiln-log", "--as", "glaze-bot", "--once")
+        self.assertNotEqual(code, 0)
+        self.assertIn("intake_adapter_unknown", err)
+
+    def test_a_kept_tool_output_and_a_file_part_the_record_names(self) -> None:
+        folder = self.base / "notes"
+        folder.mkdir()
+        note = "Here is the note: a note from the bench"
+        (folder / "kiln.jsonl").write_text(
+            record(id="turn-1", text=note, parts=[{"kind": "file", "start": 18, "end": len(note)}])
+            + record(id="turn-2", role="tool", name="read", text="secret kiln log"),
+            encoding="utf-8",
+        )
         root = self.base / "kept"
         initialize(root)
         settings = (root / "forest.toml").read_text(encoding="utf-8").replace(
             'tool_output = "omit"', 'tool_output = "keep"', 1
         )
-        (root / "forest.toml").write_text(settings + self._adapters(), encoding="utf-8")
-        self.invoke(root, "--from", "claude-code", "--as", "glaze-bot", "--once")
+        (root / "forest.toml").write_text(settings + self.tool(folder), encoding="utf-8")
+        self.invoke(root, "--from", "jsonl", "--once")
         rows = self.rows(root)
         self.assertTrue(any(row["text"] == "secret kiln log" and row["name"] == "read" for row in rows))
         files = [row for row in rows if row.get("parts") and row["parts"][0]["kind"] == "file"]
         self.assertTrue(files)
-        self.assertIn("a note from the bench", files[0]["text"])
-
-    def _adapters(self) -> str:
-        return (
-            f"\n[intake.tools.claude-code]\npath = {json.dumps(str(self.base / 'claude'))}\nimport_earlier = true\n"
-            f"\n[intake.tools.codex]\npath = {json.dumps(str(self.base / 'codex'))}\nimport_earlier = true\n"
-            f"\n[intake.tools.grok]\npath = {json.dumps(str(self.base / 'grok'))}\nimport_earlier = true\n"
-        )
-
-    def _claude(self) -> None:
-        folder = self.base / "claude"
-        folder.mkdir(exist_ok=True)
-        lines = [
-            _claude("user", "The glaze crawled.\n<pasted_contents>\ncone 6\n</pasted_contents>", turn="c-user"),
-            _claude(
-                "assistant",
-                "",
-                turn="c-agent",
-                message={
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": "I will check the log."},
-                        {"type": "tool_use", "id": "tool-kiln-1", "name": "read", "input": {"path": "log.txt"}},
-                    ],
-                },
-            ),
-            _claude(
-                "user",
-                "",
-                turn="c-result",
-                message={
-                    "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": "tool-kiln-1", "content": "secret kiln log"}],
-                },
-            ),
-            json.dumps(
-                {
-                    "type": "attachment",
-                    "uuid": "c-file",
-                    "sessionId": "ses-kiln-1",
-                    "timestamp": "2051-03-02T09:02:00+00:00",
-                    "cwd": "/studio/kiln",
-                    "entrypoint": "cli",
-                    "attachment": {"type": "file", "filename": "note.txt", "content": "a note from the bench"},
-                }
-            ),
-            _claude("user", "The helper heard this.", turn="c-side", side=True, agent="glaze-helper"),
-            _claude("assistant", "The helper checked the cone.", turn="c-side-2", side=True, agent="glaze-helper"),
-            json.dumps({"type": "not-a-claude-line", "uuid": "c-odd"}) + "\n",
-        ]
-        (folder / "ses-kiln-1.jsonl").write_text("\n".join(line.rstrip("\n") for line in lines) + "\n", encoding="utf-8")
-        (folder / "ses-head-1.jsonl").write_text(
-            _claude("user", "Run it.", turn="c-head", entry="sdk-cli", session="ses-head-1"),
-            encoding="utf-8",
-        )
-
-    def _codex(self) -> None:
-        folder = self.base / "codex"
-        folder.mkdir(exist_ok=True)
-        lines = [
-            {
-                "timestamp": "2051-03-02T09:00:00+00:00",
-                "type": "session_meta",
-                "payload": {"id": "ses-codex-1", "cwd": "/studio/kiln", "source": "cli", "thread_source": "user"},
-            },
-            {
-                "timestamp": "2051-03-02T09:00:01+00:00",
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "user",
-                    "id": "msg-1",
-                    "content": [{"type": "input_text", "text": "Check the kiln shelf."}],
-                    "internal_chat_message_metadata_passthrough": {
-                        "content_item_metadata": [{"provenance": {"type": "user"}}]
-                    },
-                },
-            },
-            {
-                "timestamp": "2051-03-02T09:00:02+00:00",
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "developer",
-                    "id": "msg-dev",
-                    "content": [{"type": "input_text", "text": "system instructions that are not the owner"}],
-                },
-            },
-            {
-                "timestamp": "2051-03-02T09:00:03+00:00",
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "assistant",
-                    "id": "msg-2",
-                    "content": [{"type": "output_text", "text": "Looking now."}],
-                },
-            },
-            {
-                "timestamp": "2051-03-02T09:00:04+00:00",
-                "type": "response_item",
-                "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "call-1", "input": "ls"},
-            },
-            {
-                "timestamp": "2051-03-02T09:00:05+00:00",
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call_output",
-                    "call_id": "call-1",
-                    "output": [{"type": "input_text", "text": "secret kiln log"}],
-                },
-            },
-            {"timestamp": "2051-03-02T09:00:06+00:00", "type": "event_msg", "payload": {"type": "token_count"}},
-            {"timestamp": "2051-03-02T09:00:07+00:00", "type": "not-a-codex-line"},
-        ]
-        sub = {
-            "timestamp": "2051-03-02T09:03:00+00:00",
-            "type": "session_meta",
-            "payload": {"id": "ses-codex-sub", "cwd": "/studio/kiln", "thread_source": "subagent", "source": {"subagent": {}}},
-        }
-        sub_user = {
-            "timestamp": "2051-03-02T09:03:01+00:00",
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "id": "msg-sub",
-                "content": [{"type": "output_text", "text": "Subagent note."}],
-            },
-        }
-        (folder / "rollout-kiln.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
-        (folder / "rollout-sub.jsonl").write_text(json.dumps(sub) + "\n" + json.dumps(sub_user) + "\n", encoding="utf-8")
-
-    def _grok(self) -> None:
-        session = self.base / "grok" / "studio" / "ses-grok-1"
-        session.mkdir(parents=True)
-        (session / "summary.json").write_text(
-            json.dumps({"info": {"id": "ses-grok-1", "cwd": "/studio/kiln"}, "session_kind": "headless"}),
-            encoding="utf-8",
-        )
-        stamp = int(datetime(2051, 3, 2, 9, 0, tzinfo=timezone.utc).timestamp() * 1000)
-        lines = [
-            {
-                "method": "session/update",
-                "params": {
-                    "sessionId": "ses-grok-1",
-                    "update": {
-                        "sessionUpdate": "user_message_chunk",
-                        "prompt_id": "p1",
-                        "content": {"type": "text", "text": "How hot is the kiln?"},
-                    },
-                },
-                "timestamp": stamp,
-            },
-            {
-                "method": "session/update",
-                "params": {
-                    "sessionId": "ses-grok-1",
-                    "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "prompt_id": "p1",
-                        "content": {"type": "text", "text": "Hot enough."},
-                    },
-                },
-                "timestamp": stamp + 1000,
-            },
-            {
-                "method": "session/update",
-                "params": {
-                    "sessionId": "ses-grok-1",
-                    "update": {
-                        "sessionUpdate": "tool_call",
-                        "toolCallId": "call-9",
-                        "_meta": {"x.ai/tool": {"name": "read_file"}},
-                    },
-                },
-                "timestamp": stamp + 2000,
-            },
-            {
-                "method": "session/update",
-                "params": {
-                    "sessionId": "ses-grok-1",
-                    "update": {
-                        "sessionUpdate": "tool_call_update",
-                        "toolCallId": "call-9",
-                        "status": "completed",
-                        "rawOutput": {"message": "secret kiln log"},
-                    },
-                },
-                "timestamp": stamp + 3000,
-            },
-            {"method": "nope", "timestamp": stamp + 4000},
-        ]
-        (session / "updates.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
-
-
-def _claude(
-    kind: str,
-    text: str,
-    *,
-    turn: str,
-    message: dict | None = None,
-    side: bool = False,
-    agent: str = "",
-    entry: str = "cli",
-    session: str = "ses-kiln-1",
-) -> str:
-    if message is None:
-        role = "assistant" if kind == "assistant" else "user"
-        message = {"role": role, "content": [{"type": "text", "text": text}]}
-    body = {
-        "cwd": "/studio/kiln",
-        "entrypoint": entry,
-        "isSidechain": side,
-        "message": message,
-        "sessionId": session,
-        "timestamp": "2051-03-02T09:00:00+00:00",
-        "type": kind,
-        "uuid": turn,
-    }
-    if agent:
-        body["agentName"] = agent
-    return json.dumps(body) + "\n"
+        part = files[0]["parts"][0]
+        self.assertEqual(files[0]["text"][part["start"]:part["end"]], "a note from the bench")
 
 
 if __name__ == "__main__":

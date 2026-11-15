@@ -12,7 +12,7 @@ All notable changes to Memory Forest are documented in this file. The project fo
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones. The
 `forest` commands of milestone 1, the structure tools, are in the tree and tested on made-up forests.
 Milestone 2 now has intake, the search index, timeline, reader scopes and the MCP server. Setup
-(`forest setup`, `forest doctor`, the guide and the plugins) is not, and neither are milestone 3's stage
+(`forest setup`, `forest doctor` and the guide) is not, and neither are milestone 3's stage
 programs and nightly upkeep. Nothing is released. The 0.3 `memory-forest` command stays in the tree until
 the version 1 commands replace it.
 
@@ -422,6 +422,17 @@ The lane commit fixes `stored` and the turn id; ids, caller-key and source recor
 
 ### Removed
 
+- the readers of three particular agent programs (`claude-code`, `codex` and `grok`), their entry points
+  and what only they used, before the first release. The package cannot keep up with every program's own
+  transcript format, and shipping readers for three of them promised what it cannot keep. An agent brings
+  its own conversation in through doors that know no program: its own turn through `forest log` or
+  `memory_log`, whole conversations as records in the lane's shape read by the `jsonl` adapter, or an
+  adapter that someone who knows the program writes and plugs in through the entry point group
+  `memory_forest.adapters`. The package gives the way; whoever knows a program builds its reader. The
+  plugins planned for setup went with them: setup writes nothing into another program's settings and
+  tells the agent what to register in its own tool. Likewise the daily record, the filing run and the
+  upkeep run are carried out by the owner's own agent, following the contract (section 10) and the
+  guide; an engine that runs those stages is not part of the first release
 - the 0.3 synthetic example forest under `examples/synthetic-forest/` (kept in the history at `v0.3.0`;
   the runnable copy built into the 0.3 code is unchanged)
 

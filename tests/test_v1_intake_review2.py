@@ -16,7 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_v1_intake import IntakeTestCase, _claude, record  # noqa: E402
+from plugin_adapter import plugged  # noqa: E402
+from test_v1_intake import IntakeTestCase, record  # noqa: E402
 
 from memory_forest import intake  # noqa: E402
 from memory_forest.adapters import jsonl as jsonl_adapter  # noqa: E402
@@ -130,43 +131,36 @@ class ReviewTests(IntakeTestCase):
         self.assertNotIn("turn faults", self.invoke(root, "status")[1])
 
     def test_a_copied_turn_id_is_stored_once(self) -> None:
-        folder = self.base / "claude"
+        # The kiln log's ids stand alone: the same id in a forked session is the same turn.
+        folder = self.base / "kiln-logs"
         folder.mkdir()
-        line = _claude("user", "The same glaze.", turn="c-copied")
-        (folder / "ses-kiln-1.jsonl").write_text(line, encoding="utf-8")
-        forked = json.loads(line)
-        forked["sessionId"] = "ses-fork-1"
-        (folder / "ses-fork-1.jsonl").write_text(json.dumps(forked) + "\n", encoding="utf-8")
+        line = {"at": "2051-03-02T09:00:00+00:00", "role": "owner", "text": "The same glaze.", "id": "k-copied"}
+        for session in ("ses-kiln-1", "ses-fork-1"):
+            (folder / f"{session}.kiln").write_text(
+                json.dumps({"head": {"session": session, "cwd": "/studio/kiln", "origin": "desk"}}) + "\n"
+                + json.dumps(line) + "\n",
+                encoding="utf-8",
+            )
         root = self.forest(
-            f"\n[intake.tools.claude-code]\npath = {json.dumps(str(folder))}\nimport_earlier = true\nagent = \"glaze-bot\"\n"
+            f"\n[intake.tools.kiln-log]\npath = {json.dumps(str(folder))}\nimport_earlier = true\nagent = \"glaze-bot\"\n"
         )
-        self.invoke(root, "--from", "claude-code", "--once")
+        with plugged():
+            self.invoke(root, "--from", "kiln-log", "--once")
         texts = [row["text"] for row in self.rows(root)]
         self.assertEqual(texts.count("The same glaze."), 1)
-        self.assertEqual(self.rows(root)[0]["id"], "c-copied")
+        self.assertEqual(self.rows(root)[0]["id"], "k-copied")
 
-    def test_grok_tool_output_that_arrives_later_is_kept(self) -> None:
-        session = self.base / "grok" / "studio" / "ses-grok-1"
-        session.mkdir(parents=True)
-        (session / "summary.json").write_text(
-            json.dumps({"info": {"id": "ses-grok-1", "cwd": "/studio/kiln"}, "session_kind": "interactive"}),
+    def test_tool_output_that_arrives_in_a_later_read_is_kept(self) -> None:
+        folder = self.base / "kiln-logs"
+        folder.mkdir()
+        path = folder / "kiln.kiln"
+        path.write_text(
+            json.dumps({"head": {"session": "ses-kiln-1", "cwd": "/studio/kiln", "origin": "desk"}}) + "\n"
+            + json.dumps({"at": "2051-03-02T09:00:00+00:00", "role": "owner", "text": "How hot?", "id": "k-1"}) + "\n"
+            + json.dumps({"at": "2051-03-02T09:00:01+00:00", "role": "tool", "name": "read_file", "id": "k-call-9",
+                          "pending": True}) + "\n",
             encoding="utf-8",
         )
-        stamp = 2560000000000
-        call = {
-            "method": "session/update",
-            "params": {"update": {"sessionUpdate": "tool_call", "toolCallId": "call-9",
-                                  "_meta": {"x.ai/tool": {"name": "read_file"}}}},
-            "timestamp": stamp,
-        }
-        user = {
-            "method": "session/update",
-            "params": {"update": {"sessionUpdate": "user_message_chunk", "prompt_id": "p1",
-                                  "content": {"type": "text", "text": "How hot?"}}},
-            "timestamp": stamp - 1000,
-        }
-        path = session / "updates.jsonl"
-        path.write_text(json.dumps(user) + "\n" + json.dumps(call) + "\n", encoding="utf-8")
         root = self.base / "kept"
         from memory_forest.layout import initialize
 
@@ -175,20 +169,16 @@ class ReviewTests(IntakeTestCase):
             'tool_output = "omit"', 'tool_output = "keep"', 1
         )
         (root / "forest.toml").write_text(
-            settings + f"\n[intake.tools.grok]\npath = {json.dumps(str(self.base / 'grok'))}\nimport_earlier = true\nagent = \"glaze-bot\"\n",
+            settings + f"\n[intake.tools.kiln-log]\npath = {json.dumps(str(folder))}\nimport_earlier = true\nagent = \"glaze-bot\"\n",
             encoding="utf-8",
         )
-        self.invoke(root, "--from", "grok", "--once")
-        self.assertNotIn("secret kiln log", self.lane(root))
-        update = {
-            "method": "session/update",
-            "params": {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "call-9",
-                                  "status": "completed", "rawOutput": {"message": "secret kiln log"}}},
-            "timestamp": stamp + 1000,
-        }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(update) + "\n")
-        self.invoke(root, "--from", "grok", "--once")
+        with plugged():
+            self.invoke(root, "--from", "kiln-log", "--once")
+            self.assertNotIn("secret kiln log", self.lane(root))
+            self.assertEqual([row["role"] for row in self.rows(root)], ["owner"])
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"output_for": "k-call-9", "text": "secret kiln log"}) + "\n")
+            self.invoke(root, "--from", "kiln-log", "--once")
         tools = [row for row in self.rows(root) if row["role"] == "tool"]
         self.assertEqual(len(tools), 1)
         self.assertIn("secret kiln log", tools[0]["text"])
@@ -269,48 +259,6 @@ class ReviewTests(IntakeTestCase):
             "transcript_path": str(path), "cwd": "/studio/kiln", "session_id": "ses-shop-1",
         }))
         self.assertEqual(self.lane(root), "")
-
-    def test_compaction_and_command_output_are_not_the_owner(self) -> None:
-        folder = self.base / "claude"
-        folder.mkdir()
-        compact = json.loads(_claude("user", "continued after compaction", turn="c-compact"))
-        compact["isCompactSummary"] = True
-        command = json.loads(_claude(
-            "user", "<local-command-stdout>kiln status</local-command-stdout>", turn="c-command",
-        ))
-        owner = json.loads(_claude("user", "The glaze crawled.", turn="c-owner"))
-        (folder / "ses-kiln-1.jsonl").write_text(
-            json.dumps(compact) + "\n" + json.dumps(command) + "\n" + json.dumps(owner) + "\n",
-            encoding="utf-8",
-        )
-        codex = self.base / "codex"
-        codex.mkdir()
-        lines = [
-            {"timestamp": "2051-03-02T09:00:00+00:00", "type": "session_meta",
-             "payload": {"id": "ses-codex-1", "cwd": "/studio/kiln", "source": "cli", "thread_source": "user"}},
-            {"timestamp": "2051-03-02T09:00:01+00:00", "type": "response_item", "payload": {
-                "type": "message", "role": "user", "id": "msg-env",
-                "content": [{"type": "input_text", "text": "<environment_context>the studio</environment_context>"}],
-            }},
-            {"timestamp": "2051-03-02T09:00:02+00:00", "type": "response_item", "payload": {
-                "type": "message", "role": "user", "id": "msg-owner",
-                "content": [{"type": "input_text", "text": "Check the shelf."}],
-            }},
-            {"timestamp": "2051-03-02T09:00:03+00:00", "type": "compacted"},
-        ]
-        (codex / "rollout-kiln.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
-        root = self.forest(
-            f"\n[intake.tools.claude-code]\npath = {json.dumps(str(folder))}\nimport_earlier = true\nagent = \"glaze-bot\"\n"
-            f"\n[intake.tools.codex]\npath = {json.dumps(str(codex))}\nimport_earlier = true\nagent = \"glaze-bot\"\n"
-        )
-        self.invoke(root, "--from", "claude-code", "--once")
-        self.invoke(root, "--from", "codex", "--once")
-        rows = self.rows(root)
-        self.assertEqual(next(row["role"] for row in rows if "compaction" in row["text"]), "system")
-        self.assertEqual(next(row["role"] for row in rows if "kiln status" in row["text"]), "system")
-        self.assertEqual(next(row["role"] for row in rows if "the studio" in row["text"]), "system")
-        self.assertEqual(next(row["role"] for row in rows if row["text"] == "Check the shelf."), "owner")
-        self.assertEqual(next(row["role"] for row in rows if row["text"] == "The glaze crawled."), "owner")
 
     def test_rename_agent_moves_the_lane_and_a_clash_of_names_takes_nothing(self) -> None:
         folder = self.base / "notes"
@@ -426,31 +374,26 @@ class ReviewTests(IntakeTestCase):
         code, status_out, _ = self.invoke(root, "status")
         self.assertIn("ahead", status_out)
 
-    def test_a_hook_does_not_walk_the_whole_tree(self) -> None:
-        folder = self.base / "codex"
+    def test_a_hook_the_adapter_defers_is_counted_and_the_sweep_takes_the_transcript(self) -> None:
+        folder = self.base / "kiln-logs"
         folder.mkdir()
-        for index in range(60):
-            name = f"rollout-a{index:02d}.jsonl"
-            (folder / name).write_text("{}\n", encoding="utf-8")
-        target = folder / "rollout-z-ses-target-1.jsonl"
-        target.write_text(
-            json.dumps({"timestamp": "2051-03-02T09:00:00+00:00", "type": "session_meta",
-                        "payload": {"id": "ses-target-1", "cwd": "/studio/kiln", "source": "cli"}}) + "\n"
-            + json.dumps({"timestamp": "2051-03-02T09:00:01+00:00", "type": "response_item", "payload": {
-                "type": "message", "role": "user", "id": "msg-target",
-                "content": [{"type": "input_text", "text": "Found on the sweep."}]}}) + "\n",
+        (folder / "target.kiln").write_text(
+            json.dumps({"head": {"session": "ses-target-1", "cwd": "/studio/kiln", "origin": "desk"}}) + "\n"
+            + json.dumps({"at": "2051-03-02T09:00:01+00:00", "role": "owner", "text": "Found on the sweep.",
+                          "id": "k-target"}) + "\n",
             encoding="utf-8",
         )
         root = self.forest(
-            f"\n[intake.tools.codex]\npath = {json.dumps(str(folder))}\nenabled = true\nimport_earlier = true\nagent = \"glaze-bot\"\n"
+            f"\n[intake.tools.kiln-log]\npath = {json.dumps(str(folder))}\nenabled = true\nimport_earlier = true\nagent = \"glaze-bot\"\n"
         )
-        self.turn_on(root, "codex")
-        code, out, err = self.invoke(root, "--from", "codex", "--hook", "--once", stdin=json.dumps({
-            "session_id": "ses-target-1",
-        }))
-        self.assertEqual((code, out, err), (0, "", ""))
-        self.assertEqual(self.lane(root), "")
-        code, status_out, _ = self.invoke(root, "status")
-        self.assertIn("waiting", status_out)
-        self.invoke(root, "--from", "codex", "--once")
+        self.turn_on(root, "kiln-log")
+        with plugged():
+            code, out, err = self.invoke(root, "--from", "kiln-log", "--hook", "--once", stdin=json.dumps({
+                "defer": True,
+            }))
+            self.assertEqual((code, out, err), (0, "", ""))
+            self.assertEqual(self.lane(root), "")
+            code, status_out, _ = self.invoke(root, "status")
+            self.assertIn("waiting 1", status_out)
+            self.invoke(root, "--from", "kiln-log", "--once")
         self.assertIn("Found on the sweep.", [row["text"] for row in self.rows(root)])

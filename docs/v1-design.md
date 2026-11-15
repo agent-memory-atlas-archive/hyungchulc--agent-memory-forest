@@ -567,13 +567,13 @@ open = false                    # true: every new name a caller gives becomes an
 # source = "the-app"            # optional. A reader of an app's own member list. A miss reads it once.
 [intake]
 tool_output = "omit"            # omit | keep. omit: a tool turn records that the tool ran
-[intake.tools.<adapter>]        # claude-code, codex, grok, jsonl, or an adapter added later
+[intake.tools.<adapter>]        # jsonl, or an adapter plugged in through memory_forest.adapters
 enabled = false                 # automatic intake is off until this is true
 agent = ""                      # the agent these turns belong to; else `forest intake --as`
 include = []                    # folders the session ran in; empty means every folder
 exclude = []
 import_earlier = false          # the first run places cursors at the end of what already exists
-path = ""                       # jsonl: the folder of record files; others: look here instead of the tool's own place
+path = ""                       # jsonl: the folder of record files; another adapter: where it looks
 [embeddings]
 provider = "none"               # none | openai-compatible
 ```
@@ -598,7 +598,7 @@ provider = "none"               # none | openai-compatible
 | `repeats` | fact lines, the index leaf, the judged ledger; repeated lines to their one home | `forest repeats` |
 | `view` | a read-only view of one forest that the checks share: settings, registry, pages read once | |
 | `cli_upkeep` | the record, numbers, check and lint commands | `forest record`, `forest numbers`, `forest check`, `forest lint` |
-| `intake`, `adapters` | the turn record, the one writer of a raw lane, per-tool transcript readers and their cursors | `forest intake` |
+| `intake`, `adapters` | the turn record, the one writer of a raw lane, the adapter interface, the `jsonl` reader and the cursors | `forest intake` |
 | `timeline` | the time index and time phrases | `forest timeline` |
 | `search`, `scope` | the search index, coarse-to-fine retrieval, reader scopes | `forest search`, `forest read` |
 | `mcp` | the MCP server, one agent or one group | `forest mcp` |
@@ -611,7 +611,7 @@ provider = "none"               # none | openai-compatible
    passes the lint, and the structure tools: registry, move, levels, collections, record, archive, maps,
    validate, lint, with tests on made-up forests.
 2. **Connecting and finding.** Intake (the turn record, `forest intake`, the adapters), the time index,
-   search with scopes, the MCP server, and setup (`forest setup`, `forest doctor`, the guide, the plugins):
+   search with scopes, the MCP server, and setup (`forest setup`, `forest doctor`, the guide):
    section 15.
 3. **Growing.** The stage programs and their prompts, the nightly upkeep.
 
@@ -641,9 +641,10 @@ that agent's own job.
   by the contract's rules for them. A tool turn records that the tool ran, not what it printed, unless
   `intake.tool_output = "keep"`: tool output is where keys and tokens leak.
 - **Adapters.** An adapter knows one thing: how to read one tool's own transcript (where the files are, how
-  a turn is shaped, how to go on from a cursor). The package ships one for each coding agent it has a plugin
-  for and a generic one, `jsonl`, that reads a folder of files already in the record's shape, for any tool
-  that can export or write them. An adapter is a small module behind the entry point group
+  a turn is shaped, how to go on from a cursor). The package ships the generic one, `jsonl`, that reads a
+  folder of files already in the record's shape, for any tool that can export or write them. It ships no
+  reader of a particular program's own transcripts: it cannot keep up with every program's format. Whoever
+  knows a program writes its reader as a small module behind the entry point group
   `memory_forest.adapters`, so one more tool is one more module and no change to the core.
 - **A hook signals, a sweep catches up.** Where a tool has hooks (the end of a turn, the end of a
   session, before its context is compacted), the hook runs `forest intake --from <tool> --hook`. The hook
@@ -724,26 +725,20 @@ errors retain their separate `code` fields. A refusal of any command or tool has
   agent's name; which conversations are taken in and whether earlier ones are imported; which model command
   the nightly upkeep may spend; whether the machine's other agents are connected too. **Detected and shown
   as a proposal**: the timezone, the language, the installed tools, the paths.
-- Every write is previewed (`--dry-run` prints each file and block it would write), repeatable (a second
-  run changes nothing), bounded (one marked block in an instruction file, one hook entry, one MCP entry, one
-  plugin folder) and removable (`forest setup --remove <tool>`).
+- Setup writes nothing into another program's settings. It tells the agent what to register in its own
+  tool (the MCP entry that starts `forest mcp --as <agent>`, the command a hook runs, the lines of an
+  instruction file), and the agent registers them there. What setup writes in the forest is previewed
+  (`--dry-run` prints each file and block it would write), repeatable (a second run changes nothing) and
+  bounded.
 - `forest doctor` proves the connection instead of describing it: it sends a test turn through the tool's
   real path and finds it in the lane, calls the MCP server as that agent and gets an answer, and shows when
   the nightly upkeep will run.
-- The guide travels with the package: `forest guide` prints the setup guide for agents, and each plugin
-  carries it as its setup skill. A page on the web is for people to read; an agent is never asked to fetch
-  instructions from an address and follow them.
+- The guide travels with the package: `forest guide` prints the setup guide for agents. A page on the web
+  is for people to read; an agent is never asked to fetch instructions from an address and follow them.
 - The guide is tested like code: for each supported tool, a new agent in an empty sandbox is given the one
   sentence, and the run passes only when `forest doctor` does.
 
-### 15.5 Plugins
-
-One plugin folder with a manifest for each supported tool, and shared `skills/`, `hooks/hooks.json` and
-`.mcp.json`: the hooks call `forest intake`, the MCP entry starts `forest mcp --as <agent>`, and the setup
-skill is the guide. Installing the plugin and running `forest setup` are one path: with the plugin installed
-and no forest set up, the first session says so and names the command.
-
-### 15.6 An app that runs several agents
+### 15.5 An app that runs several agents
 
 Some hosts are not a coding tool on the owner's machine. One app runs several named agents (Kiln Bot and
 Ledger Bot, in Juno's studio) and offers one tool connection for all of them, no hooks, and no transcript
@@ -766,7 +761,7 @@ the owner's machine can read. Three questions, and the answers this package give
   the agent writes its own turn, with `memory_log` or with `forest log`. The write depends on the agent
   calling it.
 
-### 15.7 An agent you wrote yourself
+### 15.6 An agent you wrote yourself
 
 An agent the owner wrote, rather than an app's, has the same doors under the name the owner gave it.
 

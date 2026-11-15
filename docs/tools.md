@@ -416,9 +416,9 @@ forest credentials fix --all
 appends one JSON line per new turn to `06 istm/<agent>/<YYYY-MM-DD>.jsonl`, the day in the forest's time
 zone. The record and the writer's rules are in the [contract](contract.md), section 1.
 
-The package ships four adapters: `claude-code`, `codex`, `grok` and `jsonl`. `jsonl` reads a folder of
-files that are already in the record's shape. Another tool is another module in the entry point group
-`memory_forest.adapters`.
+The package ships one adapter, `jsonl`, which reads a folder of files that are already in the record's
+shape. It ships no reader of a particular program's own transcripts. Whoever knows a program writes its
+reader as a module in the entry point group `memory_forest.adapters`, and `--from` then takes its name.
 
 Intake for a tool stays off until `[intake.tools.<adapter>] enabled` is true. Until then the command says
 so and takes nothing, unless `--once` is given. The agent is `--as`, or `agent` in that table. Without
@@ -438,6 +438,8 @@ lane and the id index and sets the name in each cursor, in an order that a secon
 an interruption.
 
 A hook runs the same command with `--hook` and the tool's JSON on stdin, and reads only that transcript.
+For `jsonl` the object names the file in `transcript_path`, inside the configured folder; an adapter
+plugged in reads the object its own way.
 A missed hook on the same transcript is caught by its next hook. Other transcripts are caught by a sweep.
 In hook mode the process exits 0 and prints nothing, on every path, because a client can treat exit 2
 as a block and can add stdout to the model's context. A failure is one line under `.forest/intake/`

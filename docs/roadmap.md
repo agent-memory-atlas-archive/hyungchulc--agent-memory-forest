@@ -10,19 +10,28 @@ is being ported in three milestones.
    the lint, and the structure tools: `forest init`, `forest registry`, `forest move`, `forest levels`,
    `forest collections`, `forest record`, `forest archive`, `forest check` and `forest lint`, with tests on
    made-up forests.
-2. **Connecting and finding.** Intake (`forest intake` and the adapters), the search index
-   (`forest index`), time phrases (`forest timeline`), search with reader scopes (`forest search`,
-   `forest read`) and the MCP server (`forest mcp`) are in this tree. Still to build: setup that the
-   owner's agent carries out itself (`forest setup`, `forest doctor`, the guide for agents, one plugin
-   per tool).
-3. **Growing.** The stage programs and their prompts (`forest stage`): the daily record from the raw lanes,
-   the bounded filing run, and the nightly upkeep that applies levels, works the lint's upkeep list down,
-   trims records and re-checks stale current-state lines.
+2. **Connecting and finding.** Intake (`forest intake` with the generic `jsonl` adapter and the entry
+   point group `memory_forest.adapters` for adapters written elsewhere, `forest log` and `memory_log`),
+   the search index (`forest index`), time phrases (`forest timeline`), search with reader scopes
+   (`forest search`, `forest read`) and the MCP server (`forest mcp`) are in this tree. Being built: setup
+   that the owner's agent carries out itself (`forest setup`, `forest doctor`, the guide for agents).
+   Setup writes nothing into another program's settings; it tells the agent what to register in its own
+   tool.
+3. **Growing.** The daily record from the raw lanes, the bounded filing run, and the nightly upkeep that
+   applies levels, works the lint's upkeep list down, trims records and re-checks stale current-state
+   lines. In the first release the owner's own agent carries these out, following the contract
+   (section 10) and the guide.
 
 The documents, the contract and the synthetic forest are written. None of the `forest` commands is released
 yet; the 0.3 `memory-forest` command stays in the tree until they replace it.
 
-## After version 1
+## After the first release
+
+Not part of the first release:
+
+- readers of particular agent programs' own transcripts. The package cannot keep up with every program's
+  format; whoever knows a program writes its reader as an adapter behind `memory_forest.adapters`;
+- an engine that runs the daily, filing and upkeep stages itself.
 
 Candidate directions, not promises:
 

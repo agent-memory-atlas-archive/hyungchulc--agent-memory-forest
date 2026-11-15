@@ -126,7 +126,11 @@ python -m pip install -e .
 The version 1 commands are the `forest …` commands of the [design's package map](docs/v1-design.md#13-package-map).
 **Version 1.0.0a1 is this tree's alpha, not a stable release.** The milestone 1 commands below are in this tree and installed with it.
 Milestone 2 has intake, the search index, timeline, reader scopes and the MCP server in this tree. Setup
-is not, and the milestone 3 commands are not either. The 0.3 `memory-forest` command (documented in
+(`forest setup`, `forest doctor` and the guide for agents) is being built. Readers of particular agent
+programs' own transcripts, and an engine that runs the daily, filing and upkeep stages, are not part of the
+first release: an agent brings its conversation in through `forest log`, `memory_log`, the `jsonl` adapter
+or an adapter someone who knows its program plugs in, and the owner's own agent carries out the stages
+(contract, section 10). The 0.3 `memory-forest` command (documented in
 [`docs/archive-0.3/`](docs/archive-0.3/cli.md)) stays installed beside them.
 
 `forest init` is the only command that creates a forest. The others use `--root` when you pass it, and
@@ -148,7 +152,7 @@ forest record kinds                            # the update records' lines by ki
 forest numbers check --all                     # account, card, identity and phone numbers in full
 
 # Milestone 2: intake, the index, search, timeline and the MCP server are in this tree; setup is not
-forest intake --from jsonl --once              # new turns of that tool's transcript into its raw lane
+forest intake --from jsonl --once              # new records in the lane's shape into the agent's raw lane
 forest intake status                           # lines an adapter did not understand
 forest index build                             # .forest/index.sqlite, rebuildable
 forest search "the old oven" --as till-bot     # aliases first, then words, inside the reader's scope
@@ -157,11 +161,11 @@ forest mcp --as till-bot                       # search, read, timeline, navigat
 forest mcp --as-group studio-counter           # several agents, one connection; each call names its agent
 forest log --as kiln-bot                       # the turn is read from stdin
 forest agents                                  # groups, lanes, and when each agent was last seen
-forest setup                                   # not built yet: run by your agent
-forest doctor                                  # not built yet: proves a turn arrives and the MCP server answers
+forest setup                                   # being built: run by your agent
+forest doctor                                  # being built: proves a turn arrives and the MCP server answers
 
-# Milestone 3: growing (not built yet)
-forest stage …                                 # the daily, filing and upkeep stages around your model
+# Milestone 3: growing. Your own agent carries out the daily, filing and upkeep stages
+# (contract, section 10); an engine that runs them is not part of the first release.
 ```
 
 To see what a forest looks like before any code runs, read the invented
@@ -214,13 +218,17 @@ Agent Memory Forest is alpha software. The version in this tree is 1.0.0a1.
   `recover`), agents' trees made from their lanes or settings, and an undo journal for every commit, with
   tests on made-up forests and the synthetic forest passing every check.
 - **Milestone 2, connecting and finding (intake, the index, search and the MCP server are in this tree):**
-  `forest intake` reads each tool's transcripts into that agent's raw lane. `forest index` builds
+  `forest intake` reads records in the lane's shape (the `jsonl` adapter, or an adapter someone plugs in
+  through the entry point group `memory_forest.adapters`) into that agent's raw lane. `forest index` builds
   the search index (`.forest/index.sqlite` until `forest index reset` points at a new file).
   `forest search`, `forest read` and `forest timeline` answer from it, inside
   `agents.readable_trees`, and `forest mcp` serves search, read, timeline, navigate and `memory_log`.
-  Setup carried out by the owner's agent (`forest setup`, `forest doctor`, the guide, the plugins) is
-  not built yet ([design, section 15](docs/v1-design.md#15-connecting-agents)).
-- **Milestone 3, growing (not built yet):** the stage programs and their prompts, the nightly upkeep.
+  Setup carried out by the owner's agent (`forest setup`, `forest doctor`, the guide) is being built
+  ([design, section 15](docs/v1-design.md#15-connecting-agents)).
+- **Milestone 3, growing:** the daily record, the filing run and the nightly upkeep are carried out by the
+  owner's own agent, following the contract (section 10) and the guide.
+- **Not part of the first release:** readers of particular agent programs' own transcripts (whoever knows
+  a program writes its reader as an adapter), and an engine that runs the daily, filing and upkeep stages.
 
 The 0.3 code (`memory-forest`) stays in this tree until the version 1 commands replace it. It is suitable
 for evaluation and adaptation, not for unattended high-stakes decisions.

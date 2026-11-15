@@ -123,8 +123,11 @@ python -m pip install -e .
 
 버전 1의 명령은 [설계 문서의 package map](docs/v1-design.md#13-package-map)에 있는 `forest …` 명령들입니다.
 **버전 1.0.0a1은 이 트리의 alpha이며, 안정 배포는 아닙니다.** 아래 milestone 1 명령은 이 저장소에 들어 있고 함께 설치됩니다.
-milestone 2에서는 intake, 검색 index, timeline, 읽기 범위, MCP server가 이 저장소에 있습니다. setup은
-아직 없고, milestone 3의 명령도 아직 없습니다. 0.3의 `memory-forest` 명령([`docs/archive-0.3/`](docs/archive-0.3/cli.md)에
+milestone 2에서는 intake, 검색 index, timeline, 읽기 범위, MCP server가 이 저장소에 있습니다. setup
+(`forest setup`, `forest doctor`, 에이전트용 안내)은 만드는 중입니다. 특정 에이전트 프로그램의 대화 기록을
+읽는 reader와, daily·정리·관리 단계를 돌리는 엔진은 첫 배포에 들어가지 않습니다. 에이전트는 `forest log`,
+`memory_log`, `jsonl` 어댑터, 또는 그 프로그램을 아는 사람이 꽂아 넣는 어댑터로 자기 대화를 들여오고,
+그 단계들은 주인의 에이전트가 직접 합니다(contract 10장). 0.3의 `memory-forest` 명령([`docs/archive-0.3/`](docs/archive-0.3/cli.md)에
 설명)도 나란히 설치된 채로 남아 있습니다.
 
 `forest init`만 새 forest를 만듭니다. 다른 명령은 `--root`를 주면 그 폴더를 쓰고, 아니면 현재 폴더와 그
@@ -146,7 +149,7 @@ forest record kinds                            # update record의 줄을 종류�
 forest numbers check --all                     # 가리지 않고 다 적힌 계좌·카드·신분증·전화번호
 
 # Milestone 2: intake, index, 검색, timeline, MCP server는 이 저장소에 있음. setup은 아직 없음
-forest intake --from jsonl --once              # 그 도구의 대화 기록에서 새 턴만 raw lane으로
+forest intake --from jsonl --once              # lane 모양의 새 기록만 그 agent의 raw lane으로
 forest intake status                           # 어댑터가 알아보지 못한 줄의 수
 forest index build                             # .forest/index.sqlite, 지우고 다시 만들 수 있음
 forest search "the old oven" --as till-bot     # 별칭을 먼저, 그다음 단어, 읽는 쪽의 범위 안에서
@@ -155,11 +158,11 @@ forest mcp --as till-bot                       # search, read, timeline, navigat
 forest mcp --as-group studio-counter           # 에이전트 여럿이 연결 하나. 호출마다 자기 이름을 냄
 forest log --as kiln-bot                       # 턴은 stdin으로
 forest agents                                  # 그룹, lane, 연결에서 마지막으로 보인 때
-forest setup                                   # 아직 없음: 에이전트가 실행
-forest doctor                                  # 아직 없음: 턴이 들어오고 MCP server가 답하는지 확인
+forest setup                                   # 만드는 중: 에이전트가 실행
+forest doctor                                  # 만드는 중: 턴이 들어오고 MCP server가 답하는지 확인
 
-# Milestone 3: 자라기 (아직 없음)
-forest stage …                                 # 원하는 model을 둘러싼 daily, 정리, 관리 단계
+# Milestone 3: 자라기. daily, 정리, 관리 단계는 주인의 에이전트가 직접 합니다
+# (contract 10장). 그 단계를 돌리는 엔진은 첫 배포에 들어가지 않습니다.
 ```
 
 코드가 돌기 전에 forest가 어떻게 생겼는지 보고 싶다면 가상의 [synthetic forest](examples/synthetic-forest/README.md)를
@@ -208,14 +211,18 @@ Agent Memory Forest는 alpha 단계이며, 이 트리의 버전은 1.0.0a1입니
   agent tree, 모든 commit의 되돌리기 journal. 가상 forest로 하는 테스트가 있고, synthetic forest는 모든
   검사를 통과합니다.
 - **Milestone 2, 연결하고 찾기 (intake, index, 검색, MCP server는 이 저장소에 있음):** `forest intake`가
-  각 도구의 대화 기록을 그 agent의 raw lane으로 받습니다. `forest index`가 `.forest/index.sqlite`를 만들고,
+  lane 모양의 기록(`jsonl` 어댑터, 또는 entry point group `memory_forest.adapters`로 꽂아 넣은 어댑터)을
+  그 agent의 raw lane으로 받습니다. `forest index`가 `.forest/index.sqlite`를 만들고,
   `forest search`, `forest read`, `forest timeline`이 그 index에서 `agents.readable_trees` 범위로 답합니다.
   `forest mcp`는 search, read, timeline, navigate, `memory_log`를 제공합니다. `--as-group`은 에이전트
   여럿이 연결 하나를 쓸 때입니다. 에이전트는 그 이름이고(어느 문자로 쓴 이름이든), 그룹은 서로를 막는 벽이
   아닙니다. 호출 하나가 턴 하나이고, `forest log`는 그 쓰기의 명령입니다. 주인의 agent가 직접 하는
-  설치(`forest setup`, `forest doctor`, 안내, plugin)는 아직 없습니다
+  설치(`forest setup`, `forest doctor`, 안내)는 만드는 중입니다
   ([design 15장](docs/v1-design.md#15-connecting-agents)).
-- **Milestone 3, 자라기 (아직 없음):** 단계별 프로그램과 prompt, 야간 관리.
+- **Milestone 3, 자라기:** daily 기록, 정리 실행, 야간 관리는 주인의 에이전트가 contract(10장)와 안내를
+  따라 직접 합니다.
+- **첫 배포에 들어가지 않는 것:** 특정 에이전트 프로그램의 대화 기록을 읽는 reader(프로그램을 아는 사람이
+  어댑터로 만듭니다), daily·정리·관리 단계를 돌리는 엔진.
 
 0.3 코드(`memory-forest`)는 버전 1 명령이 대신할 때까지 저장소에 남아 있습니다. 평가하고 응용해 보기에는
 알맞지만, 사람이 지켜보지 않는 중요한 결정에 쓸 수준은 아닙니다.
