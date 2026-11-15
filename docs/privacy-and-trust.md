@@ -8,7 +8,8 @@ the forest is stored, which reader asks, which pages are opened, and what the ca
 | Data | Sensitivity | Handling |
 | --- | --- | --- |
 | the forest (`01 xltm` to `04 stm`) | highest | keep outside any public repository and back it up privately |
-| `06 istm` and `05 daily` | raw and often identifying | apply your own retention; secrets are removed before the daily record, and the raw lane keeps its bytes |
+| `transcripts/<id>.jsonl` | an agent's record file: the words as they were said, unmasked | a hand-over, not an archive: the agent's exporter empties it once `forest intake --json` says the file was `read_to_end` |
+| `06 istm` and `05 daily` | raw and often identifying | apply your own retention; numbers and sign-in values are masked as a turn enters the lane, and the lane keeps the bytes it was given |
 | `.forest/` (registry, indexes, move log, archive) | derived, but carries names and text | protect like the forest; everything except the move log and the archive can be rebuilt |
 | search results | page sections as written | do not log them broadly |
 | the synthetic example | public | keep it visibly invented and run the release audit |

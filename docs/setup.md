@@ -40,15 +40,20 @@ changes nothing; a changed answer says what changed.
 
 `todo` is what the agent then does in its own tool, in order, with paths as the caller gave them:
 `register_mcp` (the `forest mcp` command line), `bring_turns` (the record's shape, the file the agent
-appends to, and the intake command), `own_turn` (`memory_log` or `forest log`), both left out for
+appends to, the intake command, and when the exporter empties the file), `own_turn` (`memory_log` or `forest log`, when no exporter brings the turns in), both left out for
 `--conversations none`, `routine` for the keeper
 (`forest guide routine`, when, which model for which pass, and that the keeper schedules it itself), and
 `verify` (`forest doctor`).
 
 Each agent appends to its own file, named by its id, in one folder, and brings it in with
-`forest intake --from jsonl --as <id> --transcript <forest>/transcripts/<id>.jsonl --once --root <forest>`.
+`forest intake --from jsonl --as <id> --transcript <forest>/transcripts/<id>.jsonl --once --root <forest> --json`.
 Intake keeps a cursor per file name, so two agents' files never share one; the first run reads a file from
-its first line and a line appended later is read once. A forest whose settings set `path` under
+its first line and a line appended later is read once. The file is a hand-over, not an archive: it holds the
+words as they were said, unmasked, until it is emptied, while the lane keeps the masked copy. The answer
+lists the file under `files` with `read_to_end`; when that is `true`, every byte was read and decided and
+the exporter empties the file; when it is `false`, a turn still waits (for its session's owner turn, or for
+its newline) and the file stays as it is. A dry run never says `true`, and only one exporter run goes at a
+time. A forest whose settings set `path` under
 `[intake.tools.jsonl]` is refused with `setup_jsonl_path_set` (`report`): a sweep of that folder would give
 every file in it to one agent.
 

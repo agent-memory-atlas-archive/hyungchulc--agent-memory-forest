@@ -485,6 +485,41 @@ A tool turn records that the tool ran (`ran <name>`), not what it printed, unles
 hook sees the name in its environment. Setup is not part of this command. Search, read, timeline and the MCP server are the next
 sections.
 
+### The record file is a hand-over
+
+An agent that joined with `forest setup` has an exporter that appends its turns to `transcripts/<id>.jsonl`
+and then runs `forest intake --from jsonl --as <id> --transcript <file> --once --root <forest> --json`. The
+file holds the words as they were said, unmasked, until it is emptied; the lane keeps the masked copy. So
+the file is a hand-over, not an archive, and the answer says when it may be emptied. `files` has one entry
+per record file the run read, with `transcript`, `turns`, `unknown`, `note` and `read_to_end`.
+`read_to_end: true` says every byte of the file was read and decided, so the exporter may empty it. A turn
+that still waits keeps it `false`: an agent's turn whose session has no owner turn yet (`note: waiting for
+the owner turn`), or a last line without its newline. A dry run never says `true`. Appending, intake and
+emptying are one run of the exporter, and only one run goes at a time.
+
+```sh
+forest intake --from jsonl --as kiln-bot --transcript studio-forest/transcripts/kiln-bot.jsonl --once --root studio-forest --json
+# {
+#   "adapter": "jsonl",
+#   "agent": "kiln-bot",
+#   …
+#   "files": [
+#     {
+#       "note": "",
+#       "read_to_end": true,
+#       "transcript": "kiln-bot.jsonl",
+#       "turns": 2,
+#       "unknown": 0
+#     }
+#   ],
+#   …
+#   "wrote": 2
+# }
+: > studio-forest/transcripts/kiln-bot.jsonl   # read to its end: the exporter empties the file
+```
+
+After the file is emptied, the next lines appended to it are read from its start, once.
+
 ## `forest index`
 
 `forest index build` writes the search index. With no pointer the file is `.forest/index.sqlite`.
@@ -926,9 +961,12 @@ for a forest that does not exist yet.
 1. `register_mcp`: the `forest mcp --as <id> --root <forest>` line to register as an MCP server in the
    agent's own tool; a tool without MCP uses the same doors as commands.
 2. `bring_turns` (not for `--conversations none`): the record's `fields` and an `example` line, the `file`
-   the agent's exporter appends to, and the intake command that reads it,
-   `forest intake --from jsonl --as <id> --transcript <forest>/transcripts/<id>.jsonl --once --root <forest>`.
-3. `own_turn` (not for `--conversations none`): `memory_log`, or `forest log` with the turn on stdin.
+   the agent's exporter appends to, the intake command that reads it,
+   `forest intake --from jsonl --as <id> --transcript <forest>/transcripts/<id>.jsonl --once --root <forest> --json`,
+   and `empty_when`: the exporter empties the file when the answer's entry for it under `files` says
+   `read_to_end: true` ([the hand-over](#the-record-file-is-a-hand-over)).
+3. `own_turn` (not for `--conversations none`): `memory_log`, or `forest log` with the turn on stdin;
+   nothing to do when the exporter brings the agent's turns in.
 4. `routine` (for `--keeper this` only): `forest guide routine`, with `when` and the `models` for the daily,
    filing and upkeep passes; the agent schedules the routine itself.
 5. `verify`: the `forest doctor` command.
