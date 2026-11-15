@@ -932,13 +932,16 @@ def _read_to_end(root, adapter_name: str, transcript: Transcript) -> bool:
 
     True says every byte of the file as it is now has been read and decided (taken in, known already,
     counted as unknown, or left out as memory work or as excluded), so whoever wrote the file may empty it.
-    A line that waits for the owner turn, for a sweep or for its newline leaves it False."""
-    cursor = _load_cursor(root, adapter_name, transcript.key, dry_run=True)
-    if cursor.get("long_line"):
-        return False
+    A line that waits for the owner turn, for a sweep or for its newline leaves it False.
+
+    It is asked after the lane is written, so it never raises: a fault here must not turn the answer of a
+    stored turn into a refusal. What cannot be read answers False, and the file is kept."""
     try:
+        cursor = _load_cursor(root, adapter_name, transcript.key, dry_run=True)
+        if cursor.get("long_line"):
+            return False
         return int(cursor.get("offset") or 0) >= transcript.path.stat().st_size
-    except (OSError, TypeError, ValueError):
+    except (MemoryForestError, system.Outcome, OSError, TypeError, ValueError):
         return False
 
 

@@ -377,6 +377,19 @@ class WaysOutTests(unittest.TestCase):
                     self.assertEqual(answers[1], tool_answers[(paired, who)], f"{label} {paired} {who}")
 
 
+def _opens_ended(root: Path, seconds: float = 10.0) -> bool:
+    """Wait until this process holds no index open of ``root``, live or abandoned: an event, not a sleep."""
+    under = os.path.realpath(root) + os.sep
+    until = time.monotonic() + seconds
+    with system._OPEN_CHANGED:
+        while any(os.path.realpath(key).startswith(under) for key in (*system._LIVE_OPEN, *system._ABANDONED)):
+            left = until - time.monotonic()
+            if left <= 0:
+                return False
+            system._OPEN_CHANGED.wait(left)
+    return True
+
+
 class DiskProductTests(WaysOutTests):
     """Every distinct real-disk step of FactsOnDiskTests, crossed with the same parser and tool table."""
     bound_seconds = 1800
@@ -435,6 +448,10 @@ class DiskProductTests(WaysOutTests):
                     yield current
             finally:
                 self.assertTrue(case.doCleanups(), "disk-cell cleanup failed")
+                # A holder released just now lets an index open that the deadline abandoned go on: it opens
+                # the index and closes it again, and SQLite makes and removes its sidecar files as it does.
+                # The folder is removed only once that open has ended, or its removal races those files.
+                self.assertTrue(_opens_ended(root), "an abandoned index open never ended")
 
 
 if __name__ == "__main__":

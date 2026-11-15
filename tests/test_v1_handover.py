@@ -18,7 +18,8 @@ from pathlib import Path
 from unittest import mock
 
 import bounds  # noqa: F401  (installs a deadline for every unittest invocation)
-from memory_forest import cli
+from memory_forest import cli, intake
+from memory_forest.errors import MemoryForestError
 
 
 def forest(*argv: str) -> tuple[int, str, str]:
@@ -122,6 +123,24 @@ class HandOverTests(unittest.TestCase):
         entry = self.take("--dry-run")
         self.assertEqual((entry["turns"], entry["read_to_end"]), (1, False))
         self.assertEqual(self.lane(), [])
+
+    def test_a_fault_after_the_turns_are_stored_keeps_the_answer_and_the_file(self) -> None:
+        # The question is asked after the lane is written: a forest that cannot be read at that moment
+        # must not turn the stored turns into a refusal. The answer says false, and the file is kept.
+        self.file.write_text(line("09:15:00", "owner", "Fire glaze loads to cone 5 for now."))
+        real = intake._load_cursor
+
+        def failing(root, adapter_name, source_key, *, dry_run=False):
+            if dry_run:
+                raise MemoryForestError("root_not_found", "The selected forest root does not exist.")
+            return real(root, adapter_name, source_key, dry_run=dry_run)
+
+        with mock.patch.object(intake, "_load_cursor", failing):
+            entry = self.take()
+        self.assertEqual((entry["turns"], entry["read_to_end"]), (1, False))
+        self.assertEqual(len(self.lane()), 1)
+        # The next run, with the forest readable, says the file was read to its end.
+        self.assertEqual((self.take()["turns"], self.take()["read_to_end"]), (0, True))
 
     def test_the_words_as_they_were_said_leave_the_forest_with_the_file(self) -> None:
         said = "The door code is 4471."
