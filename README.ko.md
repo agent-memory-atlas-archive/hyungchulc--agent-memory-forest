@@ -4,7 +4,7 @@
 
 [English README](README.md)
 
-[![CI](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml/badge.svg)](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml)
+[![CI](https://github.com/hyungchulc/agent-memory-forest/actions/workflows/ci.yml/badge.svg)](https://github.com/hyungchulc/agent-memory-forest/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
@@ -114,15 +114,15 @@ Windows에서는 WSL2를 쓰고 forest를 Linux filesystem 안에 두세요. 먼
 주세요.
 
 ```sh
-git clone https://github.com/hyungchulc/memory-forest.git
-cd memory-forest
+git clone https://github.com/hyungchulc/agent-memory-forest.git
+cd agent-memory-forest
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
 ```
 
 버전 1의 명령은 [설계 문서의 package map](docs/v1-design.md#13-package-map)에 있는 `forest …` 명령들입니다.
-**버전 1.0.0a1은 이 트리의 alpha이며, 안정 배포는 아닙니다.** 아래 milestone 1 명령은 이 저장소에 들어 있고 함께 설치됩니다.
+**버전 1.0.0b1은 이 트리의 beta이며, 안정 배포는 아닙니다.** 아래 milestone 1 명령은 이 저장소에 들어 있고 함께 설치됩니다.
 milestone 2에서는 intake, 검색 index, timeline, 읽기 범위, MCP server가 이 저장소에 있습니다. setup
 (`forest setup`, `forest doctor`, 에이전트용 안내)은 만드는 중입니다. 특정 에이전트 프로그램의 대화 기록을
 읽는 reader와, daily·정리·관리 단계를 돌리는 엔진은 첫 배포에 들어가지 않습니다. 에이전트는 `forest log`,
@@ -203,7 +203,7 @@ forest doctor                                  # 만드는 중: 턴이 들어오
 
 ## 현재 상태
 
-Agent Memory Forest는 alpha 단계이며, 이 트리의 버전은 1.0.0a1입니다.
+Agent Memory Forest는 beta 단계이며, 이 트리의 버전은 1.0.0b1입니다.
 
 - **작성 완료:** contract, 설계, concepts와 agents 안내서, contract를 따르는 가상의 synthetic forest.
 - **Milestone 1, 뼈대 (이 저장소에 있음, 미배포):** `forest` 구조 명령(registry, move, levels, collections,

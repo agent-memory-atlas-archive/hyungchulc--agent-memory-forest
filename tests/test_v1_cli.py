@@ -123,7 +123,7 @@ class ForestCommandTests(ForestTestCase):
 
         from memory_forest import __version__
 
-        self.assertEqual(__version__, "1.0.0a1")
+        self.assertEqual(__version__, "1.0.0b1")
         project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(project["project"]["dynamic"], ["version"])
         self.assertEqual(project["tool"]["setuptools"]["dynamic"]["version"]["attr"], "memory_forest.__version__")
@@ -141,7 +141,7 @@ class ForestCommandTests(ForestTestCase):
             self.assertNotIn("버전 1.0.0은 아직 배포되지 않았습니다", text, name)
         self.assertIn(f"## Unreleased — {__version__}", (REPOSITORY_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"))
         workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn(f'memory_forest.__version__ == "{__version__}" == version("memory-forest")', workflow)
+        self.assertIn(f'memory_forest.__version__ == "{__version__}" == version("agent-memory-forest")', workflow)
         reported = forest("--version", cwd=self.base)
         self.assertEqual(reported.returncode, 0, reported.stderr)
         self.assertEqual(reported.stdout.decode().strip(), f"forest {__version__}")

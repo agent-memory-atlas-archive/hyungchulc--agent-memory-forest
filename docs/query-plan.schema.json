@@ -1,5 +1,5 @@
 {
-  "$id": "https://github.com/hyungchulc/memory-forest/blob/main/docs/query-plan.schema.json",
+  "$id": "https://github.com/hyungchulc/agent-memory-forest/blob/main/docs/query-plan.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$comment": "Structural precheck only. The CLI requires schema_version to use the exact JSON integer token 1 and applies stricter Unicode, uniqueness, byte-size, and configured-limit checks.",
   "additionalProperties": false,

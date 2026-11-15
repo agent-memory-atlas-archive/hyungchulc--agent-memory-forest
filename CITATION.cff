@@ -2,12 +2,12 @@ cff-version: 1.2.0
 message: "If you use Agent Memory Forest in research or software, please cite it using this metadata."
 title: "Agent Memory Forest"
 type: software
-version: 1.0.0a1
+version: 1.0.0b1
 authors:
   - family-names: Choi
     given-names: Hyungchul
-repository-code: "https://github.com/hyungchulc/memory-forest"
-url: "https://github.com/hyungchulc/memory-forest"
+repository-code: "https://github.com/hyungchulc/agent-memory-forest"
+url: "https://github.com/hyungchulc/agent-memory-forest"
 license: MIT
 abstract: >-
   A local, provenance-aware filesystem architecture and reference CLI for

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/hyungchulc/memory-forest/blob/main/docs/daily-plan.schema.json",
+  "$id": "https://github.com/hyungchulc/agent-memory-forest/blob/main/docs/daily-plan.schema.json",
   "title": "Memory Forest Daily Plan v1",
   "type": "object",
   "additionalProperties": false,

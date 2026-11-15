@@ -4,7 +4,7 @@
 
 [한국어 README](README.ko.md)
 
-[![CI](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml/badge.svg)](https://github.com/hyungchulc/memory-forest/actions/workflows/ci.yml)
+[![CI](https://github.com/hyungchulc/agent-memory-forest/actions/workflows/ci.yml/badge.svg)](https://github.com/hyungchulc/agent-memory-forest/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
@@ -116,15 +116,15 @@ standard library. On Windows, use WSL2 and keep the forest on the Linux filesyst
 [WSL2 guide](docs/wsl2.md) first.
 
 ```sh
-git clone https://github.com/hyungchulc/memory-forest.git
-cd memory-forest
+git clone https://github.com/hyungchulc/agent-memory-forest.git
+cd agent-memory-forest
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
 ```
 
 The version 1 commands are the `forest …` commands of the [design's package map](docs/v1-design.md#13-package-map).
-**Version 1.0.0a1 is this tree's alpha, not a stable release.** The milestone 1 commands below are in this tree and installed with it.
+**Version 1.0.0b1 is this tree's beta, not a stable release.** The milestone 1 commands below are in this tree and installed with it.
 Milestone 2 has intake, the search index, timeline, reader scopes and the MCP server in this tree. Setup
 (`forest setup`, `forest doctor` and the guide for agents) is being built. Readers of particular agent
 programs' own transcripts, and an engine that runs the daily, filing and upkeep stages, are not part of the
@@ -209,7 +209,7 @@ Details: [Agents](docs/multi-agent.md).
 
 ## Status
 
-Agent Memory Forest is alpha software. The version in this tree is 1.0.0a1.
+Agent Memory Forest is beta software. The version in this tree is 1.0.0b1.
 
 - **Written:** the contract, the design, the concepts and agents guides, and an invented synthetic forest
   that follows the contract.

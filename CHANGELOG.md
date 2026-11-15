@@ -2,7 +2,7 @@
 
 All notable changes to Memory Forest are documented in this file. The project follows [Semantic Versioning](https://semver.org/) once a version is released.
 
-## Unreleased — 1.0.0a1
+## Unreleased — 1.0.0b1
 
 - The filesystem boundary is checked with import allow-lists and interpreter audit events during both
   fault sweeps. Tests have a process deadline, independent disk witnesses, and separate assertion and
@@ -402,9 +402,12 @@ The lane commit fixes `stored` and the turn id; ids, caller-key and source recor
 
 ### Changed
 
+- the repository is `https://github.com/hyungchulc/agent-memory-forest` and the distribution is
+  `agent-memory-forest`, the name the project is presented under; the import name `memory_forest` and the
+  commands `forest` and `memory-forest` stay
 - CI also runs on pushes to `v1`. The comparison states 2026-11-11 once, as the day the other projects'
   documents were read
-- the package version is `1.0.0a1`, defined once as `memory_forest.__version__`. The `forest` command and
+- the package version is `1.0.0b1`, a beta, defined once as `memory_forest.__version__`. The `forest` command and
   the package metadata read it, and a test checks the citation, this heading and the CI smoke assertion
   against it. The `memory-forest` command reports `0.3.0`, the release that command is
 - the project is presented as "Agent Memory Forest"; `README.md` and `README.ko.md` are rewritten for

@@ -11,8 +11,8 @@ Security vulnerabilities should follow [SECURITY.md](SECURITY.md), not a public 
 ## Development setup
 
 ```sh
-git clone https://github.com/hyungchulc/memory-forest.git
-cd memory-forest
+git clone https://github.com/hyungchulc/agent-memory-forest.git
+cd agent-memory-forest
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
