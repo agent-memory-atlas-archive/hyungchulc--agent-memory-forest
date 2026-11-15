@@ -72,7 +72,9 @@ def _setup_lines(result: dict[str, Any]) -> list[str]:
     verb = "would write" if result["dry_run"] else "wrote"
     lines += [f"{verb}: {item}" for item in result["changed"]] or [f"{verb}: nothing (already set up so)"]
     for number, step in enumerate(result["todo"], 1):
-        lines += [f"todo {number}. {step['step']}: {step['why']}", f"  command: {step['command']}"]
+        lines.append(f"todo {number}. {step['step']}: {step['why']}")
+        if step.get("command"):
+            lines.append(f"  command: {step['command']}")
         if step.get("text"):
             lines.append(f"  {step['text']}")
     return lines
@@ -82,7 +84,7 @@ def cmd_doctor(arguments: argparse.Namespace) -> int:
     _as_agent_door(arguments)
     root = forest_root(arguments)
     result = doctor.run(root, arguments.name, shown_root=getattr(arguments, "root", None) or "",
-                        now=datetime.now(timezone.utc), phrase=arguments.phrase)
+                        now=datetime.now(timezone.utc), phrase=arguments.phrase, doors=arguments.doors)
     if arguments.json:
         _print_json(result)
     else:
@@ -132,6 +134,9 @@ COMMANDS: list[ForestCommand] = [
         (
             arg("--as", dest="name", required=True, help="this agent's name or id"),
             arg("--phrase", action="store_true", help="write and print a new phrase to say and bring in"),
+            arg("--doors", choices=doctor.DOORS, default=doctor.DOORS[0],
+                help="how this agent's tool reaches the forest: mcp (the default; the check wants a connection "
+                     "it has seen) or commands (a tool without MCP; the check is the search doctor runs)"),
         ),
         epilog="A refusal names its next move in next: fix, retry, run or report. docs/refusals.md lists every "
                "code, its move and when it is given.",

@@ -33,6 +33,9 @@ WORDS = (
     "umber", "velvet", "walnut", "willow", "wren", "yarrow", "zephyr", "kiln", "clay",
 )
 PHRASE_PREFIX = "forest doctor phrase"
+# How the agent's tool reaches the forest. A connection leaves a record of when it was seen; a tool without
+# MCP runs the commands, and a command leaves none, so its proof is the search doctor itself runs.
+DOORS = ("mcp", "commands")
 
 
 def _check(name: str, state: str, evidence: str, *, command: str = "", next_move: str = "") -> dict[str, Any]:
@@ -66,14 +69,15 @@ def _phrase(root: Path, agent_id: str) -> dict[str, Any] | None:
 def resolve(root: Path, config: Config, given: str) -> tuple[str | None, str]:
     """The agent ``given`` names over the whole forest (None when no agent has it) and the name to show."""
     name = names.check(given)
-    rows = groups._agent_rows(root, config)
+    rows = groups.agent_names(root, config)
     found = names.find(name, rows)
     if len(found) != 1:
         return None, setup_agent.display(name)
     return found[0], dict(rows).get(found[0]) or found[0]
 
 
-def run(root: Path, given: str, *, shown_root: str, now: datetime, phrase: bool = False) -> dict[str, Any]:
+def run(root: Path, given: str, *, shown_root: str, now: datetime, phrase: bool = False,
+        doors: str = DOORS[0]) -> dict[str, Any]:
     """Every check for the agent ``given`` names. ``shown_root`` is the forest as the caller named it."""
     root_flag = f" --root {shlex.quote(shown_root)}" if shown_root else ""
     config = load_config(root)
@@ -93,8 +97,8 @@ def run(root: Path, given: str, *, shown_root: str, now: datetime, phrase: bool 
     if agent_id is not None and phrase:
         said = new_phrase(root, agent_id, now=now)
     found.append(_agent(root, config, agent_id, stored, setup_command))
-    found.append(_turns(root, agent_id, stored, answers, root_flag))
-    found.append(_finding(root, agent_id, stored, root_flag))
+    found.append(_turns(root, agent_id, stored, answers, root_flag, doors))
+    found.append(_finding(root, agent_id, stored, root_flag, doors))
     found.append(_routine(root, config, answers, now, root_flag))
     states = {item["state"] for item in found}
     result = "problem" if "problem" in states else "todo" if "todo" in states else "passed"
@@ -171,13 +175,16 @@ def _source(turn: dict[str, Any]) -> str:
     return f"adapter:{source.get('adapter')}" if isinstance(source, dict) else "unknown"
 
 
-def _turns(root: Path, agent_id: str | None, stored: str, answers: dict[str, Any], root_flag: str) -> dict[str, Any]:
+def _turns(root: Path, agent_id: str | None, stored: str, answers: dict[str, Any], root_flag: str,
+           doors: str = DOORS[0]) -> dict[str, Any]:
     if answers.get("conversations") == "none":
         return _check("turns", "skipped", "the owner chose to bring in no conversations")
     if agent_id is None:
         return _check("turns", "todo", "no agent yet", next_move="run",
                       command=f"forest setup --as {shlex.quote(stored)}{root_flag} --json")
-    asking = f"forest doctor --as {shlex.quote(stored)}{root_flag} --phrase"
+    # The follow-up names the agent by its id, as every printed command does, and keeps the caller's doors.
+    asking = (f"forest doctor --as {agent_id}{root_flag}"
+              + (f" --doors {doors}" if doors != DOORS[0] else "") + " --phrase")
     held = _phrase(root, agent_id)
     # A lane day is the forest's local day: start one day before the phrase's own date, whatever the zone.
     try:
@@ -202,7 +209,8 @@ def _turns(root: Path, agent_id: str | None, stored: str, answers: dict[str, Any
                   f"{_source(first)}")
 
 
-def _finding(root: Path, agent_id: str | None, stored: str, root_flag: str) -> dict[str, Any]:
+def _finding(root: Path, agent_id: str | None, stored: str, root_flag: str,
+             doors: str = DOORS[0]) -> dict[str, Any]:
     build = f"forest index build{root_flag}"
     try:
         state = search.status(root)
@@ -225,9 +233,13 @@ def _finding(root: Path, agent_id: str | None, stored: str, root_flag: str) -> d
                       next_move=exc.next_step or "report", command=exc.command or "")
     searched = f"index built {state.get('built_at')}; a search as {agent_id} answers (trees: " \
                f"{', '.join(answer.get('trees') or []) or 'none'})"
+    if doors == "commands":
+        return _check("finding", "ok", f"{searched}; this agent's tool has no MCP and uses the commands, which "
+                      "is how this search ran")
     seen = groups._read_seen(root).get(agent_id)
     if not isinstance(seen, dict):
-        return _check("finding", "todo", f"{searched}; never seen on a connection", next_move="run",
+        return _check("finding", "todo", f"{searched}; never seen on a connection (a tool without MCP runs the "
+                      "doctor with --doors commands)", next_move="run",
                       command=f"forest mcp --as {agent_id}{root_flag}")
     return _check("finding", "ok", f"{searched}; last seen on a connection at {seen.get('last') or seen.get('at')} "
                   f"({seen.get('tool')}, {seen.get('transport')})")

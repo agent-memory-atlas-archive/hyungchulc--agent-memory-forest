@@ -229,10 +229,11 @@ class SetupTests(Scratch):
     def test_a_changed_answer_says_what_changed(self) -> None:
         self.setup_done(*answers())
         settings = (self.root / "forest.toml").read_text()
-        changed = self.setup_done(*answers(main="no"))["changed"]
+        changed = self.setup_done(*answers(main="no", keeper="nobody"))["changed"]
         self.assertEqual(len(changed), 2, changed)
         self.assertIn("taken out of agents.orchestrators", changed[0])
         self.assertIn("main was yes, now no", changed[1])
+        self.assertIn("keeper was this, now nobody", changed[1])
         self.assertEqual(load_config(self.root).agents.orchestrators, ())
         after = (self.root / "forest.toml").read_text()
         self.assertEqual(after.replace('orchestrators = []', 'orchestrators = ["kiln-bot"]'), settings)
@@ -287,6 +288,98 @@ class SetupTests(Scratch):
         self.assertEqual(snapshot(self.root), before)
         # The keeper itself may answer again.
         self.assertEqual(self.setup_done(*answers())["changed"], [])
+
+    def test_a_keeper_that_is_not_the_main_agent_is_asked_about_and_nothing_is_written(self) -> None:
+        # The routine reads every agent's turns, and only a main agent's scope holds them.
+        code, body = as_json("setup", *answers(main="no"))
+        self.assertEqual((code, body["next"]), (1, "ask_owner"))
+        (question,) = body["questions"]
+        self.assertEqual((question["key"], question["flag"], question["choices"]), ("main", "--main", ["yes", "no"]))
+        self.assertIn("--keeper other", question["question"])
+        self.assertEqual(snapshot(self.base), {})
+        # With other answers still missing it is asked with them, in the same round.
+        code, body = as_json("setup", "--root", "studio-forest", "--as", "Kiln Bot", "--main", "no",
+                             "--conversations", "none", "--keeper", "this")
+        self.assertEqual([item["key"] for item in body["questions"]], ["when", "daily_model", "filing_model", "main"])
+        self.assertEqual(snapshot(self.base), {})
+        # In a forest that exists the answer is the same question, and nothing changes.
+        self.setup_done(*answers(keeper="nobody"))
+        before = snapshot(self.root)
+        code, body = as_json("setup", *answers(**{"as_name": "Ledger Bot", "main": "no"}))
+        self.assertEqual((code, [item["key"] for item in body["questions"]]), (1, ["main"]))
+        self.assertEqual(snapshot(self.root), before)
+        # A keeper that is the main agent reads another agent's turns, as the routine's commands do.
+        self.setup_done(*answers())
+        ledger = self.setup_done(*answers(**{"as_name": "Ledger Bot", "main": "no", "keeper": "other"}))
+        steps = {step["step"]: step for step in ledger["todo"]}
+        Path(steps["bring_turns"]["file"]).write_text(json.dumps(
+            {"at": datetime.now(timezone.utc).isoformat(), "session": "s1", "role": "owner",
+             "text": "Ledger Bot, the clay order is due on Friday."}) + "\n")
+        self.assertEqual(forest(*shlex.split(steps["bring_turns"]["command"])[1:])[0], 0)
+        (lane,) = sorted((self.root / "06 istm" / "ledger-bot").glob("*.jsonl"))
+        code, out, err = forest("read", f"06 istm/ledger-bot/{lane.name}", "--as", "kiln-bot", "--root", "studio-forest")
+        self.assertEqual(code, 0, err)
+        self.assertIn("clay order", out)
+
+    def test_an_owner_who_answers_none_closes_both_write_doors(self) -> None:
+        done = self.setup_done(*answers(keeper="nobody"))
+        steps = {step["step"]: step for step in done["todo"]}
+        turns = Path(steps["bring_turns"]["file"])
+        intake = shlex.split(steps["bring_turns"]["command"])[1:]
+
+        def said(text: str) -> str:
+            return json.dumps({"at": datetime.now(timezone.utc).isoformat(), "session": "s1", "role": "owner",
+                               "text": text}) + "\n"
+
+        def lane() -> list[str]:
+            return [json.loads(row)["text"] for path in sorted((self.root / "06 istm" / "kiln-bot").glob("*.jsonl"))
+                    for row in path.read_text().splitlines()]
+
+        turns.write_text(said("The blue bowls go in the next glaze firing."))
+        self.assertEqual(forest(*intake)[0], 0)
+        self.assertEqual(len(lane()), 1)
+        # The owner answers none. The todo says to turn the exporter off, and the doors refuse what still runs.
+        changed = self.setup_done(*answers(keeper="nobody", conversations="none", earlier=None))
+        self.assertIn("conversations was all, now none", " ".join(changed["changed"]))
+        self.assertEqual([step["step"] for step in changed["todo"]], ["register_mcp", "no_recording", "verify"])
+        with turns.open("a", encoding="utf-8") as handle:
+            handle.write(said("The green bowls wait for Friday."))
+        for argv in (intake, [*intake, "--dry-run"]):
+            code, out, _err = forest(*argv)
+            refused = json.loads(out)["error"]
+            self.assertEqual((code, refused["code"], refused["next"]), (2, "recording_off", "report"), argv)
+        code, body = as_json("log", "--as", "kiln-bot", "--root", "studio-forest", stdin=b"A turn of my own.")
+        self.assertEqual((code, body["error"]["code"]), (2, "recording_off"))
+        reply = mcp._call(self.root, "kiln-bot", {"name": "memory_log", "arguments": {"text": "A turn of my own."}},
+                          "stdio")
+        self.assertTrue(reply["isError"], reply)
+        self.assertIn("recording_off", json.dumps(reply))
+        self.assertEqual(len(lane()), 1)
+        # Another agent of the forest is not touched by that answer.
+        other = self.setup_done(*answers(**{"as_name": "Ledger Bot", "main": "no", "keeper": "nobody"}))
+        code, _body = as_json("log", "--as", other["agent"]["id"], "--root", "studio-forest", stdin=b"Ledger checked.")
+        self.assertEqual(code, 0)
+        # The owner answers all again: the same command takes the turn that waited in the file.
+        self.setup_done(*answers(keeper="nobody"))
+        self.assertEqual(forest(*intake)[0], 0)
+        self.assertEqual(len(lane()), 2)
+
+    def test_an_agent_renamed_in_the_forest_is_the_same_agent_by_either_name(self) -> None:
+        self.setup_done(*answers(keeper="nobody"))
+        code, _out, err = forest("move", "rename", "kiln-bot", "--name", "Glaze Bot", "--root", "studio-forest")
+        self.assertEqual(code, 0, err)
+        config = load_config(self.root)
+        for name in ("Glaze Bot", "glaze bot", "Kiln Bot", "kiln-bot"):
+            self.assertEqual(doctor.resolve(self.root, config, name)[0], "kiln-bot", name)
+        self.assertEqual(doctor.resolve(self.root, config, "Glaze Bot")[1], "Glaze Bot")
+        # Setup under the new name finds the agent it already has: no second identity, nothing written.
+        before = snapshot(self.root)
+        again = self.setup_done(*answers(**{"as_name": "Glaze Bot", "keeper": "nobody"}))
+        self.assertEqual((again["agent"], again["changed"]), ({"id": "kiln-bot", "name": "Glaze Bot"}, []))
+        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual([known.id for known in load_config(self.root).agents.known], ["kiln-bot"])
+        code, out, err = forest("check", "--sync", "--root", "studio-forest")
+        self.assertEqual(code, 0, out + err)
 
     def test_a_hangul_name_gets_its_id_by_the_name_contract(self) -> None:
         name = "스카우트 봇"
@@ -412,6 +505,24 @@ class DoctorTests(Scratch):
         self.assertEqual(self.check("routine")["state"], "ok")
         self.made("--keeper", "nobody")
         self.assertEqual(self.check("routine")["state"], "skipped")
+
+    def test_a_tool_without_mcp_passes_by_the_commands_it_uses(self) -> None:
+        self.made("--conversations", "none", "--keeper", "nobody")
+        self.assertEqual(forest("index", "build", "--root", "studio-forest")[0], 0)
+        self.assertEqual(forest("search", "blue bowls", "--as", "kiln-bot", "--root", "studio-forest")[0], 0)
+        code, report = as_json("doctor", "--as", "kiln-bot", "--root", "studio-forest")
+        finding = next(check for check in report["checks"] if check["name"] == "finding")
+        self.assertEqual((code, report["result"], finding["state"]), (1, "todo", "todo"), report)
+        self.assertIn("--doors commands", finding["evidence"])
+        code, report = as_json("doctor", "--as", "kiln-bot", "--root", "studio-forest", "--doors", "commands")
+        self.assertEqual((code, report["result"]), (0, "passed"), report)
+        # With conversations to prove, the phrase's follow-up keeps the doors the caller named.
+        self.made("--keeper", "nobody")
+        code, report = as_json("doctor", "--as", "kiln-bot", "--root", "studio-forest", "--doors", "commands")
+        turns = next(check for check in report["checks"] if check["name"] == "turns")
+        self.assertEqual((turns["state"], turns["command"]),
+                         ("todo", "forest doctor --as kiln-bot --root studio-forest --doors commands --phrase"))
+        parses(turns["command"])
 
     def test_the_exit_is_zero_only_when_it_passed_and_the_phrase_file_is_all_it_writes(self) -> None:
         self.made()

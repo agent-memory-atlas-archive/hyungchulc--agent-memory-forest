@@ -279,6 +279,7 @@ for a code of the state of the derived folder, every sentence of the claims it c
 | `record_page_changed` | `retry` |  | The page changed while it was read; nothing was written.<br>The page changed while it was trimmed; nothing was written. |
 | `record_path_invalid` | `fix` |  | Only pages of the four forest layers have a record to trim. |
 | `record_trim_unsafe` | `report` |  | A trim would change the page outside its update record; nothing was written.<br>A trim would lose or add a record line; nothing was written. |
+| `recording_off` | `report` |  | The owner chose to bring none of this agent's conversations into the forest, so no turn of it is written. Only the owner changes that answer: `forest setup` again with --conversations all or asked. |
 | `registry_invalid` | `run` | `forest registry build` | The registry file is not JSON; rebuild it.<br>The registry file is not a JSON object; rebuild it.<br>The registry file is not a memory-forest registry of this version; rebuild it. |
 | `registry_missing` | `run` | `forest registry build` | The forest has no compiled registry; run `forest registry build`. |
 | `registry_unreadable` | `report` |  | The registry file is not a regular file; the owner removes what stands in its place. |

@@ -65,7 +65,8 @@ QUESTIONS: tuple[Question, ...] = (
              "Earlier conversations were held without a forest in mind; bringing them in is the owner's consent.",
              ("yes", "no")),
     Question("keeper", "--keeper", "Who keeps the forest growing (the daily record, filing and upkeep): this "
-             "agent, another agent, or nobody yet?",
+             "agent, another agent, or nobody yet? The keeper reads every agent's turns, so it is the owner's "
+             "main agent.",
              "Keeping writes the forest every day and spends the owner's model budget; a forest has one keeper.",
              ("this", "other", "nobody")),
     Question("when", "--when", "When does this agent run the routine, for example \"every night at 23:30\"? "
@@ -77,6 +78,13 @@ QUESTIONS: tuple[Question, ...] = (
              "(Asked when this agent keeps the forest.)", _BUDGET),
 )
 _KEEPER_ONLY = ("when", "daily_model", "filing_model")
+# Asked when the answers make this agent the keeper and not the main agent: the routine reads every agent's
+# turns, and only a main agent's scope holds them.
+_KEEPER_READS_ALL = Question(
+    "main", "--main", "This agent is to keep the forest, and the keeper reads every agent's turns to write the "
+    "daily record, which only the owner's main agent may. Is this agent the owner's main agent? If it is not, "
+    "another agent keeps the forest (--keeper other) or nobody yet (--keeper nobody).",
+    "Reading every agent's turns and trees is access only the owner gives.", ("yes", "no"))
 # The answers kept in the setup record: everything but where the forest is and who is asking.
 RECORDED = tuple(question.key for question in QUESTIONS if question.key not in ("root", "name"))
 
@@ -140,9 +148,12 @@ def run(
     answers = {key: (value if value else None) for key, value in given.items()}
     _checked_choices(answers)
     proposed = timezone or detect()
+    # A keeper that is not the main agent could not read the other agents' turns: asked, never written.
+    keeper_not_main = [_KEEPER_READS_ALL.as_dict()] if (answers.get("keeper"), answers.get("main")) == (
+        "this", "no") else []
     missing = asked(answers)
     if missing:
-        return {"next": "ask_owner", "questions": [question.as_dict() for question in missing],
+        return {"next": "ask_owner", "questions": [question.as_dict() for question in missing] + keeper_not_main,
                 "proposals": _proposals(proposed), "written": False}
     name = names.check(answers["name"])
     shown_root = str(answers["root"])
@@ -165,6 +176,9 @@ def run(
             recorded[key] = None
     config = replace(DEFAULT_CONFIG, forest=replace(DEFAULT_CONFIG.forest, timezone=proposed))
     if new:
+        if keeper_not_main:
+            return {"next": "ask_owner", "questions": keeper_not_main, "proposals": _proposals(proposed),
+                    "written": False}
         if dry_run:
             agent_id, stored = _new_id(name, root, config), name
             plan = _plan(None, config, agent_id, stored, recorded)
@@ -173,7 +187,7 @@ def run(
         layout.initialize(root, config=config)
     with writer_lock(root, wait_seconds=30, label="forest setup") if not dry_run else _nothing():
         config = load_config(root)
-        rows = groups._agent_rows(root, config)
+        rows = groups.agent_names(root, config)
         found = names.find(name, rows)
         if len(found) > 1:
             raise MemoryForestError(
@@ -197,6 +211,9 @@ def run(
                                               f"To make this agent the keeper, first run setup for {keeper} "
                                               "with --keeper other.", choices=("other", "nobody")).as_dict()],
                         "proposals": _proposals(proposed)}
+        if keeper_not_main:
+            return {"next": "ask_owner", "agent": {"id": agent_id, "name": display(stored)}, "written": False,
+                    "questions": keeper_not_main, "proposals": _proposals(proposed)}
         if recorded["conversations"] != "none" and config.intake.tool("jsonl").path:
             raise MemoryForestError(
                 "setup_jsonl_path_set",
@@ -434,8 +451,20 @@ def todo(shown_root: str, agent_id: str, stored: str, recorded: Mapping[str, Any
         "command": f"forest mcp --as {agent_id} --root {root}",
         "text": "Register this command the way your own tool registers an MCP server (use the forest's full path "
                 "if your tool starts servers in another folder). A tool without MCP runs the same doors as "
-                f"commands: forest search, read, timeline, navigate and log, each with --as {agent_id}.",
+                f"commands (forest search, read, timeline, navigate and log, each with --as {agent_id}) and adds "
+                "--doors commands to the doctor command of the last item.",
     }]
+    if recorded["conversations"] == "none":
+        steps.append({
+            "step": "no_recording",
+            "why": "The owner chose to bring none of this agent's conversations into the forest.",
+            "command": "",
+            "text": "Bring no turn in. If an exporter, a turn-end hook or a schedule of yours runs forest intake "
+                    "or forest log for this agent, turn it off now, and empty your record file under "
+                    f"{TRANSCRIPTS}/ if you made one: nothing reads it any more. The forest refuses those writes "
+                    "for this agent (recording_off) until the owner answers otherwise. What is already in your "
+                    "lane stays there; removing it is the owner's decision.",
+        })
     if recorded["conversations"] != "none":
         file = str(Path(shown_root) / TRANSCRIPTS / f"{agent_id}.jsonl")
         which = ("every conversation of yours" if recorded["conversations"] == "all"

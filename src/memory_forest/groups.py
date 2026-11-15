@@ -378,6 +378,28 @@ def _agent_rows(root: str | os.PathLike[str], config: Config) -> list[tuple[str,
     return list(rows.items())
 
 
+def agent_names(root: str | os.PathLike[str], config: Config) -> list[tuple[str, str]]:
+    """Every name the forest holds for each agent: the rows of ``_agent_rows`` and, after them, the name of
+    an agent's tree where the tree is named otherwise.
+
+    An agent's name lives in two places: its settings entry, written when it joined, and its tree, which
+    ``forest move rename`` changes. Either one names the same agent, so finding an agent by a name looks at
+    both (``names.find`` gives each id once), and ``dict()`` of these rows gives the name the tree carries
+    now. Admitting a new agent by a name another agent's tree already carries would make a second identity
+    whose tree can never be made."""
+    rows = _agent_rows(root, config)
+    compiled = _compiled(root, config)
+    if compiled is None:
+        return rows
+    first = dict(rows)
+    later: list[tuple[str, str]] = []
+    for agent_id in compiled.agents:
+        name = str((compiled.subject(agent_id) or {}).get("name") or "")
+        if name and agent_id in first and names.key(name) != names.key(first[agent_id] or agent_id):
+            later.append((agent_id, name))
+    return rows + later
+
+
 def _compiled(root: str | os.PathLike[str], config: Config) -> registry.Registry | None:
     try:
         return registry.build(root, config=config)

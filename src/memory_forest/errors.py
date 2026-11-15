@@ -268,6 +268,7 @@ REFUSALS: dict[str, tuple[str, str]] = {
     "record_page_changed": ("retry", ""),
     "record_path_invalid": ("fix", ""),
     "record_trim_unsafe": ("report", ""),
+    "recording_off": ("report", ""),
     "registry_invalid": ("run", "forest registry build"),
     "registry_missing": ("run", "forest registry build"),
     "registry_unreadable": ("report", ""),

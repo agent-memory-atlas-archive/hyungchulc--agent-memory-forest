@@ -769,6 +769,7 @@ def record_turn(
     """
     from . import levels
 
+    intake.refuse_recording_off(root, agent)
     data = text.encode("utf-8", "surrogatepass")
     if len(data) > TURN_MAX_BYTES:
         raise MemoryForestError(

@@ -159,6 +159,7 @@ def run(
             f"{chosen} is not a slug.",
             details={"agent": chosen},
         )
+    refuse_recording_off(root, chosen)
     env = os.environ if environ is None else environ
     sweep = hook is None and transcript is None
     if hook is not None:
@@ -307,6 +308,7 @@ def append_owned(
     """
     if not layout.is_slug(agent) or len(agent) > AGENT_TEXT_MAX:
         raise MemoryForestError("intake_agent_invalid", f"{agent} is not a slug.", details={"agent": agent})
+    refuse_recording_off(root, agent)
     if not _role_ok(role):
         raise MemoryForestError("intake_role_invalid", "That role is not one the lane records.", details={"role": role})
     if origin not in ORIGINS:
@@ -405,6 +407,27 @@ def append_owned(
             raise
         result.setdefault("derived", {name: _pending(exc) for name in ("ids", "turns", "sources")})["bookkeeping"] = _pending(exc)
     return result
+
+
+def refuse_recording_off(root: str | os.PathLike[str], agent: str) -> None:
+    """Refuse a lane write for an agent whose owner answered that none of its conversations come in.
+
+    The answer is the one ``forest setup`` recorded for the agent. Both write doors ask here before they
+    read or write anything (intake of record files; ``forest log`` and ``memory_log``), so an exporter or a
+    hook that was set up under an earlier answer stops bringing turns in the moment the owner says none.
+    An agent that never went through setup has no recorded answer and is not refused."""
+    from . import setup_agent
+
+    record = setup_agent.record(root, agent)
+    if record is not None and (record.get("answers") or {}).get("conversations") == "none":
+        raise MemoryForestError(
+            "recording_off",
+            "The owner chose to bring none of this agent's conversations into the forest, so no turn of it "
+            "is written. Only the owner changes that answer: `forest setup` again with --conversations all "
+            "or asked.",
+            details={"agent": agent},
+            next_step="report",
+        )
 
 
 def _pending(exc: Exception) -> dict[str, str]:

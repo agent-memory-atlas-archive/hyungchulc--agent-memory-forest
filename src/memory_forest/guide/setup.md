@@ -45,12 +45,17 @@ forest setup --json
 An example call with every answer, in the invented studio of the guide's examples:
 
 ```sh
-forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" --json
-forest setup --root studio-forest --as "Kiln Bot" --main no --conversations all --earlier no --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" --dry-run
+forest setup --root studio-forest --as "Kiln Bot" --main yes --conversations all --earlier no --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" --json
+forest setup --root studio-forest --as "Kiln Bot" --main yes --conversations all --earlier no --keeper this --when "every night at 23:30" --daily-model "small model" --filing-model "large model" --dry-run
 ```
 
 `--dry-run` shows what setup would write and writes nothing. A second run with the same answers changes
-nothing; a run with a changed answer says what changed.
+nothing; a run with a changed answer says what changed, and its `todo` is the one to carry out now.
+
+The keeper reads every agent's turns to write the daily record, so the keeper is the owner's main agent:
+`--keeper this` with `--main no` is asked again. When the owner changes the answer about conversations to
+`none`, the new `todo` has the item `no_recording`: turn off the exporter or hook you set up before. The
+forest itself refuses your turns from then on (`recording_off`), whatever still runs.
 
 ## 3. Finding: register the server
 
@@ -62,7 +67,8 @@ setup printed for you, here and in every command of this guide.
 forest mcp --as kiln-bot --root studio-forest
 ```
 
-A tool without MCP uses the same doors as commands:
+A tool without MCP uses the same doors as commands, and says so to the doctor in step 6 with
+`--doors commands`:
 
 ```sh
 forest search "kiln two" --as kiln-bot --root studio-forest
@@ -91,11 +97,16 @@ You know where your own tool keeps your conversation; the package does not. Do t
    then runs the intake command that item printed. The file is yours: only your exporter writes it.
 2. Take in only what the owner chose: every conversation, or only those the owner asks for; and turns from
    before today (the day setup ran, in the forest's time zone) only if the owner answered `--earlier yes`.
+   With `--earlier no`, a session that began before that day is exported from its first turn of that day
+   on, and what was said before stays out.
 3. Keep a tool's turn, with `ran <tool>` as its whole text: what a tool printed stays out (keys and tokens
    leak there). Leave out entirely your own memory-work sessions (a session whose first owner turn opens
    with the line `MEMORY_FOREST_INTERNAL`) and anything the owner said not to record.
 4. Intake takes a session in once it has read the session's first owner turn: that turn tells it whether
-   the session is memory work. Export a session from its start, the owner's first words included.
+   the session is memory work. So export a session from its start, the owner's first words included,
+   unless rule 2 keeps them out. When your file begins with a turn of yours and no owner turn follows
+   yet, the answer says `waiting for the owner turn` and nothing is lost: the turn is taken in once the
+   owner's next turn is in the file.
 5. Run the exporter after each session, or from your tool's own turn-end hook if it has one. Setting that
    up is yours, in your own tool, like registering the server.
 6. The record file is a hand-over, not an archive: it holds the words as your tool had them, unmasked, and
@@ -136,8 +147,13 @@ forest doctor --as kiln-bot --root studio-forest --phrase
 ```
 
 The second line prints a new phrase. Say it in your conversation, bring that turn in your real way (step 4),
-and run the doctor again: it finds the phrase in your lane. A connection check passes once you have called
-`memory_search` once from your own tool.
+and run the doctor again: it finds the phrase in your lane. The check named `finding` passes once you have
+called `memory_search` once from your own tool. A tool without MCP has no connection to be seen on: it adds
+`--doors commands`, and the check is the search the doctor runs as you.
+
+```sh
+forest doctor --as kiln-bot --root studio-forest --doors commands --json
+```
 
 Then tell the owner, in five lines: which forest you joined and your id; whether you are the main agent;
 which conversations come in and how; who keeps the forest (and when, if it is you); and that the doctor
