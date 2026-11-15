@@ -1,9 +1,19 @@
 # The routine: how the forest grows when you keep it
 
 You read this because the owner chose you as the forest's keeper. You run three passes: the daily record,
-the filing run and the upkeep run (the contract, section 10). Each pass ends with the commands that judge
-it. In the examples the forest is `studio-forest` and you are `studio-hub`, the owner's main agent;
-replace both with what setup printed for you.
+the filing run and the upkeep run. Each pass ends with the commands that judge it. In the examples the
+forest is `studio-forest` and you are `studio-hub`, the owner's main agent; replace both with what setup
+printed for you.
+
+This page is the short path. The rules behind it are the contract, which ships with the package: section 3
+says where a subject lives, section 4 what a leaf holds, section 5 what goes up to the boards, section 10
+who does what.
+
+```sh
+forest guide contract
+```
+
+On the first night run the daily record and then the filing run; the upkeep run starts on its schedule.
 
 **One keeper writes at a time.** Never run two passes at once, and never write while another writer works:
 a command that finds the writer lock held refuses with `lock_busy`; wait and run it again.
@@ -46,6 +56,9 @@ was said close to the original and turns work into short episodes, with pointers
    forest index build --root studio-forest
    ```
 
+   `forest lint` always ends with `not checked: daily_section_unfiled`: no program of this release measures
+   whether the pages state what a filed block said, so that reading is yours, in the filing run.
+
 A minimal daily block:
 
 ```markdown
@@ -61,7 +74,8 @@ firing ended at 19:10. Raw: `06 istm/kiln-bot/2042-05-13.jsonl`, lines 1–3.
 
 The filing run files each subject of the day's record into the forest's pages.
 
-1. Find each subject the day names, by name or alias, and where it lives:
+1. Find each subject the day names, by name or alias, and where it lives. A name the forest does not
+   know yet answers `no subject is named …`:
 
    ```sh
    forest registry show "Kiln Two" --root studio-forest
@@ -112,6 +126,95 @@ The kiln stopped at 940 °C during a bisque firing; Juno found two of the four e
 ## Update record
 ```
 
+### A new name in a forest that has no place for it yet
+
+On the first night the forest has no tree for the studio and no page for its devices. This is the whole
+path for one new name, here the device Kiln Two. The next name of the same category needs only step 4.
+
+1. An area tree, once for each field of the owner's life or work, made by code:
+
+   ```sh
+   forest move new-tree studio --name "Studio" --description "The pottery studio: its kilns, glazes, orders and people." --root studio-forest
+   ```
+
+2. The category's board, once for each category of a tree. The category is the subject's type (person,
+   group, organisation, project, product, device, place, topic and so on). Write `03 mtm/studio/device.md`:
+
+   ```markdown
+   ---
+   entity: device-seen-once
+   ---
+
+   # Devices
+
+   ## About
+
+   The studio's devices.
+
+   ## Current state
+
+   ## Leaves
+
+   ## Pointers
+
+   ## Links
+
+   - up: [[02 ltm/studio_LTM|Studio]]
+   ```
+
+3. The registry line of the category's collection, once for each category, under `## Subjects` in
+   `03 mtm/studio/studio_MTM.md`:
+
+   ```markdown
+   - `device-seen-once` — Devices seen once · collection · leaf · `04 stm/studio/device/seen-once-2042-q2.md`
+   ```
+
+4. The entry, on the collection page of the quarter of its first day. Each dated line under `## Timeline`
+   opens with the entry's name and a colon. Write `04 stm/studio/device/seen-once-2042-q2.md`:
+
+   ```markdown
+   ---
+   entity: device-seen-once
+   subtopic: seen-once
+   kind: collection
+   timezone: America/Halifax
+   updated_at: 2042-05-13
+   ---
+
+   # Devices seen once (2042-q2)
+
+   Devices named on one day so far.
+
+   ## Kiln Two
+
+   - entry: `kiln-two` · device
+   - kind: event
+
+   Kiln Bot started program G6-slow on Kiln Two at 07:40, 38 pieces.
+
+   ## Timeline
+
+   - 2042-05-13 07:40 America/Halifax — Kiln Two: program G6-slow started, 38 pieces.
+
+   ## Links
+
+   - up: [[03 mtm/studio/device|Devices]]
+
+   ## Update record
+   ```
+
+5. Then code writes the `## Leaves`, `## Branches` and `## Trees` lists from the pages, the lint names
+   whatever is still wrong, and the name is found:
+
+   ```sh
+   forest check --sync --root studio-forest
+   forest lint --root studio-forest
+   forest registry show "Kiln Two" --root studio-forest
+   ```
+
+A name that comes back on later days, or that the owner calls lasting, gets a leaf of its own:
+`forest levels check` says when one is due, and the contract's section 3 says how it is admitted.
+
 ## 3. The upkeep run
 
 The upkeep run keeps the whole forest in shape, as often as the owner answered.
@@ -161,11 +264,15 @@ How to get there:
    command your tool runs non-interactively; this guide names no program):
 
    ```text
-   30 23 * * *  cd <forest folder> && <your agent command> "<the daily pass, then the filing pass, of forest guide routine>"
+   CRON_TZ=<the forest's time zone>
+   30 23 * * *  cd <forest folder> && <your agent command, on the model for this pass> "MEMORY_FOREST_INTERNAL
+   <the daily pass, then the filing pass, of forest guide routine>"
    ```
 
+   The times the owner gave are times of the forest's time zone: say so to your scheduler (`CRON_TZ` above)
+   when the machine's clock is in another zone.
 3. A scheduled session is memory work, not a conversation: open its prompt with the line
-   `MEMORY_FOREST_INTERNAL`, so that it is never brought in as a conversation.
+   `MEMORY_FOREST_INTERNAL`, as above, so that it is never brought in as a conversation.
 4. Keep within what the owner allowed: one run of each pass a day unless the owner said otherwise, and the
    model the owner named for each pass.
 

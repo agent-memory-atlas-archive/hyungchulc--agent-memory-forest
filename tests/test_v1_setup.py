@@ -479,5 +479,49 @@ class GuideTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out)["error"]["code"]), (2, "arguments_invalid"))
 
 
+class GuideExampleTests(Scratch):
+    """The routine's worked example is carried out exactly as the guide writes it, and the judge passes it."""
+
+    def test_the_first_filing_example_as_written_passes_the_judge(self) -> None:
+        import textwrap
+
+        text = cli_setup.guide_text("routine")
+        start = text.index("### A new name in a forest that has no place for it yet")
+        section = text[start:text.index("## 3. The upkeep run")]
+        commands = [line.strip() for block in re.findall(r"```sh\n(.*?)```", section, re.DOTALL)
+                    for line in block.splitlines() if line.strip().startswith("forest ")]
+        pages = [textwrap.dedent(block) for block in re.findall(r"```markdown\n(.*?)```", section, re.DOTALL)]
+        written = re.findall(r"Write `([^`]+)`:", section)
+        index = re.search(r"under `## Subjects` in\s+`([^`]+)`:", section).group(1)
+        self.assertEqual((len(commands), len(pages), len(written)), (4, 3, 2), (commands, written))
+        self.setup_done(*answers(**{"as_name": "Studio Hub"}))
+
+        def run(line: str) -> tuple[int, str, str]:
+            return forest(*shlex.split(line)[1:])
+
+        self.assertEqual(run(commands[0])[0], 0, commands[0])  # the area tree, by code
+        board, registry_line, collection = pages
+        for relative, body in ((written[0], board), (written[1], collection)):
+            target = self.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body, encoding="utf-8")
+        tree_index = self.root / index
+        listed = tree_index.read_text(encoding="utf-8")
+        self.assertEqual(listed.count("## Subjects\n"), 1)
+        tree_index.write_text(listed.replace("## Subjects\n", "## Subjects\n\n" + registry_line, 1), encoding="utf-8")
+        self.assertIn(written[1], registry_line)
+        code, out, err = run(commands[1])  # check --sync writes the lists
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertTrue(all("brought up to the pages" in line for line in out.splitlines()), out)
+        self.assertEqual(run(commands[1]), (0, "", ""))
+        code, out, err = run(commands[2])
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("0 violations, 0 upkeep, 0 due", out)
+        code, out, err = run(commands[3])
+        self.assertEqual(code, 0, out + err)
+        shown = json.loads(out)
+        self.assertEqual((shown["id"], shown["name"], shown["collection"]), ("kiln-two", "Kiln Two", "device-seen-once"))
+
+
 if __name__ == "__main__":
     unittest.main()

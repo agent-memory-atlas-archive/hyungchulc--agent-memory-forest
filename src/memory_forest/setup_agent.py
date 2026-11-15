@@ -465,7 +465,8 @@ def todo(shown_root: str, agent_id: str, stored: str, recorded: Mapping[str, Any
             "step": "own_turn",
             "why": "Where you have no transcript to export, you write your own turn.",
             "command": f"forest log --as {agent_id} --root {root}",
-            "text": "Call memory_log on the MCP server, or pipe the turn's words to this command on stdin.",
+            "text": "Nothing to do when your exporter brings your turns in. Otherwise call memory_log on the "
+                    "MCP server, or pipe the turn's words to this command on stdin.",
         })
     if recorded["keeper"] == "this":
         steps.append({

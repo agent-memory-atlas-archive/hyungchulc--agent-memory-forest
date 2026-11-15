@@ -34,7 +34,7 @@ forest setup --json
 - `next: ask_owner`: ask the owner each question in `questions`, word for word, with its `choices` and its
   `why_owner`. Never answer one yourself and never pick a default. Then run setup again with every answer as
   its flag. `proposals` are shown to the owner as proposals (the time zone of a new forest); pass
-  `--timezone` only if the owner changes it.
+  `--timezone` with the owner's zone when the owner names another one.
 - `next: done`: `changed` lists what was written inside the forest's folder (your entry in its settings,
   your own tree, your record file), `agent` gives the id the forest made from your name, and `todo` lists,
   in order, what you now do in your own tool. Carry out every item of `todo`, then come back to step 6.
@@ -90,10 +90,10 @@ You know where your own tool keeps your conversation; the package does not. Do t
    that shape, to the file `todo` item `bring_turns` names (`transcripts/<id>.jsonl` in the forest), and
    then runs the intake command that item printed. The file is yours: only your exporter writes it.
 2. Take in only what the owner chose: every conversation, or only those the owner asks for; and turns from
-   before today only if the owner answered `--earlier yes`.
-3. Leave out what a tool printed (keys and tokens leak there; write `ran <tool>` instead), your own
-   memory-work sessions (a session whose first owner turn opens with the line `MEMORY_FOREST_INTERNAL`),
-   and anything the owner said not to record.
+   before today (the day setup ran, in the forest's time zone) only if the owner answered `--earlier yes`.
+3. Keep a tool's turn, with `ran <tool>` as its whole text: what a tool printed stays out (keys and tokens
+   leak there). Leave out entirely your own memory-work sessions (a session whose first owner turn opens
+   with the line `MEMORY_FOREST_INTERNAL`) and anything the owner said not to record.
 4. Intake takes a session in once it has read the session's first owner turn: that turn tells it whether
    the session is memory work. Export a session from its start, the owner's first words included.
 5. Run the exporter after each session, or from your tool's own turn-end hook if it has one. Setting that
@@ -109,8 +109,9 @@ You know where your own tool keeps your conversation; the package does not. Do t
 forest intake --from jsonl --as kiln-bot --transcript studio-forest/transcripts/kiln-bot.jsonl --once --root studio-forest --json
 ```
 
-An agent with no transcript to export writes its own turn instead, with the MCP tool `memory_log`, or with
-`forest log`, which reads the turn's words on stdin:
+Only an agent with no transcript to export writes its own turn instead (`todo` item `own_turn`; skip it
+when your exporter brings your turns in), with the MCP tool `memory_log`, or with `forest log`, which reads
+the turn's words on stdin:
 
 ```sh
 forest log --as kiln-bot --root studio-forest
