@@ -424,6 +424,10 @@ The lane commit fixes `stored` and the turn id; ids, caller-key and source recor
 - the project is presented as "Agent Memory Forest"; `README.md` and `README.ko.md` are rewritten for
   version 1, with a quick start that marks which milestone brings each command
 - `docs/privacy-and-trust.md` and `docs/roadmap.md` are rewritten for version 1
+- the two 0.3 agent skills, `memory-forest` and `memory-forest-retrieve`, moved from `skills/` to
+  `docs/archive-0.3/skills/`, each with a first line saying it is for the 0.3 `memory-forest` command and
+  that a version 1 agent runs `forest guide`: an agent that found them at the top of a version 1
+  repository would follow the wrong commands
 - the 0.3 documents and diagrams that version 1 replaces moved to `docs/archive-0.3/`, each with a first
   line naming what replaces it; the five 0.3 plan and receipt schemas stay in `docs/`, beside the 0.3 code
   that still uses them

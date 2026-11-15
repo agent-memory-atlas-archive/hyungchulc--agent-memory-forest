@@ -2,6 +2,7 @@
 name: memory-forest-retrieve
 description: Integrate a mandatory, metadata-only Memory Forest consultation gate before an agent responds to each non-empty user-authored text turn.
 ---
+For the 0.3 `memory-forest` command only. A version 1 agent runs `forest guide` instead.
 
 # Memory Forest Retrieve
 

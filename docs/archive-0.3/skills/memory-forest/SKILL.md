@@ -2,6 +2,7 @@
 name: memory-forest
 description: Build, validate, index, and query a private local Memory Forest with provenance-aware layers, pointer-first search, and validated root-first retrieval. Use when creating a new forest, checking an existing forest's structure, building its local SQLite index, or retrieving bounded memory trails without exposing full memory bodies by default.
 ---
+For the 0.3 `memory-forest` command only. A version 1 agent runs `forest guide` instead.
 
 # Memory Forest
 
