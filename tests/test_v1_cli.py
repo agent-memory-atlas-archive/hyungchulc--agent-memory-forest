@@ -118,6 +118,20 @@ class ForestCommandTests(ForestTestCase):
         self.assertEqual(result.stdout.decode().strip(), f"memory-forest {cli.LEGACY_VERSION}")
         self.assertEqual(cli.LEGACY_VERSION, "0.3.0")
 
+    def test_the_forest_command_runs_as_a_module_where_its_script_is_not_on_the_path(self) -> None:
+        import memory_forest
+
+        environment = dict(os.environ, PYTHONPATH=str(REPOSITORY_ROOT / "src"))
+        result = subprocess.run(
+            [sys.executable, "-m", "memory_forest.forest", "--version"],
+            capture_output=True,
+            env=environment,
+            cwd=self.base,
+            check=False,
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, b""))
+        self.assertEqual(result.stdout.decode().strip(), f"forest {memory_forest.__version__}")
+
     def test_one_version_string_is_what_the_package_and_forest_command_report(self) -> None:
         import tomllib
 
