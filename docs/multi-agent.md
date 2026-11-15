@@ -431,6 +431,8 @@ id, `turn_id` (the tool's argument) or `--turn-id` (the command's flag): the sam
 session is the same turn, stored once, and the second call answers `stored: "already stored"` with the
 stored id. The same id with other words is `turn_id_reused` with `fix`. There is no lifetime. The lane carries only the HMAC-SHA256 digest of the key, never its raw text;
 the small per-lane lookup is rebuilt from all lane days when missing, torn or stale.
+New keyed turns compare a keyed digest of the original input words. Different input words are refused even
+when masking makes their stored text equal. Legacy turns without that digest retain their stored-text comparison.
 
 Only one thing joins two writes without an id: the same words, by the same role, in the same lane and
 session, through **two different sources**, within 120 seconds of each other's own time. That is one

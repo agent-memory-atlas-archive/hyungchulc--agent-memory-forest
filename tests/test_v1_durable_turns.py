@@ -75,6 +75,75 @@ class KeyTests(ForestTestCase):
                 log(root, key="stable-key", at=AT + timedelta(days=days), text="other fictional words")
             self.assertEqual(caught.exception.code, "turn_id_reused")
 
+    def test_different_input_words_are_refused_even_when_masking_makes_the_stored_words_equal(self):
+        root = self.forest()
+        first_text = 'password=fictional-first-secret'
+        other_text = 'password=fictional-other-secret'
+        first = log(root, key='masked-words-key', text=first_text)
+        self.assertEqual(first['turn_words_digest'], turn_keys.digest(root, 'turn-words\0' + first_text.encode('utf-8', 'surrogatepass').hex()))
+        with self.assertRaises(MemoryForestError) as caught:
+            log(root, key='masked-words-key', text=other_text, at=AT + timedelta(days=4000))
+        self.assertEqual((caught.exception.code, caught.exception.details['id']), ('turn_id_reused', first['id']))
+        for text in (first_text, '\n ' + first_text + ' \n'):
+            self.assertEqual(log(root, key='masked-words-key', text=text)['id'], first['id'])
+        intake.lane_masking(root, fix=True)
+        self.assertEqual(log(root, key='masked-words-key', text=first_text)['id'], first['id'])
+        self.assertEqual(sum(row['id'] == first['id'] for row in records(root)), 1)
+        for path in root.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(first_text.encode(), path.read_bytes())
+                self.assertNotIn(other_text.encode(), path.read_bytes())
+
+    def test_keyed_input_identity_survives_a_change_in_the_masking_rules(self):
+        root = self.forest()
+        original = log(root, key='changing-mask', text='the fictional kiln cooled')
+        real_record = intake._record
+        def changed(*args, **kwargs):
+            record = real_record(*args, **kwargs)
+            record['text'] = 'a later masked representation'
+            return record
+        with mock.patch.object(intake, '_record', changed):
+            again = log(root, key='changing-mask', text='the fictional kiln cooled')
+        self.assertEqual((again['stored'], again['id']), ('already stored', original['id']))
+
+    def test_keyed_words_keep_the_existing_unicode_repair_and_their_original_identity(self):
+        root = self.forest()
+        first = log(root, key='repaired-input', text='fictional\ud800')
+        self.assertEqual((first['text'], first['repaired']), ('fictional?', True))
+        self.assertEqual(log(root, key='repaired-input', text='fictional\ud800')['id'], first['id'])
+        with self.assertRaises(MemoryForestError) as caught:
+            log(root, key='repaired-input', text='fictional\ud801')
+        self.assertEqual(caught.exception.code, 'turn_id_reused')
+        log(root, key='unicode-pair', text='fictional\U0001f600')
+        with self.assertRaises(MemoryForestError) as caught:
+            log(root, key='unicode-pair', text='fictional\ud83d\ude00')
+        self.assertEqual(caught.exception.code, 'turn_id_reused')
+
+    def test_both_real_doors_refuse_different_original_words_after_equal_masking(self):
+        for kind in ('cli', 'mcp'):
+            root = self.make_forest(FILES, name=kind)
+            def send(text):
+                if kind == 'mcp':
+                    reply = mcp._call(root, 'till-bot', {'name': 'memory_log', 'arguments': {
+                        'text': text, 'turn_id': 'public-words-key', 'session': 'public'}}, 'stdio')
+                    return reply['isError'], json.loads(reply['content'][0]['text'])
+                out, err = io.StringIO(), io.StringIO()
+                stdin = io.TextIOWrapper(io.BytesIO((text + '\n').encode()))
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(sys, 'stdin', stdin):
+                    code = cli.forest_main(['log', '--as', 'till-bot', '--turn-id', 'public-words-key',
+                                            '--session', 'public', '--root', str(root), '--json'])
+                body = json.loads(out.getvalue())
+                return code != 0, body.get('error', body)
+            failed, first = send('password=fictional-first-secret')
+            self.assertFalse(failed, first)
+            failed, other = send('password=fictional-other-secret')
+            self.assertTrue(failed, other)
+            self.assertEqual((other['code'], other['details']['id']), ('turn_id_reused', first['id']))
+            failed, again = send('password=fictional-first-secret')
+            self.assertFalse(failed, again)
+            self.assertEqual(again['id'], first['id'])
+            self.assertEqual(sum(row['id'] == first['id'] for row in records(root)), 1)
+
     def test_every_masking_value_uses_a_digest_and_secret_values_leave_no_raw_byte(self):
         root = self.forest()
         # The masking table's value cases, including values needing a label in ordinary prose.

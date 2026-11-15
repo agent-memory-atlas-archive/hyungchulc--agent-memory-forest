@@ -11,6 +11,16 @@ from v1_support import ForestTestCase
 
 
 class RecordTests(ForestTestCase):
+    def test_original_words_digests_take_precedence_and_legacy_records_keep_their_comparison(self):
+        first = {'turn_words_digest': 'first', 'text': 'same masked words'}
+        second = {'turn_words_digest': 'second', 'text': 'same masked words'}
+        self.assertFalse(intake._same_words(first, second))
+        self.assertTrue(intake._same_words(first, {**second, 'turn_words_digest': 'first', 'text': 'new masking'}))
+        for token in (None, 7):
+            old = {**first, 'turn_words_digest': token}
+            self.assertTrue(intake._same_words(old, second))
+            self.assertTrue(intake._same_words(first, {**second, 'turn_words_digest': token}))
+            self.assertFalse(intake._same_words(old, {**second, 'text': 'different words'}))
     def test_key_digests_use_the_existing_ledger_mechanism_and_private_key(self):
         root = self.make_forest(FILES)
         token = turn_keys.digest(root, 'a fictional caller key')

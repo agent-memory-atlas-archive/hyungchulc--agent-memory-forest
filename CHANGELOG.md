@@ -22,6 +22,9 @@ the version 1 commands replace it.
 
 ### Fixed
 
+- New keyed turns distinguish original input words even when masking gives them identical stored text.
+  Their words digest uses the existing private key and survives maintenance; legacy lines retain their stored-text comparison.
+
 The lane commit fixes `stored` and the turn id; ids, caller-key and source records, the tree, the index and connection bookkeeping are derived, with `pending` and a reason when unfinished.
 
 - Caller keys are HMAC-SHA256 digests under the existing forest key, with no lifetime. Missing or damaged

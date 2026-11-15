@@ -85,6 +85,7 @@ class BoundaryTests(ForestTestCase):
         result = log(root, key='record-key', door='cli', group='night-shift')
         wanted = {'at': AT.isoformat(), 'id': result['id'], 'origin': 'interactive', 'role': 'agent',
                   'session': 'shift', 'text': TEXT, 'turn_digest': turn_keys.digest(root, 'record-key'),
+                  'turn_words_digest': turn_keys.digest(root, 'turn-words\0' + TEXT.encode('utf-8', 'surrogatepass').hex()),
                   'source': {'adapter': 'cli', 'place': AT.isoformat(), 'transcript': 'cli',
                              'door': 'cli', 'group': 'night-shift'}, 'sources': ['group:night-shift']}
         wanted['arrivals'] = [{'at': wanted['at'], 'origin': wanted['origin'], 'source': wanted['source'],
@@ -165,12 +166,12 @@ class BoundaryTests(ForestTestCase):
     def test_identity_metadata_survives_even_a_masker_that_recognizes_every_string(self):
         root = self.make_forest(FILES)
         first = log(root, key='mask-key')
-        raw = intake._encode({key: first[key] for key in ('id', 'at', 'turn_digest', 'text', 'source')}).rstrip('\n').encode()
+        raw = intake._encode({key: first[key] for key in ('id', 'at', 'turn_digest', 'turn_words_digest', 'text', 'source')}).rstrip('\n').encode()
         with mock.patch.object(credentials, 'mask', return_value=credentials.REDACTED):
             masked = intake._masked_lane_line(raw, load_config(root), None, root=root, fix=True)
             self.assertIsNotNone(masked)
             row = json.loads(masked)
-            for key in ('id', 'at', 'turn_digest'):
+            for key in ('id', 'at', 'turn_digest', 'turn_words_digest'):
                 self.assertEqual(row[key], first[key])
             self.assertEqual(row['text'], credentials.REDACTED)
             self.assertEqual(row['source'], {key: credentials.REDACTED for key in first['source']})

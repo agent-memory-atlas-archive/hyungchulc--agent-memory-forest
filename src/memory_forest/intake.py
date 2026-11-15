@@ -364,11 +364,12 @@ def append_owned(
         with _intake_locked(root, wait_seconds=LOG_WAIT_SECONDS, label="memory_log"):
             if turn_id is not None:
                 record["turn_digest"] = turn_keys.digest(root, turn_id)
+                record["turn_words_digest"] = turn_keys.digest(root, "turn-words\0" + _words(text).encode("utf-8", "surrogatepass").hex())
             before = sources.lanes_before(root, agent)
             found = _same_turn(root, agent, record, config)
             if found is not None:
                 day, number, stored = found
-                if turn_id is not None and _words(stored.get("text")) != _words(record["text"]):
+                if turn_id is not None and not _same_words(stored, record):
                     raise MemoryForestError(
                         "turn_id_reused",
                         "That turn id is already a turn of this session with other words. Give this turn its own "
@@ -455,6 +456,14 @@ def _words(text: object) -> str:
     return str(text or "").strip()
 
 
+def _same_words(stored: Mapping[str, Any], incoming: Mapping[str, Any]) -> bool:
+    """Compare original input words when recorded, with the legacy masked-text comparison otherwise."""
+    first, second = stored.get("turn_words_digest"), incoming.get("turn_words_digest")
+    if isinstance(first, str) and isinstance(second, str):
+        return first == second
+    return _words(stored.get("text")) == _words(incoming.get("text"))
+
+
 def _lane_records(root: str | os.PathLike[str], agent: str, day: str) -> list[tuple[int, dict[str, Any]]]:
     """Each complete line of one day's lane file that is a JSON object, with its index among the lines."""
     try:
@@ -483,7 +492,7 @@ def _same_turn(
             for line, stored in _lane_records(root, agent, day):
                 if (stored.get("session") == record["session"]
                         and turn_keys.of_record(root, stored) == record["turn_digest"]
-                        and _words(stored.get("text")) == _words(record["text"])):
+                        and _same_words(stored, record)):
                     return day, line, stored
         # A missing entry or conflicting words require all canonical lane days before any refusal.
         rebuilt = turn_keys.scan(root, agent)
@@ -2046,14 +2055,14 @@ def _mask_lane_value(value: Any, config: Config, ledger: Any) -> Any:
 def _masked_lane_line(raw: bytes, config: Config, ledger: Any, *, root=None, fix=False) -> bytes | None:
     """The line as today's rules would store it, or None when they change nothing (or it is no record).
 
-    Identity fields ``id``, ``at`` and ``turn_digest`` stay. Other strings are masked. A legacy ``turn``
+    Identity fields ``id``, ``at`` and the turn digests stay. Other strings are masked. A legacy ``turn``
     field is migrated to its digest, including JSON re-encoding when necessary; otherwise a line outside
     the writer's encoding is left as written rather than changing more than its masked spans."""
     record = parse_object(raw)
     if not isinstance(record, dict):
         return None
     legacy = isinstance(record.get("turn"), str)
-    masked = {key: value if key in {"id", "at", "turn_digest"} else _mask_lane_value(value, config, ledger)
+    masked = {key: value if key in {"id", "at", "turn_digest", "turn_words_digest"} else _mask_lane_value(value, config, ledger)
               for key, value in record.items() if key != "turn"}
     if legacy:
         masked["turn_digest"] = turn_keys.digest(root, record["turn"]) if fix else "digest-on-repair"

@@ -684,6 +684,12 @@ the first turn, rebuilt from all lane days when missing, torn or stale. Masking 
 `turn` fields to `turn_digest`, counts them as rewritten, and preserves their identity. Migrating that legacy
 field can also put the JSON object in the writer's current encoding, with its other field values preserved.
 A lane holder can compare digests for equality; a holder of the private forest key can also test guesses offline.
+New keyed turns also keep a domain-separated keyed digest of the original input words, with surrounding
+white space removed. Different input words are refused even when masking makes their stored text equal.
+The digest covers their UTF-8 bytes with surrogatepass, encoded as hex, so the existing Unicode repair
+still accepts the same inputs and distinct original strings stay distinct.
+Masking repair preserves both digests. Legacy turns without the words digest use their stored masked text
+for comparison, because the original unmasked words cannot be recovered.
 
 The answer says what happened, in order: `wrote` and `stored` for the lane's line, then `tree` (`made`,
 `already there`, `pending`, `none`) and `index` (`updated`, `pending`, with `reason`). Once the line is

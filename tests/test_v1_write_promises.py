@@ -41,6 +41,13 @@ class PromiseTests(unittest.TestCase):
         tools = (ROOT / 'docs/tools.md').read_text()
         self.assertIn('Masking repair converts legacy raw', tools)
         self.assertIn('counts them as rewritten, and preserves their identity.', tools)
+        self.assertIn('Different input words are refused even when masking makes their stored text equal.', tools)
+        self.assertIn('original unmasked words cannot be recovered.', tools)
+        self.assertIn('UTF-8 bytes with surrogatepass, encoded as hex', tools)
+        multi = ' '.join((ROOT / 'docs/multi-agent.md').read_text().split())
+        self.assertIn('Different input words are refused even when masking makes their stored text equal.', multi)
+        self.assertIn('New keyed turns distinguish original input words even when masking gives them identical stored text.',
+                      (ROOT / 'CHANGELOG.md').read_text())
         # These prove keys survive maintenance and days, with conflict refusals still grounded in the lane.
         for name in ('test_the_reviews_sign_in_key_masking_and_repeat_sequence',
                      'test_the_reviews_two_days_later_same_and_other_words_sequence'):
