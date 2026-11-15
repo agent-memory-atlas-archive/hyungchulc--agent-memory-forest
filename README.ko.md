@@ -33,8 +33,9 @@ Windows에서는 WSL2를 쓰고 forest를 Linux filesystem 안에 두세요. 먼
 python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
 ```
 
-clone을 받았다면 그 폴더에서 `python -m pip install .`을 실행해도 됩니다. 그다음 내 agent에게 한 문장만
-말하면 됩니다.
+clone을 받았다면 그 폴더에서 `python -m pip install .`을 실행해도 됩니다. 설치는 `forest --version`으로
+확인합니다. `forest` 명령이 path에 없으면 `python -m memory_forest.forest`가 같은 명령입니다. 그다음 내
+agent에게 한 문장만 말하면 됩니다.
 
 > `forest guide`를 실행하고 그대로 따라 해 줘.
 

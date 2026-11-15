@@ -34,7 +34,9 @@ address:
 python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
 ```
 
-or from a clone, with `python -m pip install .` in its folder. Then say one sentence to your agent:
+or from a clone, with `python -m pip install .` in its folder. `forest --version` checks the install;
+where the `forest` command is not on the path, `python -m memory_forest.forest` is the same command. Then
+say one sentence to your agent:
 
 > Run `forest guide` and follow it.
 
