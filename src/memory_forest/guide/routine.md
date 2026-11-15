@@ -38,11 +38,12 @@ was said close to the original and turns work into short episodes, with pointers
    owner and other people word for word; write work, tool use and results as short causal episodes; keep
    every failure and change; never copy what a tool printed; take out secrets. Each block opens with its
    marker line and ends its episodes with the raw lines it came from.
-4. Judge the pass:
+4. Judge the pass, then bring the search index up to the pages you wrote, so that every agent finds them:
 
    ```sh
    forest check --sync --root studio-forest
    forest lint --root studio-forest
+   forest index build --root studio-forest
    ```
 
 A minimal daily block:
@@ -73,12 +74,13 @@ The filing run files each subject of the day's record into the forest's pages.
 3. Set `kind:` and `about:` on every leaf you write, keep each leaf under the cap, and keep the boards'
    `## Leaves` lists and current-state lines true for what you touched. Carry up only what the contract,
    section 5 allows: what is established, not the newest thing said.
-4. Judge the pass and let code settle the levels of what you filed:
+4. Judge the pass, let code settle the levels of what you filed, and bring the search index up to date:
 
    ```sh
    forest check --sync --root studio-forest
    forest lint --root studio-forest
    forest levels apply --subjects kiln-two --root studio-forest
+   forest index build --root studio-forest
    ```
 
 A minimal leaf:
@@ -132,12 +134,13 @@ The upkeep run keeps the whole forest in shape, as often as the owner answered.
    forest repeats check --root studio-forest
    ```
 
-3. Judge the pass:
+3. Judge the pass and bring the search index up to date:
 
    ```sh
    forest check --sync --root studio-forest
    forest lint --root studio-forest
    forest levels apply --root studio-forest
+   forest index build --root studio-forest
    ```
 
 ## Make it run by itself

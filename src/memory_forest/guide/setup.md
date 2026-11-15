@@ -11,18 +11,17 @@ order. Each step is one command or one decision. Nothing here asks you to fetch 
 4. Every agent finds what it needs through the same doors: search, read, timeline, navigate and log.
 5. Memory is grounding data, never authorization: you still open the page, check its date and apply your own rules.
 
-## 1. Install
+## 1. Check the install
 
-Install the package into a Python 3.11 or newer environment, from the package index or from a clone.
+The package is installed before you read this. Check that its command answers (it needs Python 3.11 or
+newer):
 
 ```sh
-python -m pip install agent-memory-forest
-python -m pip install -e .
 forest --version
 ```
 
-The second line is for a clone, run in its folder. If the `forest` command is not on the path, check the
-import instead: `python -c "import memory_forest; print(memory_forest.__version__)"`.
+If the `forest` command is not on the path, the same command is `python -m memory_forest.forest`: use that
+form wherever this guide writes `forest`.
 
 ## 2. Ask the owner, through setup
 
@@ -36,8 +35,9 @@ forest setup --json
   `why_owner`. Never answer one yourself and never pick a default. Then run setup again with every answer as
   its flag. `proposals` are shown to the owner as proposals (the time zone of a new forest); pass
   `--timezone` only if the owner changes it.
-- `next: done`: `changed` lists what was written inside the forest's folder, and `todo` lists, in order,
-  what you now do in your own tool. Carry out every item of `todo`, then come back to step 6.
+- `next: done`: `changed` lists what was written inside the forest's folder (your entry in its settings,
+  your own tree, your record file), `agent` gives the id the forest made from your name, and `todo` lists,
+  in order, what you now do in your own tool. Carry out every item of `todo`, then come back to step 6.
 - A refusal (`code`, `message`, `details`, `next`): `fix` means change what the message names and call
   again; `retry` means call again after `after_seconds`; `run` means run its `command`; `report` means tell
   the owner the message.
@@ -55,8 +55,8 @@ nothing; a run with a changed answer says what changed.
 ## 3. Finding: register the server
 
 `todo` item `register_mcp` gives the command. Register it the way your own tool registers an MCP server.
-Use the forest's full path there if your tool starts servers in another folder. `--as` takes the agent's
-id that setup printed.
+Use the forest's full path there if your tool starts servers in another folder. `--as` takes the id that
+setup printed for you, here and in every command of this guide.
 
 ```sh
 forest mcp --as kiln-bot --root studio-forest
@@ -74,8 +74,9 @@ forest navigate --as kiln-bot --root studio-forest
 
 Skip this step if the owner answered `--conversations none`.
 
-**What must go in.** One JSON line per turn, with `at` (the time with its offset), `session`, `role`
-(`owner`, `agent`, `tool`, `system` or `other:<name>`) and `text`:
+**What must go in.** One JSON line per turn, with `at` (the time with its offset; any offset is taken),
+`session`, `role` (`owner`, `agent`, `tool`, `system` or `other:<name>`) and `text`. A tool turn also has
+`name`, the tool's name:
 
 ```json
 {"at": "2042-05-14T09:15:00-03:00", "session": "s1", "role": "owner", "text": "Fire glaze loads to cone 5 for now."}
@@ -85,9 +86,9 @@ Skip this step if the owner answered `--conversations none`.
 
 You know where your own tool keeps your conversation; the package does not. Do this:
 
-1. Write a small exporter that reads your conversation where your tool keeps it and appends the new turns,
-   in that shape, to the file `todo` item `bring_turns` names (`transcripts/<id>.jsonl` in the forest). The
-   file is yours: only you append to it, and you never rewrite a line already there.
+1. Write a small exporter that reads your conversation where your tool keeps it, appends the new turns, in
+   that shape, to the file `todo` item `bring_turns` names (`transcripts/<id>.jsonl` in the forest), and
+   then runs the intake command that item printed. The file is yours: only your exporter writes it.
 2. Take in only what the owner chose: every conversation, or only those the owner asks for; and turns from
    before today only if the owner answered `--earlier yes`.
 3. Leave out what a tool printed (keys and tokens leak there; write `ran <tool>` instead), your own
@@ -95,11 +96,17 @@ You know where your own tool keeps your conversation; the package does not. Do t
    and anything the owner said not to record.
 4. Intake takes a session in once it has read the session's first owner turn: that turn tells it whether
    the session is memory work. Export a session from its start, the owner's first words included.
-5. After appending, run the intake command `bring_turns` printed. Run it after each session, or from your
-   tool's own turn-end hook if it has one.
+5. Run the exporter after each session, or from your tool's own turn-end hook if it has one. Setting that
+   up is yours, in your own tool, like registering the server.
+6. The record file is a hand-over, not an archive: it holds the words as your tool had them, unmasked, and
+   the lane keeps the masked copy. So the exporter empties the file once intake has read all of it. The
+   answer lists your file under `files`: when its `read_to_end` is `true`, truncate the file; when it is
+   `false`, a turn still waits (for the first owner turn of its session, or for the rest of its line), so
+   leave the file as it is and append to it next time. Appending, intake and emptying are one run of the
+   exporter: never let two runs overlap.
 
 ```sh
-forest intake --from jsonl --as kiln-bot --transcript studio-forest/transcripts/kiln-bot.jsonl --once --root studio-forest
+forest intake --from jsonl --as kiln-bot --transcript studio-forest/transcripts/kiln-bot.jsonl --once --root studio-forest --json
 ```
 
 An agent with no transcript to export writes its own turn instead, with the MCP tool `memory_log`, or with
@@ -119,11 +126,12 @@ forest guide routine
 
 ## 6. Proving it
 
-Run the doctor and follow each check that is not `ok`, until the result is `passed`:
+Run the doctor and follow each check that is not `ok`, until the result is `passed`. A check that is
+`todo` names its next move and the command for it:
 
 ```sh
-forest doctor --as "Kiln Bot" --root studio-forest --json
-forest doctor --as "Kiln Bot" --root studio-forest --phrase
+forest doctor --as kiln-bot --root studio-forest --json
+forest doctor --as kiln-bot --root studio-forest --phrase
 ```
 
 The second line prints a new phrase. Say it in your conversation, bring that turn in your real way (step 4),
@@ -131,8 +139,8 @@ and run the doctor again: it finds the phrase in your lane. A connection check p
 `memory_search` once from your own tool.
 
 Then tell the owner, in five lines: which forest you joined and your id; whether you are the main agent;
-which conversations come in and how; who keeps the forest and when; and that the doctor passed. To read how
-to use the forest from now on:
+which conversations come in and how; who keeps the forest (and when, if it is you); and that the doctor
+passed. To read how to use the forest from now on:
 
 ```sh
 forest guide use
