@@ -291,6 +291,7 @@ REFUSALS: dict[str, tuple[str, str]] = {
     "settings_invalid": ("report", ""),
     "settings_unpatched": ("report", ""),
     "settings_unwritable": ("report", ""),
+    "setup_jsonl_path_set": ("report", ""),
     "source_unknown": ("fix", ""),
     "standing_invalid": ("fix", ""),
     "state_permissions": ("report", ""),

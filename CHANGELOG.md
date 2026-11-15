@@ -16,6 +16,13 @@ Milestone 2 now has intake, the search index, timeline, reader scopes and the MC
 programs and nightly upkeep. Nothing is released. The 0.3 `memory-forest` command stays in the tree until
 the version 1 commands replace it.
 
+### Added
+
+- `forest guide`, `forest setup` and `forest doctor`: an agent connects itself. The guide ships in the
+  package; setup asks the owner only what the owner decides (`next: ask_owner`), writes the agent into the
+  forest and lists what the agent does in its own tool (`todo`); the doctor proves by evidence, a phrase
+  brought in the agent's real way included, that its memory works from end to end ([setup](docs/setup.md)).
+
 ### Changed
 
 - The licence changed from GPL-3.0-only to MIT. Copies of earlier releases keep the licence they were released under.

@@ -613,6 +613,10 @@ from .cli_find import COMMANDS as _FIND_COMMANDS  # noqa: E402
 
 FOREST_COMMANDS += _FIND_COMMANDS
 
+from .cli_setup import COMMANDS as _SETUP_COMMANDS  # noqa: E402
+
+FOREST_COMMANDS += _SETUP_COMMANDS
+
 
 class ForestArgumentParser(argparse.ArgumentParser):
     """In hook mode ``error`` writes nothing: a client's hook shows stderr to the model."""
