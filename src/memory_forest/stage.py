@@ -1,6 +1,8 @@
-"""Where the package starts a model for a stage.
+"""A memory-work session marks itself, so intake leaves it out.
 
-A stage's own session is not a conversation to take in. ``prepare`` records the
+The package starts no model: the owner's own agent carries out the routine. A
+session that agent opens for the routine is not a conversation to take in. A
+keeper that starts such a session from Python calls ``prepare``: it records the
 session id (one small file named by its hash), returns an environment that
 carries ``MEMORY_FOREST_INTERNAL``, and opens the prompt with the marker line
 intake recognises. The caller passes that environment to the model process.
@@ -102,5 +104,5 @@ def prune_sessions(root: str | os.PathLike[str], *, days: int = SESSION_DAYS) ->
 
 
 def model_environment() -> Mapping[str, str]:
-    """The environment a stage sets on the model process it starts."""
+    """The environment a memory-work session's process carries."""
     return {MARKER: "1"}

@@ -1231,7 +1231,9 @@ named below is in the package; `docs/tools.md` gives each one's flags and answer
 In the first release the owner's own agent carries out the daily stage, the filing run and the upkeep run,
 following this section and the routine part of the guide (`forest guide`); the package runs none of them
 and starts no model. Its part is to judge the result: `forest check`, `forest lint`, `forest levels` and
-`forest doctor`.
+`forest doctor`. Where a forest has several agents, one of them keeps it (`forest setup` records which):
+it reads every agent's raw lane to write the daily record and files into every tree, so the keeper is an
+orchestrator (section 3, Agent trees).
 
 - **The daily stage** writes `05 daily` only. It writes a notice (section 3) as `<agent> notified` at the
   time it was sent, never as a reply, and an agent's reply as that agent's reply beside the message it
