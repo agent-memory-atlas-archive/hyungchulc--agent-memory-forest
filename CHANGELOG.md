@@ -2,6 +2,14 @@
 
 All notable changes to Agent Memory Forest (Memory Forest before version 1) are documented in this file. The project follows [Semantic Versioning](https://semver.org/) once a version is released.
 
+## Unreleased
+
+- A `Publish` workflow, run by hand, builds the distributions from a version tag and uploads them to PyPI
+  through a trusted publisher, so nothing secret is stored anywhere; with its `upload` switch off it only
+  builds and checks. `scripts/pypi_readme.py` writes the front page for the index: a relative link becomes
+  the file's address at the version's tag, the alert marker becomes a bold word, and the diagram becomes a
+  pointer to the repository's front page.
+
 ## 1.0.0b1 - 2026-11-16
 
 - The filesystem boundary is checked with import allow-lists and interpreter audit events during both

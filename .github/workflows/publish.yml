@@ -1,0 +1,74 @@
+name: Publish
+
+# Run by hand. It builds the distributions from one ref and, when asked, uploads them to PyPI through a
+# trusted publisher: the index trusts this workflow of this repository, so nothing secret is stored
+# anywhere. Without `upload` it only builds and checks, from any ref. With `upload` the ref must be the tag
+# of the version the tree holds.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "The ref to build: a version tag such as v1.0.0b2 to upload, or any branch to try the build"
+        required: true
+        type: string
+        default: main
+      upload:
+        description: "Upload to PyPI (off: build and check only)"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: The tag names the version in the tree
+        if: inputs.upload
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          version="$(PYTHONPATH=src python -c 'import memory_forest; print(memory_forest.__version__)')"
+          test "$REF" = "v$version" || { echo "the ref $REF is not the tag v$version"; exit 1; }
+      - name: Front page for the index
+        run: python scripts/pypi_readme.py --write
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Clean-install smoke
+        shell: bash
+        run: |
+          python -m venv "${RUNNER_TEMP}/publish-smoke"
+          "${RUNNER_TEMP}/publish-smoke/bin/python" -m pip install --no-index --no-deps dist/*.whl
+          "${RUNNER_TEMP}/publish-smoke/bin/forest" --version
+          "${RUNNER_TEMP}/publish-smoke/bin/forest" guide >/dev/null
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  upload:
+    if: inputs.upload
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -86,6 +86,13 @@ A survivor gets a test that kills it, or a sentence that says why the changed co
 sizes of a generated forest (the door's calls and bytes, and the time); `tests/test_v1_query_cost.py` pins
 the counts.
 
+## Releases
+
+A release is a version tag on `main` and a GitHub release that carries the changelog's section of that
+version. The `Publish` workflow is run by hand on the tag: with `upload` off it builds and checks the
+distributions, and with `upload` on it uploads them to PyPI through the repository's trusted publisher.
+No token is involved, and `scripts/pypi_readme.py` writes the front page the index shows.
+
 ## Pull requests
 
 A useful pull request explains the problem, the chosen boundary, the verification performed, and any remaining limitation. Keep unrelated changes separate.
