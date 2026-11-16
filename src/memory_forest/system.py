@@ -1293,6 +1293,63 @@ def _descriptor_path(descriptor: int, info: os.stat_result) -> str | None:
     return candidate
 
 
+# ───────────────────── the door's own descriptor on an index ─────────────────────
+#
+# A POSIX record lock belongs to the process and the file, not to the descriptor it was taken through:
+# closing ANY descriptor of a file lets go of every lock this process holds on that file. SQLite's locks
+# are such locks (https://www.sqlite.org/howtocorrupt.html, section 2.2). The door opens its own descriptor
+# on the index before SQLite opens the file, so closing that descriptor while a connection of this process
+# is open on the same file takes that connection's locks away: the next writer to close, in any process,
+# finds no reader, folds the whole write-ahead log into the file and removes it, and the reader goes on
+# with rows of two states, or with an error that calls a sound index damaged. So a descriptor the door
+# opened on an index is closed only when no connection of this process is open on that file. Until then it
+# is parked, the way SQLite parks its own.
+
+_INDEX_GUARD = threading.Lock()
+_INDEX_USERS: dict[tuple[int, int], int] = {}
+_INDEX_PARKED: dict[tuple[int, int], list[int]] = {}
+
+
+def _index_enter(info: os.stat_result) -> tuple[int, int]:
+    """One more user of the index file ``info`` describes: from the door's open until its connection has
+    closed. Counted before SQLite opens the file, so no close of a parked descriptor can follow its locks."""
+    identity = (info.st_dev, info.st_ino)
+    with _INDEX_GUARD:
+        _INDEX_USERS[identity] = _INDEX_USERS.get(identity, 0) + 1
+    return identity
+
+
+def _index_park(identity: tuple[int, int], descriptor: int) -> None:
+    """Give up a descriptor the door opened on an index, without closing it under an open connection."""
+    with _INDEX_GUARD:
+        _INDEX_PARKED.setdefault(identity, []).append(descriptor)
+
+
+def _index_leave(identity: tuple[int, int], *, counted: bool = True) -> None:
+    """A user's connection has closed. When no user of the file is left, its parked descriptors are closed."""
+    with _INDEX_GUARD:
+        users = _INDEX_USERS.get(identity, 0) - (1 if counted else 0)
+        if users > 0:
+            _INDEX_USERS[identity] = users
+            return
+        _INDEX_USERS.pop(identity, None)
+        for descriptor in _INDEX_PARKED.pop(identity, ()):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def index_descriptors_parked(path: str | os.PathLike[str]) -> int:
+    """How many descriptors of the index at ``path`` wait for the last connection of this process to close."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return 0
+    with _INDEX_GUARD:
+        return len(_INDEX_PARKED.get((info.st_dev, info.st_ino), ()))
+
+
 class IndexFile:
     """The index file as the door checked it, and the SQLite connection that reads it.
 
@@ -1300,11 +1357,11 @@ class IndexFile:
     also says the file's size and time are unchanged and no write-ahead log stands beside it.
     """
 
-    __slots__ = ("connection", "descriptor", "path", "before", "immutable", "through")
+    __slots__ = ("connection", "descriptor", "path", "before", "immutable", "through", "counted", "open")
 
     def __init__(
         self, connection: sqlite3.Connection, descriptor: int, path: Path, info: os.stat_result, *,
-        immutable: bool, through: str,
+        immutable: bool, through: str, counted: bool = False,
     ) -> None:
         self.connection = connection
         self.descriptor = descriptor
@@ -1312,6 +1369,8 @@ class IndexFile:
         self.before = info
         self.immutable = immutable
         self.through = through
+        self.counted = counted  # ``open_index`` counted this user of the file (``_index_enter``)
+        self.open = True
 
     def same(self) -> bool:
         try:
@@ -1338,8 +1397,10 @@ class IndexFile:
         return False
 
     def release_descriptor(self) -> None:
+        """Give the door's descriptor up. It is closed with the last connection of this process to the file,
+        never under one (see ``_index_enter``): this object's own connection may still be open."""
         if self.descriptor >= 0:
-            os.close(self.descriptor)
+            _index_park((self.before.st_dev, self.before.st_ino), self.descriptor)
             self.descriptor = -1
 
     def close(self) -> None:
@@ -1347,6 +1408,9 @@ class IndexFile:
             self.connection.close()
         finally:
             self.release_descriptor()
+            if self.open:
+                self.open = False
+                _index_leave((self.before.st_dev, self.before.st_ino), counted=self.counted)
             watch = _WATCH
             if watch is not None:
                 with watch.lock:
@@ -1372,6 +1436,9 @@ def open_index(
     ``changed``. A call that passes its deadline (``OPEN_DEADLINE_SECONDS`` unless one is given) is ``busy``,
     or ``changed`` when the path names something else by then; SQLite's own thread finishes on its own and
     closes what it opened.
+
+    The descriptor the door opened is never closed under a connection of this process to the same file:
+    it is parked until the last of them has closed (the note above ``IndexFile`` says why).
     """
     target = absolute(path)
     deadline = OPEN_DEADLINE_SECONDS if deadline_seconds is None else deadline_seconds
@@ -1392,6 +1459,13 @@ def open_index(
         descriptor, info = _open_checked(target, flags, 0o600, "write")
     else:
         descriptor, info = _open_checked(target, _READ_FLAGS, 0, "read")
+    identity = _index_enter(info)
+
+    def let_go() -> None:
+        """This call's descriptor and its count, where no ``IndexFile`` takes them over."""
+        _index_park(identity, descriptor)
+        _index_leave(identity)
+
     through = target.as_uri()
     if immutable:
         named = _descriptor_path(descriptor, info)
@@ -1402,7 +1476,7 @@ def open_index(
     try:
         _point(POINT_INDEX_OPEN, path=target)
     except BaseException:
-        os.close(descriptor)
+        let_go()
         raise
     handle_box: dict[str, Any] = {}
     done = threading.Event()
@@ -1438,7 +1512,7 @@ def open_index(
                         found.close()
                     except sqlite3.Error:
                         pass
-                os.close(descriptor)
+                let_go()
                 _clear_abandoned(target)
                 with _ABANDONED_LOCK:
                     _LIVE_OPEN.discard(os.fspath(target))
@@ -1451,11 +1525,11 @@ def open_index(
         while key in _LIVE_OPEN and key not in _ABANDONED:
             left = until - time.monotonic()
             if left <= 0:
-                os.close(descriptor)
+                let_go()
                 raise Busy(target, note="deadline", seconds=deadline)
             _OPEN_CHANGED.wait(left)
         if key in _ABANDONED:
-            os.close(descriptor)
+            let_go()
             raise Busy(target, note="abandoned", seconds=deadline)
         _LIVE_OPEN.add(key)
     opener.start()
@@ -1492,13 +1566,16 @@ def open_index(
                 _LIVE_OPEN.discard(key)
                 _OPEN_CHANGED.notify_all()
     opened = IndexFile(
-        handle_box.get("connection"), descriptor, target, info, immutable=immutable, through=through  # type: ignore[arg-type]
+        handle_box.get("connection"), descriptor, target, info,  # type: ignore[arg-type]
+        immutable=immutable, through=through, counted=True,
     )
     if "error" in handle_box:
         error = handle_box["error"]
         moved = not opened.same()
-        os.close(descriptor)
+        # The opener's thread closed the connection it made, if it made one: this user is gone.
         opened.descriptor = -1
+        opened.open = False
+        let_go()
         problem = _sidecar_problem(target)
         if moved:
             raise Changed(target) from error

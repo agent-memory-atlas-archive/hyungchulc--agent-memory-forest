@@ -17,6 +17,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -37,6 +38,25 @@ from v1_support import ForestTestCase
 PACKAGE = door_rules.PACKAGE
 READER = "till-bot"
 PAGE = "04 stm/bakery/ovens/floor.md"
+
+# Another process asks SQLite for the write lock of the database, without waiting.
+_LOCK_PROBE = """
+import sqlite3, sys
+connection = sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None)
+try:
+    connection.execute("BEGIN IMMEDIATE")
+except sqlite3.OperationalError:
+    print("held")
+else:
+    print("free")
+"""
+
+
+def _write_lock_seen_by_another_process(path: Path) -> str:
+    done = subprocess.run(
+        [sys.executable, "-c", _LOCK_PROBE, str(path)], capture_output=True, text=True, timeout=60
+    )
+    return done.stdout.strip() or done.stderr.strip()
 
 
 def agent_commands() -> list[tuple[str, ...]]:
@@ -1012,15 +1032,64 @@ class DoorCallTests(ForestTestCase):
         with self.assertRaises(OSError):
             os.fstat(descriptors[0])
 
-    def test_the_descriptor_is_let_go_once(self) -> None:
-        opened, _ = system.open_index(self._index(), immutable=False)
+    def test_the_descriptor_outlives_its_connection_and_is_let_go_once(self) -> None:
+        # Closing a descriptor of a file lets go of every POSIX lock this process holds on that file,
+        # SQLite's included. The door's own descriptor is parked, and closed only after the connection.
+        index = self._index()
+        opened, _ = system.open_index(index, immutable=False)
         self.addCleanup(opened.close)
         descriptor = opened.descriptor
         opened.release_descriptor()
         self.assertEqual(opened.descriptor, -1)
+        self.assertEqual(system.index_descriptors_parked(index), 1)
+        os.fstat(descriptor)
+        opened.release_descriptor()
+        self.assertEqual(system.index_descriptors_parked(index), 1)
+        opened.close()
+        self.assertEqual(system.index_descriptors_parked(index), 0)
         with self.assertRaises(OSError):
             os.fstat(descriptor)
-        opened.release_descriptor()
+        opened.close()
+
+    def test_a_close_through_the_door_keeps_the_locks_of_a_connection_that_is_still_open(self) -> None:
+        # Two users of one index in this process; the first holds SQLite's write lock, and the second opens
+        # and closes. A POSIX lock is the process's, so one close of any descriptor of the file drops it:
+        # another process must still find the write lock held, or two writers would write at once.
+        index = self._index()
+        first, _ = system.open_index(index, immutable=False, write=True)
+        self.addCleanup(first.close)
+        first.connection.execute("BEGIN IMMEDIATE")
+        second, _ = system.open_index(index, immutable=False)
+        second.close()
+        self.assertEqual(system.index_descriptors_parked(index), 1)
+        self.assertEqual(_write_lock_seen_by_another_process(index), "held")
+        first.connection.execute("ROLLBACK")
+        first.close()
+        self.assertEqual(system.index_descriptors_parked(index), 0)
+        self.assertEqual(_write_lock_seen_by_another_process(index), "free")
+
+    def test_an_open_that_ends_without_a_connection_does_not_close_under_another(self) -> None:
+        # The same promise on the ways an open ends early: its descriptor is parked, not closed.
+        index = self._index()
+        first, _ = system.open_index(index, immutable=False, write=True)
+        self.addCleanup(first.close)
+        first.connection.execute("BEGIN IMMEDIATE")
+
+        def stop(**info: object) -> None:
+            raise system.Busy(str(info["path"]), note="a hook")
+
+        def failing(connection: sqlite3.Connection) -> None:
+            raise sqlite3.OperationalError("no such table: loaves")
+
+        with system.at(system.POINT_INDEX_OPEN, stop), self.assertRaises(system.Busy):
+            system.open_index(index, immutable=False)
+        with self.assertRaises(sqlite3.OperationalError):
+            system.open_index(index, immutable=False, first=failing)
+        self.assertEqual(system.index_descriptors_parked(index), 2)
+        self.assertEqual(_write_lock_seen_by_another_process(index), "held")
+        first.connection.execute("ROLLBACK")
+        first.close()
+        self.assertEqual(system.index_descriptors_parked(index), 0)
 
     def test_a_release_lets_the_lock_go_while_a_copy_of_its_descriptor_is_open(self) -> None:
         # A copy of the descriptor (a child forked while the lock was held keeps one) keeps a lock that closing

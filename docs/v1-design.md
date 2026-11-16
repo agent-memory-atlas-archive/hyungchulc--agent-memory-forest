@@ -343,6 +343,8 @@ After every SQLite error or open deadline the three sidecar names are examined a
 unreadable file is named in the state's refusal. Read access is proved by opening, not by permission
 bits or `os.access`; a sidecar access probe opens in a short-lived helper process, because closing a
 descriptor of a POSIX-locked file could release another SQLite connection's locks in this process.
+For the same reason the descriptor the door itself opened on the index is not closed while a connection
+of this process is open on that file: it is parked, and closed when the last of them has closed.
 A FIFO is released with a nonblocking write open. A still-blocked open, including one whose index path
 changed, is counted; no second opener starts while it remains. Later calls and `index status` report
 `index_open_abandoned`, with `report` and the need to restart the answering process.

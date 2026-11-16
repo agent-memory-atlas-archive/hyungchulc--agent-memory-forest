@@ -7,7 +7,12 @@ All notable changes to Memory Forest are documented in this file. The project fo
 - The filesystem boundary is checked with import allow-lists and interpreter audit events during both
   fault sweeps. Tests have a process deadline, independent disk witnesses, and separate assertion and
   bound mutation results. An independent watchdog ends a stalled native traceback. Sidecar read probes
-  preserve live SQLite locks; a blocked opener is counted even after an index-path swap. Verification in this round ran on macOS.
+  preserve live SQLite locks; a blocked opener is counted even after an index-path swap.
+- The descriptor the door opens on the search index is closed only after the last connection of the
+  process to that file. Closing it earlier dropped the POSIX locks of a connection that was still open: a
+  reader could then answer with rows of two states, or call a sound index damaged, once a writer in
+  another process closed (seen with SQLite 3.40 and 3.49). The whole suite now also runs on Linux and on
+  the oldest supported Python (3.11), with an older SQLite than the one it was written on.
 
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones; 1.0.0b1 is
 its first public release, a beta. The `forest` commands of milestone 1, the structure tools, are in the

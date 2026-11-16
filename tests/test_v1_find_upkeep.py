@@ -349,7 +349,13 @@ class PublishingTests(ForestTestCase):
 
     def test_a_reader_opened_before_a_build_answers_after_it_and_a_query_during_it_never_raises(self) -> None:
         inode = self.index.stat().st_ino
-        reader = sqlite3.connect(self.index)
+        # The reader is one of this process's own and opens through the door, as every reader of the package
+        # does. The query below is a second open and close of the same file in this process, and a POSIX
+        # lock is the process's: a close of any descriptor of the file that the door did not hold back
+        # would drop the reader's locks, and the build's last close would fold the log away under it.
+        opened, _ = system.open_index(self.index, immutable=False)
+        self.addCleanup(opened.close)
+        reader = opened.connection
         reader.execute("PRAGMA query_only = ON")
         cursor = reader.execute("SELECT text FROM units ORDER BY id")
         self.assertIsNotNone(cursor.fetchone())  # a read transaction is open across the build
@@ -387,7 +393,7 @@ class PublishingTests(ForestTestCase):
         self.assertTrue(cursor.fetchall())
         fresh = reader.execute("SELECT COUNT(*) FROM units WHERE text LIKE '%came back%'").fetchone()[0]
         self.assertGreater(fresh, 0)
-        reader.close()
+        opened.close()
         self.assertEqual(self.index.stat().st_ino, inode)
         self.assertFalse(_holds(search.query(self.root, "went", reader="till-bot"), "went out past"))
 

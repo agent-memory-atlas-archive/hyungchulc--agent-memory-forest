@@ -42,6 +42,10 @@ VALUES = {
 }
 
 
+# A parameter of one of these names is taken for a path.
+PATH_NAMES = frozenset({"path", "filename", "src", "dst", "top", "file", "path1", "path2", "f1", "f2"})
+
+
 @contextlib.contextmanager
 def silent_watch():
     with contextlib.ExitStack() as stack:
@@ -70,7 +74,7 @@ def inventory():
             except (TypeError, ValueError):
                 pass
             names = set(re.findall(r"\b[a-z_]+\b", signature))
-            explicit = names & {"path", "filename", "src", "dst", "top", "file", "path1", "path2", "f1", "f2"}
+            explicit = names & PATH_NAMES
             described = names & {"name", "old", "new"} and re.search(
                 r"\b(?:path|file|filename|directory|directories)\b", function.__doc__ or "", re.IGNORECASE)
             if owner is os.path or explicit or described:
@@ -86,7 +90,7 @@ class InventoryTests(unittest.TestCase):
 
     def test_every_path_function_audits_or_is_wrapped(self):
         global _EVENTS, _SILENT_EVENTS
-        missing, invalid, called = [], [], []
+        missing, invalid, called, descriptors = [], [], [], []
         with tempfile.TemporaryDirectory() as temporary, silent_watch():
             absent = str(Path(temporary) / "absent" / "decoy")
             existing = Path(temporary) / "existing-decoy"
@@ -147,6 +151,14 @@ class InventoryTests(unittest.TestCase):
                 except (OSError, ValueError) as exc:
                     error = exc
                 except (TypeError, IndexError) as exc:
+                    # A function that wants an integer where the decoy path stands takes descriptors there:
+                    # copy_file_range and splice (Linux) name two descriptors ``src`` and ``dst``. No path
+                    # goes in, so it is not a path function and has nothing to audit.
+                    asked = set(re.findall(r"\b[a-z_]+\b", text)) & PATH_NAMES
+                    wants_integer = isinstance(exc, TypeError) and "interpreted as an integer" in str(exc)
+                    if wants_integer and asked <= {"src", "dst"}:
+                        descriptors.append(name)
+                        continue
                     invalid.append((name, text, str(exc)))
                 finally:
                     events = _EVENTS
@@ -159,5 +171,12 @@ class InventoryTests(unittest.TestCase):
                         continue
                     missing.append((owner.__name__, name, text, type(error).__name__))
             self.assertGreater(len(called), 30)
+            for name in descriptors:
+                # Proof that it was left out for the right reason: the same call with two descriptors is
+                # one the system judges (it may refuse it), not one the interpreter turns away.
+                try:
+                    getattr(os, name)(descriptor, descriptor, 0)
+                except OSError:
+                    pass
             self.assertEqual(invalid, [], "the inventory needs a valid invocation recipe")
             self.assertEqual(missing, [], "a new unaudited function must be wrapped")
