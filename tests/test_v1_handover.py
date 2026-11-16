@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -35,6 +36,18 @@ def forest(*argv: str) -> tuple[int, str, str]:
 
 def line(at: str, role: str, text: str, session: str = "s1") -> str:
     return json.dumps({"at": f"2042-05-14T{at}-03:00", "session": session, "role": role, "text": text}) + "\n"
+
+
+def holds_said(value: str, data: bytes) -> bool:
+    """Whether ``data`` holds ``value`` as it was said: standing alone, no letter or digit touching it.
+
+    Intake's state names a lane file by its device, inode and size and seals itself with a digest. Those are
+    long runs of digits and hexadecimal letters, and any four digits turn up inside one by chance: a plain
+    search for the value failed once on a hosted machine with nothing kept. Words as they were said never
+    run into another digit or letter.
+    """
+    alone = rb"(?<![0-9A-Za-z])" + re.escape(value.encode("utf-8")) + rb"(?![0-9A-Za-z])"
+    return re.search(alone, data) is not None
 
 
 class HandOverTests(unittest.TestCase):
@@ -147,12 +160,18 @@ class HandOverTests(unittest.TestCase):
         self.file.write_text(line("10:25:00", "owner", said)
                              + line("10:26:00", "agent", "I will tell the Thursday class."))
         self.assertTrue(self.take()["read_to_end"])
-        self.assertNotIn("4471", json.dumps(self.lane()))
-        self.assertIn(b"4471", self.file.read_bytes())
+        self.assertFalse(holds_said("4471", json.dumps(self.lane()).encode("utf-8")))
+        self.assertTrue(holds_said("4471", self.file.read_bytes()))
         self.file.write_bytes(b"")
         holding = [str(path.relative_to(self.root)) for path in sorted(self.root.rglob("*"))
-                   if path.is_file() and b"4471" in path.read_bytes()]
+                   if path.is_file() and holds_said("4471", path.read_bytes())]
         self.assertEqual(holding, [])
+
+    def test_said_words_are_told_from_the_same_digits_inside_an_identity_or_a_digest(self) -> None:
+        self.assertTrue(holds_said("4471", b"4471"))
+        self.assertTrue(holds_said("4471", json.dumps({"text": "The door code is 4471."}).encode("utf-8")))
+        self.assertFalse(holds_said("4471", b"[16777231, 1324471102, 871]"))
+        self.assertFalse(holds_said("4471", b'{"seal": "a87375244715318240f62ba9f26e6df4"}'))
 
 
 if __name__ == "__main__":
