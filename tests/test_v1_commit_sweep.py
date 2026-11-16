@@ -28,7 +28,10 @@ from test_v1_sweep import Answer, SWEEP_FILES
 
 
 class CommitSweepTests(unittest.TestCase):
-    bound_seconds = 900
+    # The deadline is a net for a run that never returns, not a speed limit. The sweep of the generated
+    # writers takes about ten minutes on a hosted Linux machine (Python 3.12), and such machines differ
+    # by more than half from run to run: a bound of fifteen minutes was passed once without any fault.
+    bound_seconds = 2700
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
