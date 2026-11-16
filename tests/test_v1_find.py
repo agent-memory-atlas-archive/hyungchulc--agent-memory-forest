@@ -35,6 +35,19 @@ from memory_forest.locking import hold_lock
 
 from v1_support import ForestTestCase
 
+# The interpreter's own witness of a name lookup: it raises one of these events for each call to the
+# resolver, whichever function of the standard library made it.
+_LOOKUP_EVENTS = frozenset({"socket.gethostbyaddr", "socket.gethostbyname", "socket.getnameinfo"})
+_LOOKUPS: list[str] | None = None
+
+
+def _witness_lookups(event: str, args: tuple) -> None:
+    if _LOOKUPS is not None and event in _LOOKUP_EVENTS:
+        _LOOKUPS.append(event)
+
+
+sys.addaudithook(_witness_lookups)
+
 
 WHEN = "\u2014"
 NOW = datetime(2051, 3, 2, 12, 0, tzinfo=timezone.utc)
@@ -592,6 +605,46 @@ class McpTests(ForestTestCase):
         finally:
             loop.shutdown()
             loop.server_close()
+
+    def test_the_http_door_starts_and_answers_without_looking_up_a_name(self) -> None:
+        """A resolver that waits holds whoever asks it. The door binds its address and asks for no name."""
+        global _LOOKUPS
+        token = "shelf-token-cedar"
+        for host in ("127.0.0.1", "0.0.0.0"):
+            with self.subTest(host=host):
+                _LOOKUPS = []
+                try:
+                    server = mcp.serve_http(self.root, "till-bot", host, 0, token=token.encode("ascii"))
+                    try:
+                        status = _ping(server.server_address[1], token)
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+                    seen = _LOOKUPS
+                finally:
+                    _LOOKUPS = None
+                self.assertEqual((status, seen), (200, []))
+
+
+def _ping(port: int, token: str) -> int:
+    """One call over a plain connection. No proxy rule is read, so the client asks for no name either."""
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request(
+            "POST",
+            "/mcp",
+            body=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": "Bearer " + token,
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+        return response.status
+    finally:
+        connection.close()
 
 
 def _frame(payload: dict | list) -> bytes:

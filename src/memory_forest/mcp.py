@@ -73,7 +73,7 @@ import sys
 import urllib.parse
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any
 
 from . import __version__, groups, intake, layout, names, search, system, timeline
@@ -1136,6 +1136,14 @@ def _response_version(response: Any, applied: str) -> str:
 
 def _server(address: tuple[str, int], handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServer:
     class Server(ThreadingHTTPServer):
+        def server_bind(self) -> None:
+            # The standard server asks the resolver here for the full name of the address it bound, to fill
+            # a field only its CGI handler reads. A resolver that waits holds the start for as long as it
+            # waits, and a name lookup is an act on the network. The door binds its address and asks for
+            # no name: this is the bind of the class below the standard one.
+            super(HTTPServer, self).server_bind()
+            self.server_name, self.server_port = str(self.server_address[0]), int(self.server_address[1])
+
         def handle_error(self, request: Any, client_address: Any) -> None:
             _log("forest mcp: one connection failed and the server is still listening")
 

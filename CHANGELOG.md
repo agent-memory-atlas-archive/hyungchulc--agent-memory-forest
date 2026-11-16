@@ -13,6 +13,10 @@ All notable changes to Memory Forest are documented in this file. The project fo
   reader could then answer with rows of two states, or call a sound index damaged, once a writer in
   another process closed (seen with SQLite 3.40 and 3.49). The whole suite now also runs on Linux and on
   the oldest supported Python (3.11), with an older SQLite than the one it was written on.
+- The HTTP door of `forest mcp` asks the resolver for no name when it starts. The standard server looked
+  up the full name of the address it bound, for a field the door never reads, so a resolver that waited
+  held the start: over 90 seconds on a hosted macOS machine. A test now watches the interpreter's own
+  events while the door starts and answers, and finds no name lookup.
 - The front page is also written in Simplified Chinese, Japanese, Spanish, French and German, beside
   English and Korean. A test holds every language page to the frame of the English one: the same sections,
   commands, links and diagram, with only the prose translated.
