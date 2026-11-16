@@ -2,7 +2,7 @@
 
 **오래 일하는 AI agent와 agent 팀을 위한, 사람이 읽을 수 있고 규칙으로 관리되는 로컬 메모리입니다.**
 
-[English README](README.md)
+[English](README.md) · **한국어** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
 [![CI](https://github.com/hyungchulc/agent-memory-forest/actions/workflows/ci.yml/badge.svg)](https://github.com/hyungchulc/agent-memory-forest/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
@@ -220,16 +220,21 @@ ls my-forest/"02 ltm"
 # post-bot_LTM.md   studio_LTM.md          # tree 페이지: 역할, 지시, 교훈, 현재 상태, branch
 ```
 
-1. agent(orchestrator, bot, 예약 실행 단계)는 첫날부터 tree인 subject입니다. 설정 항목이나 raw lane의 첫
-   파일만 있으면 되고, tree는 `forest levels apply`가 만듭니다. `forest log`와 `memory_log`는 바로
-   tree를 만들거나 다른 writer가 lock을 잡고 있으면 `pending`으로 답합니다. lock이 풀린 뒤 다음
-   write가 tree를 만듭니다. forest 전체에서 정확한 저장 id, 이름 key 순서로 agent를 찾고 나서
-   group 멤버인지 확인합니다. 이미 허용한 이름은 페이지 문법에 맞게 인코딩하며 다시 거절하지 않습니다.
+1. agent(orchestrator, bot, 예약 실행 단계)는 첫날부터 tree인 subject입니다. agent가 `forest log`나
+   `memory_log`로 쓴 턴이 그 tree를 만들고, 다른 writer가 lock을 잡고 있으면 lock이 풀린 뒤의 다음 write가
+   만들도록 pending으로 남깁니다. agent는 곧 그 이름이며, 어떤 문자로 쓴 이름이든 됩니다. forest 전체에서
+   정확한 저장 id가 이름 key보다 먼저이고, 둘 다 group 멤버 확인보다 먼저입니다. 이름은 페이지 문법이
+   필요로 하는 곳에서만 인코딩하며, 한 번 받아들인 이름을 또 다른 이름 규칙으로 거절하는 일은 없습니다.
+   설정 항목이나 intake lane 때문에 만들어야 하는데 아직 없는 tree는 `forest levels apply`가 만듭니다.
 2. agent의 tree 페이지에는 역할, 고정 지시, 교훈, 현재 상태, branch가 있습니다.
 3. 기본값인 `subject-first`는 사실을 그 subject의 집에 두고 `noted by <agent>`라고 표시합니다.
    `agent-first`는 agent의 tree에 두고 `about:`으로 가리키다가, 두 agent가 같은 사실을 알게 되면 공유합니다.
 4. orchestrator는 forest 전체를 읽고, 다른 agent는 공유 tree와 자기 tree를 읽습니다.
 5. agent마다 자기 raw lane에 덧붙이기만 하고, forest에는 lock을 잡은 정리 실행 하나만 씁니다.
+
+lane에 commit되는 순간 `stored`와 turn id가 확정됩니다. id, caller key와 source 기록, tree, index, connection 기록은 거기서 파생되며, 아직 끝나지 않은 것은 `pending`과 그 이유로 표시됩니다.
+
+crash로 응답을 받지 못하면 호출한 쪽은 turn이 저장됐는지 알 수 없습니다. 같은 key로 호출을 다시 해도 안전합니다.
 
 자세한 내용은 [Agents](docs/multi-agent.md)에 있습니다.
 

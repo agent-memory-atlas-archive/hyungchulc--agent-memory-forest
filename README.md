@@ -2,7 +2,7 @@
 
 **A readable, rule-kept local memory for long-running AI agents and teams of agents.**
 
-[한국어 README](README.ko.md)
+**English** · [한국어](README.ko.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
 
 [![CI](https://github.com/hyungchulc/agent-memory-forest/actions/workflows/ci.yml/badge.svg)](https://github.com/hyungchulc/agent-memory-forest/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
@@ -229,7 +229,7 @@ ls my-forest/"02 ltm"
    write after another writer releases the lock. An agent is its name, in any script. The exact stored
    id wins before the name key, across the whole forest, before group membership. Names are encoded
    where page syntax needs it; admitted names are never refused by a second name rule.
-   `forest levels apply` makes a tree a settings entry or an intake lane left due.
+   `forest levels apply` makes the tree that a settings entry or an intake lane left due.
 2. Its tree page holds its role, standing instructions, lessons, current state and branches.
 3. `subject-first` (default) files facts in the subject's home tagged `noted by <agent>`; `agent-first`
    files them in the agent's tree with `about:` pointers, and shares a fact once two agents hold it.

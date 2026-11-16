@@ -13,6 +13,9 @@ All notable changes to Memory Forest are documented in this file. The project fo
   reader could then answer with rows of two states, or call a sound index damaged, once a writer in
   another process closed (seen with SQLite 3.40 and 3.49). The whole suite now also runs on Linux and on
   the oldest supported Python (3.11), with an older SQLite than the one it was written on.
+- The front page is also written in Simplified Chinese, Japanese, Spanish, French and German, beside
+  English and Korean. A test holds every language page to the frame of the English one: the same sections,
+  commands, links and diagram, with only the prose translated.
 
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones; 1.0.0b1 is
 its first public release, a beta. The `forest` commands of milestone 1, the structure tools, are in the

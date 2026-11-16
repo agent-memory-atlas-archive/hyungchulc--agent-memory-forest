@@ -48,7 +48,8 @@ forest levels apply
 
 A turn an agent writes with `forest log` or `memory_log` makes that one agent's tree before the call
 returns, or answers `pending` with a reason when tree work cannot finish. The next write retries it and
-makes the tree once the cause clears. The level pass still makes a tree a settings entry or an intake lane left due. For readability,
+makes the tree once the cause clears. The level pass still makes the tree that a settings entry or an intake
+lane left due. For readability,
 the following lines show decoded display names; generated names on disk use marked numeric references.
 With the settings entry above, that pass writes:
 
