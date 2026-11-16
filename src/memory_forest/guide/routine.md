@@ -85,10 +85,18 @@ The filing run files each subject of the day's record into the forest's pages.
 2. Update its leaf in place, or its entry on a collection page, or write a new leaf for a new sub-topic in
    the subject's home. A name the registry does not know becomes an entry on the collection page of its
    category in its home tree.
-3. Set `kind:` and `about:` on every leaf you write, keep each leaf under the cap, and keep the boards'
-   `## Leaves` lists and current-state lines true for what you touched. Carry up only what the contract,
-   section 5 allows: what is established, not the newest thing said.
-4. Judge the pass, let code settle the levels of what you filed, and bring the search index up to date:
+3. Set `kind:` and `about:` on every leaf you write: `kind:` is one of the contract's fixed list (section 4,
+   Kinds), and `about:` names the other subjects the leaf says something about, or `none`.
+4. Keep time on the page. Each dated thing gets one line under `## Timeline`: its date, its time when it is
+   known, and the zone (the line's own, or the leaf's `timezone:`), as in the leaf below. The time index
+   reads these lines. When a fact changes, the page states the current fact and the old statement moves
+   whole into `## Update record`, as one dated line at the end, so the record runs oldest first and nothing
+   is deleted: ``- 2042-05-09 — what changed: was "…", now "…". Why: …. Source: `path`.`` A Timeline line
+   that no longer holds keeps its text, with `[superseded 2042-05-09]` in front of its date.
+5. Keep each leaf under the cap, and keep the boards' `## Leaves` lists and current-state lines true for
+   what you touched. Carry up only what the contract, section 5 allows: what is established, not the newest
+   thing said.
+6. Judge the pass, let code settle the levels of what you filed, and bring the search index up to date:
 
    ```sh
    forest check --sync --root studio-forest

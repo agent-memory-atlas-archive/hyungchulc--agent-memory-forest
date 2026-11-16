@@ -16,6 +16,9 @@ All notable changes to Memory Forest are documented in this file. The project fo
 - The front page is also written in Simplified Chinese, Japanese, Spanish, French and German, beside
   English and Korean. A test holds every language page to the frame of the English one: the same sections,
   commands, links and diagram, with only the prose translated.
+- `forest guide routine` says in its filing run how time is kept on a page: one `## Timeline` line for each
+  dated thing, and one dated `was "…", now "…"` line at the end of `## Update record` for each fact that
+  changed. Until now the short path showed both sections only in its example leaf.
 
 Version 1, Agent Memory Forest, is a new generation of the project, built in three milestones; 1.0.0b1 is
 its first public release, a beta. The `forest` commands of milestone 1, the structure tools, are in the
