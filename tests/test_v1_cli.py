@@ -145,7 +145,6 @@ class ForestCommandTests(ForestTestCase):
         citation = (REPOSITORY_ROOT / "CITATION.cff").read_text(encoding="utf-8")
         self.assertIn('title: "Agent Memory Forest"', citation)
         self.assertIn(f"version: {__version__}", citation)
-        self.assertNotIn("date-released:", citation)
         for name in ("README.md", "README.ko.md", "CHANGELOG.md"):
             text = (REPOSITORY_ROOT / name).read_text(encoding="utf-8")
             self.assertIn(__version__, text, name)
@@ -153,7 +152,16 @@ class ForestCommandTests(ForestTestCase):
             self.assertNotIn("Version 1.0.0 is not released", text, name)
             self.assertNotIn("Version 1.0.0 is unreleased", text, name)
             self.assertNotIn("버전 1.0.0은 아직 배포되지 않았습니다", text, name)
-        self.assertIn(f"## Unreleased — {__version__}", (REPOSITORY_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"))
+        # The changelog and the citation say the same about this version: both carry its day once it is
+        # released, and neither does before.
+        changelog = (REPOSITORY_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        released = re.search(rf"(?m)^## {re.escape(__version__)} - (\d{{4}}-\d\d-\d\d)$", changelog)
+        if released:
+            self.assertIn(f"date-released: {released.group(1)}\n", citation)
+            self.assertNotIn(f"## Unreleased — {__version__}", changelog)
+        else:
+            self.assertIn(f"## Unreleased — {__version__}", changelog)
+            self.assertNotIn("date-released:", citation)
         workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn(f'memory_forest.__version__ == "{__version__}" == version("agent-memory-forest")', workflow)
         reported = forest("--version", cwd=self.base)

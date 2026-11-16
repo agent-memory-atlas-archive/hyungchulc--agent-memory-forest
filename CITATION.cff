@@ -3,6 +3,7 @@ message: "If you use Agent Memory Forest in research or software, please cite it
 title: "Agent Memory Forest"
 type: software
 version: 1.0.0b1
+date-released: 2026-11-16
 authors:
   - family-names: Choi
     given-names: Hyungchul
@@ -10,8 +11,9 @@ repository-code: "https://github.com/hyungchulc/agent-memory-forest"
 url: "https://github.com/hyungchulc/agent-memory-forest"
 license: MIT
 abstract: >-
-  A local, provenance-aware filesystem architecture and reference CLI for
-  route-first retrieval in long-running AI agents.
+  A readable, rule-kept local memory for long-running AI agents and teams of
+  agents: plain Markdown pages on local disk, one home for each fact, a tree
+  per agent, and lookup tools over the command line and MCP.
 keywords:
   - AI agents
   - local-first

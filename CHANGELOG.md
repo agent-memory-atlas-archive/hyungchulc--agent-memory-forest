@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to Memory Forest are documented in this file. The project follows [Semantic Versioning](https://semver.org/) once a version is released.
+All notable changes to Agent Memory Forest (Memory Forest before version 1) are documented in this file. The project follows [Semantic Versioning](https://semver.org/) once a version is released.
 
-## Unreleased — 1.0.0b1
+## 1.0.0b1 - 2026-11-16
 
 - The filesystem boundary is checked with import allow-lists and interpreter audit events during both
   fault sweeps. Tests have a process deadline, independent disk witnesses, and separate assertion and

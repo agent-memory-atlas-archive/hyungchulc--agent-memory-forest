@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-memory-forest"
 dynamic = ["version"]
-description = "A local, provenance-aware memory architecture for long-running AI agents"
+description = "A readable, rule-kept local memory for long-running AI agents and teams of agents"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
