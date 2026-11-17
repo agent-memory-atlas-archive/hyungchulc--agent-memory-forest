@@ -11,6 +11,14 @@ All notable changes to Agent Memory Forest (Memory Forest before version 1) are 
   builds and checks. `scripts/pypi_readme.py` writes the front page for the index: a relative link becomes
   the file's address at the version's tag, the alert marker becomes a bold word, and the diagram becomes a
   pointer to the repository's front page.
+- The front page's picture draws an agent's tree with the same three layers as a shared tree, the two side
+  by side. It had drawn other boxes there, as if an agent's tree were another kind of thing, sent the
+  filing run only into the shared leaves, and ended a bot's read at the shared trees alone. A new section,
+  "Finding in five lines", says how a question is answered: a picture of which tool takes which question, an
+  example in the synthetic forest whose shown answers a test compares with what the commands print, and five
+  lines on the two doors, the derived index, names before words, a result as a route, and the connection as
+  the reader. Every language page carries both, and `scripts/pypi_readme.py` points each diagram at the
+  section that holds it.
 
 ## 1.0.0b1 - 2026-11-16
 

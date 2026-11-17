@@ -172,33 +172,37 @@ flowchart TB
         istm --> daily
     end
 
-    hub -- append --> istm
-    botA -- append --> istm
-    botB -- append --> istm
+    hub --> istm
+    botA --> istm
+    botB --> istm
 
-    daily -- "filing run<br/>one writer at a time" --> stm
+    daily --> filing(["filing run<br/>one writer at a time"])
+    filing -- into the leaves --> forest
 
     subgraph forest ["Forest"]
         xltm["01 xltm<br/>identity · trees · agents"]
+        subgraph own ["Agent trees"]
+            altm["02 ltm tree pages"] --> amtm["03 mtm indexes and boards"] --> astm["04 stm leaves"]
+        end
         subgraph shared ["Shared trees"]
             ltm["02 ltm tree pages"] --> mtm["03 mtm indexes and boards"] --> stm["04 stm leaves"]
-        end
-        subgraph own ["Agent trees, one per agent"]
-            altm["role · instructions · lessons"] --> amtm["boards"] --> astm["runs · methods · hand-offs"]
         end
         xltm --> ltm
         xltm --> altm
     end
 
     hub -. reads everything .-> forest
-    botA -. reads shared + own .-> shared
-    botB -. reads shared + own .-> shared
+    botA -. reads shared + own .-> forest
+    botB -. reads shared + own .-> forest
 ```
 
 Material moves up from the lanes into the leaves, and only what the leaves establish is carried up to the
 boards and tree pages. Placement goes the other way: the root index says which tree a kind of subject
-belongs to, the tree says which branch, the branch holds the leaf. [Concepts](docs/concepts.md) walks
-through one subject's life from a one-day mention to a tree of its own.
+belongs to, the tree says which branch, the branch holds the leaf. An agent's tree has the same three layers
+as any other tree. It differs in when it appears (on the agent's first day, not once a subject has grown),
+in what it holds, by default what is the agent's own (its role, instructions, methods, lessons and runs),
+and in who reads it. [Concepts](docs/concepts.md) walks through one subject's life from a one-day mention
+to a tree of its own.
 
 | Folder | Holds |
 | --- | --- |
@@ -209,6 +213,79 @@ through one subject's life from a one-day mention to a tree of its own.
 | `05 daily/` | the readable record of each day (a lane) |
 | `06 istm/` | the raw record, append-only, one lane per agent (a lane) |
 | `.forest/` | the compiled registry, the move log, the archive, indexes and locks |
+
+## Finding in five lines
+
+An agent that needs something from the forest asks through `forest mcp`, an MCP server, or through the same
+doors as commands. Which tool it calls depends on what the question holds, and what comes back is a place to
+read, not a conclusion: a page, a section, its lines, and why it matched.
+
+```mermaid
+flowchart TB
+    agent(["Agent"]) -- "the connection names the reader" --> door["forest mcp<br/>or the same doors as commands"]
+    door -- "a name, a thing, some words" --> s["memory_search<br/>names and aliases, then words"]
+    door -- "a stretch of time" --> t["memory_timeline<br/>hours not filed yet included"]
+    door -- "not sure where to look" --> n["memory_navigate<br/>one level down from the root index"]
+    s --> idx[("index<br/>built from the pages, rebuildable")]
+    t --> idx
+    idx --> r["A route, inside the reader's scope<br/>page · section · lines · why"]
+    n --> r
+    r --> rd["memory_read<br/>the page itself, as written"]
+```
+
+In a copy of the invented [synthetic forest](examples/synthetic-forest/README.md), from inside its folder:
+
+```sh
+forest search "the big kiln" --as kiln-bot --limit 1       # an alias, not the subject's name
+# 03 mtm/studio/kiln-two.md
+#   why: alias: "the big kiln" names kiln-two
+#   ...
+#   03 mtm/studio/kiln-two.md#rules lines 18-21
+#     ## Rules
+#
+#     - Glaze loads fire to cone 5 until the new elements have run ten firings; Juno's decision of 2042-05-14 (as of 2042-05-14; source `04 stm/studio/kiln-two/settings.md`)
+#   ...
+# trees: studio
+forest read "04 stm/studio/kiln-two/settings.md" --as kiln-bot --lines 14-15   # the leaf that line cites
+# 04 stm/studio/kiln-two/settings.md
+#   why: read
+#   04 stm/studio/kiln-two/settings.md lines 14-15
+#     - Glaze loads: cone 5 (1,196 °C) until the new elements have run ten firings. Juno, in the studio chat:
+#       "Let's drop glaze loads to cone 5 until the new elements settle, ten firings or so."
+#
+# trees: studio
+forest timeline query "2042-05-13" --as kiln-bot           # one day: its leaves, its daily page, the raw lane
+forest navigate --as kiln-bot                              # nothing to search for: start at the root index
+forest read "02 ltm/kiln-bot_LTM.md" --as ledger-bot       # another agent's tree
+# forest: out_of_scope: That path is outside this reader's trees and lane.
+#   path: 02 ltm/kiln-bot_LTM.md
+#   next: fix
+```
+
+1. Two doors give one answer. `forest mcp --as <agent>` serves `memory_search`, `memory_read`,
+   `memory_timeline`, `memory_navigate` and `memory_log` to an MCP client, on stdio or on a loopback port;
+   `forest search`, `read`, `timeline`, `navigate` and `log` are the same doors as commands, with the same
+   scope and the same answers.
+2. The index is derived. `forest index build` writes it from the pages and the lanes (`.forest/index.sqlite`,
+   until a reset points at a new file), the routine runs that command after each pass, and
+   `forest index reset` followed by a build makes the same index. A search first brings in the lane files
+   and daily pages that changed since the build, so an hour that is not filed yet can be found; a changed
+   page of a tree comes in with the next build.
+3. Names come before words. A search tries the registry's names and aliases first: a subject named in the
+   question brings its home and every leaf that names it in `about:`. Word matches come after that, and a
+   vector match only when the settings name an embeddings provider that you have registered. The package
+   registers none and makes no outbound network call.
+4. A result is a route. There is one result per page, with each matching section as written, why it matched
+   and the lines to read. The agent opens the page, checks its dates and its update record, and applies
+   its own rules: memory never authorizes anything.
+5. The connection is the reader. `--as` says who reads, and neither a tool argument nor the wording of a
+   question can change it; on a connection that a group shares (`--as-group`), each call names its own agent
+   among the members. An orchestrator reads the whole forest and every raw lane. Any other agent reads, by
+   default, the shared trees and its own tree, the root index, the daily pages and its own raw lane, and a
+   path outside that is refused. Sign-in values and the card, account and telephone numbers the forest
+   recognises are masked in the index and in every answer.
+
+Details: [Tools](docs/tools.md#forest-search-and-forest-read), and `forest guide use` for the agent itself.
 
 ## Agents in five lines
 

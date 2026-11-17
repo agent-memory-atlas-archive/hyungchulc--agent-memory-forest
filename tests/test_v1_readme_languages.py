@@ -108,6 +108,20 @@ class LanguagePageTests(unittest.TestCase):
             with self.subTest(target=target):
                 self.assertTrue((ROOT / target.split("#")[0]).exists())
 
+    def test_the_picture_draws_an_agents_tree_like_a_shared_tree(self) -> None:
+        # The two boxes of trees hold the same three nodes with the same words, and the edges from the root index
+        # into them carry no label: where the repository's page draws this picture, a labelled edge puts its box
+        # a rank lower, and the two trees no longer stand side by side.
+        for name, _ in LANGUAGES:
+            picture = next(body for kind, body in FENCE.findall(page(name)) if kind == "mermaid")
+            words = dict(re.findall(r'\b(a?[lm]tm|a?stm)\["([^"]*)"\]', picture))
+            drawn = [line.strip() for line in picture.splitlines()]
+            with self.subTest(page=name):
+                self.assertEqual([words[node] for node in ("altm", "amtm", "astm")],
+                                 [words[node] for node in ("ltm", "mtm", "stm")])
+                self.assertIn("xltm --> ltm", drawn)
+                self.assertIn("xltm --> altm", drawn)
+
     def test_every_page_keeps_the_frame_of_the_english_page(self) -> None:
         english = page("README.md")
         for name, _ in LANGUAGES[1:]:

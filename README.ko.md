@@ -168,32 +168,35 @@ flowchart TB
         istm --> daily
     end
 
-    hub -- 덧붙임 --> istm
-    botA -- 덧붙임 --> istm
-    botB -- 덧붙임 --> istm
+    hub --> istm
+    botA --> istm
+    botB --> istm
 
-    daily -- "정리 실행<br/>한 번에 writer 하나" --> stm
+    daily --> filing(["정리 실행<br/>한 번에 writer 하나"])
+    filing -- leaf로 --> forest
 
     subgraph forest ["Forest"]
         xltm["01 xltm<br/>정체성 · tree 목록 · agent 목록"]
+        subgraph own ["agent tree"]
+            altm["02 ltm tree 페이지"] --> amtm["03 mtm index와 board"] --> astm["04 stm leaf"]
+        end
         subgraph shared ["공유 tree"]
             ltm["02 ltm tree 페이지"] --> mtm["03 mtm index와 board"] --> stm["04 stm leaf"]
-        end
-        subgraph own ["agent tree, agent마다 하나"]
-            altm["역할 · 지시 · 교훈"] --> amtm["board"] --> astm["실행 기록 · 방법 · 인계"]
         end
         xltm --> ltm
         xltm --> altm
     end
 
     hub -. 전체를 읽음 .-> forest
-    botA -. 공유 tree와 자기 tree를 읽음 .-> shared
-    botB -. 공유 tree와 자기 tree를 읽음 .-> shared
+    botA -. 공유 tree와 자기 tree를 읽음 .-> forest
+    botB -. 공유 tree와 자기 tree를 읽음 .-> forest
 ```
 
 자료는 lane에서 leaf로 올라가고, leaf가 뒷받침하는 것만 board와 tree 페이지로 올라갑니다. 자리를 정할 때는
 반대로 위에서 내려옵니다. root index가 어떤 종류의 subject가 어느 tree에 속하는지 정하고, tree가 branch를,
-branch가 leaf를 정합니다. 하루 한 번 스친 이름이 자기 tree를 갖게 되기까지의 과정은
+branch가 leaf를 정합니다. agent의 tree도 다른 tree와 같은 세 계층을 가집니다. 다른 점은 생기는 때(subject가
+자란 뒤가 아니라 agent의 첫날), 담는 것(기본값에서는 agent 자신의 것, 곧 역할, 지시, 방법, 교훈, 실행 기록),
+그리고 읽는 쪽입니다. 하루 한 번 스친 이름이 자기 tree를 갖게 되기까지의 과정은
 [Concepts](docs/concepts.md)에서 한 subject를 따라가며 설명합니다.
 
 | 폴더 | 담는 것 |
@@ -205,6 +208,78 @@ branch가 leaf를 정합니다. 하루 한 번 스친 이름이 자기 tree를 �
 | `05 daily/` | 하루하루의 읽을 수 있는 기록 (lane) |
 | `06 istm/` | 덧붙이기만 하는 원본 기록, agent마다 하나 (lane) |
 | `.forest/` | 컴파일된 registry, 이동 기록, archive, index, lock |
+
+## 찾기를 다섯 줄로
+
+forest에서 무언가가 필요한 agent는 MCP server인 `forest mcp`로 묻거나, 같은 입구를 명령으로 씁니다. 어떤
+도구를 부를지는 질문에 무엇이 들어 있는지에 달려 있습니다. 돌아오는 것은 결론이 아니라 읽을 자리입니다.
+페이지, 섹션, 줄 번호, 그리고 왜 걸렸는지입니다.
+
+```mermaid
+flowchart TB
+    agent(["Agent"]) -- "누가 읽는지는 연결이 정함" --> door["forest mcp<br/>또는 같은 입구인 명령"]
+    door -- "이름, 물건, 단어 몇 개" --> s["memory_search<br/>이름과 별칭을 먼저, 그다음 단어"]
+    door -- "어떤 기간" --> t["memory_timeline<br/>아직 정리되지 않은 시간까지"]
+    door -- "어디를 봐야 할지 모를 때" --> n["memory_navigate<br/>root index에서 한 단계씩 아래로"]
+    s --> idx[("index<br/>페이지에서 만들고, 다시 만들 수 있음")]
+    t --> idx
+    idx --> r["읽는 쪽의 범위 안에서 가리키는 자리<br/>페이지 · 섹션 · 줄 · 걸린 이유"]
+    n --> r
+    r --> rd["memory_read<br/>적힌 그대로의 페이지"]
+```
+
+가상의 [synthetic forest](examples/synthetic-forest/README.md)를 복사해 두고, 그 폴더 안에서 실행한 예입니다.
+
+```sh
+forest search "the big kiln" --as kiln-bot --limit 1       # subject의 이름이 아니라 별칭
+# 03 mtm/studio/kiln-two.md
+#   why: alias: "the big kiln" names kiln-two
+#   ...
+#   03 mtm/studio/kiln-two.md#rules lines 18-21
+#     ## Rules
+#
+#     - Glaze loads fire to cone 5 until the new elements have run ten firings; Juno's decision of 2042-05-14 (as of 2042-05-14; source `04 stm/studio/kiln-two/settings.md`)
+#   ...
+# trees: studio
+forest read "04 stm/studio/kiln-two/settings.md" --as kiln-bot --lines 14-15   # 그 줄이 출처로 든 leaf
+# 04 stm/studio/kiln-two/settings.md
+#   why: read
+#   04 stm/studio/kiln-two/settings.md lines 14-15
+#     - Glaze loads: cone 5 (1,196 °C) until the new elements have run ten firings. Juno, in the studio chat:
+#       "Let's drop glaze loads to cone 5 until the new elements settle, ten firings or so."
+#
+# trees: studio
+forest timeline query "2042-05-13" --as kiln-bot           # 그날 하루: leaf, daily 페이지, raw lane
+forest navigate --as kiln-bot                              # 찾을 말이 없을 때: root index에서 시작
+forest read "02 ltm/kiln-bot_LTM.md" --as ledger-bot       # 다른 agent의 tree
+# forest: out_of_scope: That path is outside this reader's trees and lane.
+#   path: 02 ltm/kiln-bot_LTM.md
+#   next: fix
+```
+
+1. 입구는 둘이고 답은 하나입니다. `forest mcp --as <agent>`는 MCP client에 `memory_search`, `memory_read`,
+   `memory_timeline`, `memory_navigate`, `memory_log`를 stdio나 loopback port로 제공합니다.
+   `forest search`, `read`, `timeline`, `navigate`, `log`는 같은 입구를 명령으로 쓰는 것이고, 범위도 답도
+   같습니다.
+2. index는 페이지에서 만들어 낸 것입니다. `forest index build`가 페이지와 lane을 읽어 index를 쓰고(reset이 새
+   파일을 가리키기 전까지는 `.forest/index.sqlite`), routine은 단계를 마칠 때마다 이 명령을 실행하며,
+   `forest index reset` 뒤에 다시 build하면 같은 index가 나옵니다. 검색은 build 뒤에 바뀐 lane 파일과 daily
+   페이지부터 들여오므로, 아직 정리되지 않은 시간도 찾을 수 있습니다. tree의 페이지가 바뀐 것은 다음 build
+   때 들어옵니다.
+3. 이름이 단어보다 먼저입니다. 검색은 registry의 이름과 별칭부터 봅니다. 질문에 어떤 subject의 이름이
+   나오면 그 subject의 집과, `about:`으로 그 subject를 가리키는 모든 leaf가 나옵니다. 단어 일치는 그다음이고,
+   vector 일치는 설정에 embeddings provider의 이름이 있고 그 provider를 직접 등록해 두었을 때만 더해집니다.
+   패키지는 아무것도 등록하지 않으며, 밖으로 나가는 network 호출을 하지 않습니다.
+4. 결과는 읽을 자리를 가리킬 뿐입니다. 페이지마다 결과가 하나씩 나오고, 걸린 섹션이 적힌 그대로, 왜
+   걸렸는지와 읽을 줄 번호와 함께 나옵니다. agent는 그 페이지를 열어 날짜와 update record를 확인하고 자기
+   규칙을 적용합니다. 메모리는 어떤 것도 허가하지 않습니다.
+5. 연결이 곧 읽는 쪽입니다. 누가 읽는지는 `--as`가 정하고, 도구의 인자로도 질문의 표현으로도 바꿀 수
+   없습니다. group이 함께 쓰는 연결(`--as-group`)에서는 호출마다 그 멤버 가운데 자기 agent의 이름을 댑니다.
+   orchestrator는 forest 전체와 모든 raw lane을 읽습니다. 다른 agent는 기본값으로 공유 tree와 자기 tree,
+   root index, daily 페이지, 자기 raw lane을 읽으며, 그 밖의 경로는 거절됩니다. forest가 알아보는 로그인
+   값과 카드·계좌·전화번호는 index에서도, 모든 답에서도 가려집니다.
+
+자세한 내용은 [Tools](docs/tools.md#forest-search-and-forest-read)에 있고, agent 자신은 `forest guide use`를 읽습니다.
 
 ## agent를 다섯 줄로
 

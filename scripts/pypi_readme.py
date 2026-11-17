@@ -6,7 +6,8 @@ three things and nothing else, for the version the tree holds:
 
 - a relative link becomes the address of that file at this version's tag in the repository;
 - the alert marker ``> [!IMPORTANT]`` becomes a bold word;
-- the diagram's block becomes one line that leads to the picture on the repository's front page.
+- a diagram's block becomes one line that leads to the picture on the repository's front page, in the
+  section that holds it.
 
     python3 scripts/pypi_readme.py            # print the page for the index
     python3 scripts/pypi_readme.py --write    # rewrite README.md in place: the publish workflow, in its checkout
@@ -33,6 +34,8 @@ _TARGET = re.compile(r"(?<=\]\()[^)\s]+(?=\))")
 _WHOLE = re.compile(r"[a-z][a-z0-9+.-]*:|#")
 _ALERT = re.compile(r"(?m)^> \[!([A-Z]+)\]$")
 _DIAGRAM = re.compile(r"(?ms)^```mermaid\n.*?^```\n")
+_BLOCK = re.compile(r"(?ms)^```.*?^```\n")
+_HEADING = re.compile(r"(?m)^## (.+)$")
 
 
 def address(target: str, version: str) -> str:
@@ -44,10 +47,22 @@ def address(target: str, version: str) -> str:
     return f"{HOME}/{kind}/v{version}/{path.rstrip('/')}{mark}{fragment}"
 
 
+def fragment(heading: str) -> str:
+    """The fragment the repository's page gives a heading: lower case, a hyphen for each space, no other mark."""
+    return re.sub(r"[^\w -]", "", heading.strip().lower()).replace(" ", "-")
+
+
 def for_index(text: str, version: str = __version__) -> str:
-    """The front page for an index: whole addresses, no alert marker, a pointer where the diagram was."""
-    picture = f"{HOME}/blob/v{version}/README.md#the-forest-in-one-picture"
-    text = _DIAGRAM.sub(f"The picture is drawn on [the repository's front page]({picture}).\n", text)
+    """The front page for an index: whole addresses, no alert marker, a pointer where each diagram was."""
+    page = text
+
+    def pointer(found: re.Match[str]) -> str:
+        # The section that holds this diagram: the last heading before it that is not inside a block.
+        headings = _HEADING.findall(_BLOCK.sub("", page[: found.start()]))
+        place = f"#{fragment(headings[-1])}" if headings else ""
+        return f"The picture is drawn on [the repository's front page]({HOME}/blob/v{version}/README.md{place}).\n"
+
+    text = _DIAGRAM.sub(pointer, text)
     text = _ALERT.sub(lambda found: f"> **{found.group(1).capitalize()}**\n>", text)
     return _TARGET.sub(lambda found: address(found.group(0), version), text)
 

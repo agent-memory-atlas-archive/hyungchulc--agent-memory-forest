@@ -55,8 +55,21 @@ class IndexPageTests(unittest.TestCase):
         self.assertIn("> **Important**\n>\n> Agent Memory Forest is not", self.written)
         self.assertNotRegex(self.written, r"(?m)^> \[!")
         self.assertNotIn("```mermaid", self.written)
-        self.assertIn(f"]({MODULE.HOME}/blob/v9.9.9/README.md#the-forest-in-one-picture)", self.written)
-        self.assertIn("\n## The forest in one picture\n", self.page)
+
+    def test_each_diagram_becomes_a_pointer_to_the_section_that_holds_it(self) -> None:
+        sections = re.split(r"(?m)^## ", FENCE.sub(lambda block: "DIAGRAM\n" if block.group(1) == "mermaid" else "",
+                                                   self.page))[1:]
+        holding = [part.splitlines()[0] for part in sections if "DIAGRAM\n" in part]
+        self.assertEqual(holding, ["The forest in one picture", "Finding in five lines"])
+        self.assertEqual(self.written.count("The picture is drawn on"), self.page.count("```mermaid\n"))
+        for heading in holding:
+            with self.subTest(section=heading):
+                place = heading.lower().replace(" ", "-")
+                self.assertEqual(self.written.count(f"]({MODULE.HOME}/blob/v9.9.9/README.md#{place})"), 1)
+                # The pointer stands in the section whose picture it replaces.
+                body = self.written.split(f"\n## {heading}\n", 1)[1].split("\n## ", 1)[0]
+                self.assertIn(f"README.md#{place})", body)
+        self.assertEqual(MODULE.fragment("`forest search` and `forest read`"), "forest-search-and-forest-read")
 
     def test_nothing_else_on_the_page_changes(self) -> None:
         def blocks(text: str) -> list[str]:

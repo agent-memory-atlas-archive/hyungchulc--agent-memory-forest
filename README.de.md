@@ -181,34 +181,38 @@ flowchart TB
         istm --> daily
     end
 
-    hub -- "hängt an" --> istm
-    botA -- "hängt an" --> istm
-    botB -- "hängt an" --> istm
+    hub --> istm
+    botA --> istm
+    botB --> istm
 
-    daily -- "Ablagelauf<br/>immer nur ein Schreiber" --> stm
+    daily --> filing(["Ablagelauf<br/>immer nur ein Schreiber"])
+    filing -- "in die Blätter" --> forest
 
     subgraph forest ["Wald"]
         xltm["01 xltm<br/>Identität · Bäume · Agenten"]
+        subgraph own ["Agentenbäume"]
+            altm["02 ltm Baumseiten"] --> amtm["03 mtm Indizes und Boards"] --> astm["04 stm Blätter"]
+        end
         subgraph shared ["Gemeinsame Bäume"]
             ltm["02 ltm Baumseiten"] --> mtm["03 mtm Indizes und Boards"] --> stm["04 stm Blätter"]
-        end
-        subgraph own ["Agentenbäume, einer pro Agent"]
-            altm["Rolle · Anweisungen · Erkenntnisse"] --> amtm["Boards"] --> astm["Läufe · Methoden · Übergaben"]
         end
         xltm --> ltm
         xltm --> altm
     end
 
     hub -. "liest alles" .-> forest
-    botA -. "liest gemeinsame + eigene" .-> shared
-    botB -. "liest gemeinsame + eigene" .-> shared
+    botA -. "liest gemeinsame + eigene" .-> forest
+    botB -. "liest gemeinsame + eigene" .-> forest
 ```
 
 Material wandert aus den Spuren nach oben in die Blätter, und nur was die Blätter als gesichert belegen, wird
 weiter in die Boards und Baumseiten getragen. Die Zuordnung verläuft umgekehrt: Der Wurzelindex legt fest, zu
-welchem Baum eine Art von Subjekt gehört, der Baum legt den Ast fest, und der Ast enthält das Blatt.
-[Konzepte](docs/concepts.md) verfolgt das Leben eines Subjekts von einer einmaligen Erwähnung an einem Tag bis
-zu einem eigenen Baum.
+welchem Baum eine Art von Subjekt gehört, der Baum legt den Ast fest, und der Ast enthält das Blatt. Der Baum
+eines Agenten hat dieselben drei Schichten wie jeder andere Baum. Er unterscheidet sich darin, wann er
+entsteht (am ersten Tag des Agenten, nicht erst, wenn ein Subjekt gewachsen ist), darin, was er enthält,
+standardmäßig das, was nur den Agenten betrifft (seine Rolle, Anweisungen, Methoden, Erkenntnisse und Läufe),
+und darin, wer ihn liest. [Konzepte](docs/concepts.md) verfolgt das Leben eines Subjekts von einer einmaligen
+Erwähnung an einem Tag bis zu einem eigenen Baum.
 
 | Ordner | Inhalt |
 | --- | --- |
@@ -219,6 +223,84 @@ zu einem eigenen Baum.
 | `05 daily/` | das lesbare Protokoll jedes Tages (eine Spur) |
 | `06 istm/` | das Rohprotokoll, nur durch Anhängen erweitert, eine Spur pro Agent (eine Spur) |
 | `.forest/` | die kompilierte Registry, das Verschiebeprotokoll, das Archiv, Indizes und Sperren |
+
+## Finden in fünf Punkten
+
+Braucht ein Agent etwas aus dem Wald, fragt er über `forest mcp`, einen MCP-Server, oder über dieselben
+Zugänge als Befehle. Welches Tool er aufruft, hängt davon ab, was die Frage enthält, und zurück kommt ein Ort
+zum Lesen, keine Schlussfolgerung: eine Seite, ein Abschnitt, seine Zeilen und der Grund für den Treffer.
+
+```mermaid
+flowchart TB
+    agent(["Agent"]) -- "die Verbindung benennt den Leser" --> door["forest mcp<br/>oder dieselben Zugänge als Befehle"]
+    door -- "ein Name, eine Sache, ein paar Wörter" --> s["memory_search<br/>Namen und Aliase, dann Wörter"]
+    door -- "ein Zeitraum" --> t["memory_timeline<br/>auch noch nicht abgelegte Stunden"]
+    door -- "unklar, wo zu suchen ist" --> n["memory_navigate<br/>eine Ebene unterhalb des Wurzelindex"]
+    s --> idx[("Index<br/>aus den Seiten gebaut, neu erzeugbar")]
+    t --> idx
+    idx --> r["Eine Wegbeschreibung, innerhalb des Lesebereichs des Lesers<br/>Seite · Abschnitt · Zeilen · Grund"]
+    n --> r
+    r --> rd["memory_read<br/>die Seite selbst, im Wortlaut"]
+```
+
+In einer Kopie des erfundenen [synthetischen Waldes](examples/synthetic-forest/README.md), aus ihrem Ordner
+heraus:
+
+```sh
+forest search "the big kiln" --as kiln-bot --limit 1       # ein Alias, nicht der Name des Subjekts
+# 03 mtm/studio/kiln-two.md
+#   why: alias: "the big kiln" names kiln-two
+#   ...
+#   03 mtm/studio/kiln-two.md#rules lines 18-21
+#     ## Rules
+#
+#     - Glaze loads fire to cone 5 until the new elements have run ten firings; Juno's decision of 2042-05-14 (as of 2042-05-14; source `04 stm/studio/kiln-two/settings.md`)
+#   ...
+# trees: studio
+forest read "04 stm/studio/kiln-two/settings.md" --as kiln-bot --lines 14-15   # das Blatt, auf das diese Zeile verweist
+# 04 stm/studio/kiln-two/settings.md
+#   why: read
+#   04 stm/studio/kiln-two/settings.md lines 14-15
+#     - Glaze loads: cone 5 (1,196 °C) until the new elements have run ten firings. Juno, in the studio chat:
+#       "Let's drop glaze loads to cone 5 until the new elements settle, ten firings or so."
+#
+# trees: studio
+forest timeline query "2042-05-13" --as kiln-bot           # ein Tag: seine Blätter, seine Tagesseite, die Rohspur
+forest navigate --as kiln-bot                              # nichts, wonach zu suchen wäre: beim Wurzelindex beginnen
+forest read "02 ltm/kiln-bot_LTM.md" --as ledger-bot       # der Baum eines anderen Agenten
+# forest: out_of_scope: That path is outside this reader's trees and lane.
+#   path: 02 ltm/kiln-bot_LTM.md
+#   next: fix
+```
+
+1. Zwei Zugänge liefern dieselbe Antwort. `forest mcp --as <agent>` stellt einem MCP-Client `memory_search`,
+   `memory_read`, `memory_timeline`, `memory_navigate` und `memory_log` bereit, über stdio oder einen
+   Loopback-Port; `forest search`, `read`, `timeline`, `navigate` und `log` sind dieselben Zugänge als
+   Befehle, mit demselben Lesebereich und denselben Antworten.
+2. Der Index ist abgeleitet. `forest index build` schreibt ihn aus den Seiten und den Spuren
+   (`.forest/index.sqlite`, bis ein Reset auf eine neue Datei zeigt), die Routine führt den Befehl nach jedem
+   Durchgang aus, und `forest index reset` mit anschließendem Neuaufbau ergibt denselben Index. Eine Suche
+   nimmt zuerst die Spurdateien und Tagesseiten auf, die sich seit dem Aufbau geändert haben, sodass sich auch
+   eine Stunde finden lässt, die noch nicht abgelegt ist; eine geänderte Seite eines Baums kommt mit dem
+   nächsten Aufbau hinzu.
+3. Namen kommen vor Wörtern. Eine Suche probiert zuerst die Namen und Aliase der Registry: Ein Subjekt, das
+   die Frage nennt, liefert seinen Ort und jedes Blatt, das es in `about:` nennt. Danach kommen Worttreffer,
+   und ein Vektortreffer nur dann, wenn die Einstellungen einen Embedding-Anbieter nennen, den Sie
+   registriert haben. Das Paket registriert keinen und baut keine ausgehende Netzwerkverbindung auf.
+4. Ein Ergebnis ist eine Wegbeschreibung. Es gibt ein Ergebnis pro Seite, mit jedem passenden Abschnitt im
+   Wortlaut, dem Grund für den Treffer und den Zeilen, die zu lesen sind. Der Agent öffnet die Seite, prüft
+   ihre Datumsangaben und ihr Änderungsprotokoll und wendet seine eigenen Regeln an: Das Gedächtnis
+   autorisiert nie etwas.
+5. Die Verbindung ist der Leser. `--as` gibt an, wer liest, und weder ein Tool-Argument noch der Wortlaut
+   einer Frage kann das ändern; auf einer Verbindung, die sich eine Gruppe teilt (`--as-group`), nennt jeder
+   Aufruf seinen eigenen Agenten unter den Mitgliedern. Ein Orchestrator liest den ganzen Wald und alle
+   Rohspuren. Jeder andere Agent liest standardmäßig die gemeinsamen Bäume und seinen eigenen, den
+   Wurzelindex, die Tagesseiten und seine eigene Rohspur, und ein Pfad außerhalb davon wird abgewiesen.
+   Anmeldedaten sowie die Karten-, Konto- und Telefonnummern, die der Wald erkennt, werden im Index und in
+   jeder Antwort maskiert.
+
+Einzelheiten: [Werkzeuge](docs/tools.md#forest-search-and-forest-read) und, für den Agenten selbst,
+`forest guide use`.
 
 ## Agenten in fünf Punkten
 

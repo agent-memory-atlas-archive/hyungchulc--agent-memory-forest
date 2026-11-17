@@ -179,34 +179,38 @@ flowchart TB
         istm --> daily
     end
 
-    hub -- "ajoute" --> istm
-    botA -- "ajoute" --> istm
-    botB -- "ajoute" --> istm
+    hub --> istm
+    botA --> istm
+    botB --> istm
 
-    daily -- "passe de classement<br/>un seul rédacteur à la fois" --> stm
+    daily --> filing(["passe de classement<br/>un seul rédacteur à la fois"])
+    filing -- "vers les feuilles" --> forest
 
     subgraph forest ["Forêt"]
         xltm["01 xltm<br/>identité · arbres · agents"]
+        subgraph own ["Arbres des agents"]
+            altm["02 ltm pages des arbres"] --> amtm["03 mtm index et tableaux"] --> astm["04 stm feuilles"]
+        end
         subgraph shared ["Arbres partagés"]
             ltm["02 ltm pages des arbres"] --> mtm["03 mtm index et tableaux"] --> stm["04 stm feuilles"]
-        end
-        subgraph own ["Arbres des agents, un par agent"]
-            altm["rôle · consignes · leçons"] --> amtm["tableaux"] --> astm["exécutions · méthodes · passations"]
         end
         xltm --> ltm
         xltm --> altm
     end
 
     hub -. "lit tout" .-> forest
-    botA -. "lit les arbres partagés + le sien" .-> shared
-    botB -. "lit les arbres partagés + le sien" .-> shared
+    botA -. "lit les arbres partagés + le sien" .-> forest
+    botB -. "lit les arbres partagés + le sien" .-> forest
 ```
 
 Le contenu remonte des couloirs vers les feuilles, et seul ce que les feuilles établissent est porté plus haut,
-vers les tableaux (boards) et les pages des arbres. Le placement suit le chemin inverse : l'index racine indique à
-quel arbre appartient un type de sujet, l'arbre indique la branche, et la branche contient la feuille.
-[Concepts](docs/concepts.md) retrace la vie d'un sujet, d'une mention d'un seul jour jusqu'à un arbre qui lui est
-propre.
+vers les tableaux (boards) et les pages des arbres. Le placement suit le chemin inverse : l'index racine indique à
+quel arbre appartient un type de sujet, l'arbre indique la branche, et la branche contient la feuille. L'arbre
+d'un agent a les mêmes trois couches que tout autre arbre. Il en diffère par le moment où il apparaît (dès le
+premier jour de l'agent, et non une fois qu'un sujet a grandi), par ce qu'il contient, par défaut ce qui est
+propre à l'agent (son rôle, ses consignes, ses méthodes, ses leçons et ses exécutions), et par ceux qui le
+lisent. [Concepts](docs/concepts.md) retrace la vie d'un sujet, d'une mention d'un seul jour jusqu'à un arbre
+qui lui est propre.
 
 | Dossier | Contenu |
 | --- | --- |
@@ -217,6 +221,83 @@ propre.
 | `05 daily/` | le journal lisible de chaque jour (un couloir) |
 | `06 istm/` | le journal brut, en ajout seul, un couloir par agent (un couloir) |
 | `.forest/` | le registre compilé, le journal des déplacements, l'archive, les index et les verrous |
+
+## La recherche en cinq lignes
+
+Un agent qui a besoin de quelque chose dans la forêt le demande par `forest mcp`, un serveur MCP, ou par les mêmes
+portes sous forme de commandes. L'outil qu'il appelle dépend de ce que contient la question, et ce qui revient est
+un endroit à lire, pas une conclusion : une page, une section, ses lignes, et la raison pour laquelle elle a été
+retenue.
+
+```mermaid
+flowchart TB
+    agent(["Agent"]) -- "la connexion désigne le lecteur" --> door["forest mcp<br/>ou les mêmes portes en commandes"]
+    door -- "un nom, une chose, quelques mots" --> s["memory_search<br/>noms et alias, puis mots"]
+    door -- "une période" --> t["memory_timeline<br/>heures pas encore classées comprises"]
+    door -- "on ne sait pas où chercher" --> n["memory_navigate<br/>un niveau sous l'index racine"]
+    s --> idx[("index<br/>construit à partir des pages, reconstructible")]
+    t --> idx
+    idx --> r["Un itinéraire, dans le périmètre du lecteur<br/>page · section · lignes · pourquoi"]
+    n --> r
+    r --> rd["memory_read<br/>la page elle-même, telle qu'écrite"]
+```
+
+Dans une copie de la [forêt synthétique](examples/synthetic-forest/README.md) fictive, depuis son dossier :
+
+```sh
+forest search "the big kiln" --as kiln-bot --limit 1       # un alias, pas le nom du sujet
+# 03 mtm/studio/kiln-two.md
+#   why: alias: "the big kiln" names kiln-two
+#   ...
+#   03 mtm/studio/kiln-two.md#rules lines 18-21
+#     ## Rules
+#
+#     - Glaze loads fire to cone 5 until the new elements have run ten firings; Juno's decision of 2042-05-14 (as of 2042-05-14; source `04 stm/studio/kiln-two/settings.md`)
+#   ...
+# trees: studio
+forest read "04 stm/studio/kiln-two/settings.md" --as kiln-bot --lines 14-15   # la feuille que cite cette ligne
+# 04 stm/studio/kiln-two/settings.md
+#   why: read
+#   04 stm/studio/kiln-two/settings.md lines 14-15
+#     - Glaze loads: cone 5 (1,196 °C) until the new elements have run ten firings. Juno, in the studio chat:
+#       "Let's drop glaze loads to cone 5 until the new elements settle, ten firings or so."
+#
+# trees: studio
+forest timeline query "2042-05-13" --as kiln-bot           # un jour : ses feuilles, sa page quotidienne, le couloir brut
+forest navigate --as kiln-bot                              # rien à chercher : partir de l'index racine
+forest read "02 ltm/kiln-bot_LTM.md" --as ledger-bot       # l'arbre d'un autre agent
+# forest: out_of_scope: That path is outside this reader's trees and lane.
+#   path: 02 ltm/kiln-bot_LTM.md
+#   next: fix
+```
+
+1. Les deux portes donnent la même réponse. `forest mcp --as <agent>` sert `memory_search`, `memory_read`,
+   `memory_timeline`, `memory_navigate` et `memory_log` à un client MCP, sur stdio ou sur un port en boucle
+   locale (loopback) ; `forest search`, `read`, `timeline`, `navigate` et `log` sont les mêmes portes sous forme
+   de commandes, avec le même périmètre et les mêmes réponses.
+2. L'index est dérivé. `forest index build` l'écrit à partir des pages et des couloirs (`.forest/index.sqlite`,
+   jusqu'à ce qu'un reset désigne un nouveau fichier), la routine lance cette commande après chaque passe, et
+   `forest index reset` suivi d'une construction produit le même index. Une recherche intègre d'abord les
+   fichiers de couloir et les pages quotidiennes modifiés depuis la construction, si bien qu'une heure pas
+   encore classée peut être trouvée ; une page d'arbre modifiée entre à la construction suivante.
+3. Les noms passent avant les mots. Une recherche essaie d'abord les noms et les alias du registre : un sujet
+   nommé dans la question ramène son emplacement et chaque feuille qui le nomme dans `about:`. Les
+   correspondances de mots viennent ensuite, et une correspondance vectorielle seulement si les réglages
+   nomment un fournisseur d'embeddings que vous avez enregistré. Le paquet n'en enregistre aucun et ne fait
+   aucun appel réseau sortant.
+4. Un résultat est un itinéraire. Il y a un résultat par page, avec chaque section correspondante telle
+   qu'écrite, la raison pour laquelle elle a été retenue et les lignes à lire. L'agent ouvre la page, vérifie
+   ses dates et son historique des modifications, et applique ses propres règles : la mémoire n'autorise jamais
+   rien.
+5. La connexion, c'est le lecteur. `--as` dit qui lit, et ni un argument d'outil ni la formulation d'une
+   question ne peuvent le changer ; sur une connexion partagée par un groupe (`--as-group`), chaque appel
+   nomme son propre agent parmi les membres. Un orchestrateur lit toute la forêt et tous les couloirs bruts.
+   Tout autre agent lit, par défaut, les arbres partagés et le sien, l'index racine, les pages quotidiennes et
+   son propre couloir brut, et un chemin hors de ce périmètre est refusé. Les valeurs d'authentification et
+   les numéros de carte, de compte et de téléphone que la forêt reconnaît sont masqués dans l'index et dans
+   chaque réponse.
+
+Détails : [Outils](docs/tools.md#forest-search-and-forest-read), et `forest guide use` pour l'agent lui-même.
 
 ## Les agents en cinq lignes
 

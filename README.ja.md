@@ -188,32 +188,36 @@ flowchart TB
         istm --> daily
     end
 
-    hub -- "追記" --> istm
-    botA -- "追記" --> istm
-    botB -- "追記" --> istm
+    hub --> istm
+    botA --> istm
+    botB --> istm
 
-    daily -- "仕分け実行<br/>ライターは一度にひとつ" --> stm
+    daily --> filing(["仕分け実行<br/>ライターは一度にひとつ"])
+    filing -- "リーフへ" --> forest
 
     subgraph forest ["フォレスト"]
         xltm["01 xltm<br/>アイデンティティ · ツリー · エージェント"]
+        subgraph own ["エージェントツリー"]
+            altm["02 ltm ツリーページ"] --> amtm["03 mtm インデックスとボード"] --> astm["04 stm リーフ"]
+        end
         subgraph shared ["共有ツリー"]
             ltm["02 ltm ツリーページ"] --> mtm["03 mtm インデックスとボード"] --> stm["04 stm リーフ"]
-        end
-        subgraph own ["エージェントツリー、エージェントごとにひとつ"]
-            altm["役割 · 指示 · 教訓"] --> amtm["ボード"] --> astm["実行記録 · 手法 · 引き継ぎ"]
         end
         xltm --> ltm
         xltm --> altm
     end
 
     hub -. "すべてを読む" .-> forest
-    botA -. "共有ツリーと自分のツリーを読む" .-> shared
-    botB -. "共有ツリーと自分のツリーを読む" .-> shared
+    botA -. "共有ツリーと自分のツリーを読む" .-> forest
+    botB -. "共有ツリーと自分のツリーを読む" .-> forest
 ```
 
 資料はレーンからリーフへと上がり、リーフで確立したものだけがボードとツリーページへ
 引き上げられます。配置はその逆向きに決まります。ルートインデックスがサブジェクトの種類ごとに
 どのツリーに属するかを示し、ツリーがどのブランチかを示し、ブランチがリーフを持ちます。
+エージェントのツリーも、ほかのツリーと同じ 3 つのレイヤーを持ちます。違うのは、いつ現れるか
+（サブジェクトが育ってからではなく、エージェントの初日から）、何を持つか（デフォルトでは
+エージェント自身のもの、つまり役割、指示、手法、教訓、実行）、そして誰が読むかです。
 [コンセプト](docs/concepts.md) では、1 日だけの言及から専用のツリーを持つまで、ひとつの
 サブジェクトの一生をたどります。
 
@@ -226,6 +230,85 @@ flowchart TB
 | `05 daily/` | 各日の読める記録（レーン） |
 | `06 istm/` | 生の記録。追記のみで、エージェントごとに 1 レーン（レーン） |
 | `.forest/` | コンパイル済みのレジストリ、移動ログ、アーカイブ、インデックス、ロック |
+
+## 5 行でわかる検索
+
+フォレストに何かを求めるエージェントは、MCP サーバーである `forest mcp` を通じて、または
+コマンドとしての同じ入口を通じて尋ねます。どのツールを呼ぶかは質問に何が含まれているかで
+決まり、返ってくるのは結論ではなく、読むべき場所です: ページ、セクション、その行、そして
+一致した理由。
+
+```mermaid
+flowchart TB
+    agent(["エージェント"]) -- "接続が読み手を決める" --> door["forest mcp<br/>またはコマンドとしての同じ入口"]
+    door -- "名前、もの、いくつかの語" --> s["memory_search<br/>名前と別名、次に単語"]
+    door -- "ある期間" --> t["memory_timeline<br/>まだ仕分けていない時間帯も含む"]
+    door -- "どこを見ればよいかわからない" --> n["memory_navigate<br/>ルートインデックスから 1 レベル下へ"]
+    s --> idx[("インデックス<br/>ページから構築、再構築可能")]
+    t --> idx
+    idx --> r["読み手のスコープ内の道案内<br/>ページ · セクション · 行 · 理由"]
+    n --> r
+    r --> rd["memory_read<br/>書かれたままのページそのもの"]
+```
+
+架空の [合成フォレスト](examples/synthetic-forest/README.md) のコピーで、そのフォルダーの中から
+実行します。
+
+```sh
+forest search "the big kiln" --as kiln-bot --limit 1       # サブジェクトの名前ではなく別名
+# 03 mtm/studio/kiln-two.md
+#   why: alias: "the big kiln" names kiln-two
+#   ...
+#   03 mtm/studio/kiln-two.md#rules lines 18-21
+#     ## Rules
+#
+#     - Glaze loads fire to cone 5 until the new elements have run ten firings; Juno's decision of 2042-05-14 (as of 2042-05-14; source `04 stm/studio/kiln-two/settings.md`)
+#   ...
+# trees: studio
+forest read "04 stm/studio/kiln-two/settings.md" --as kiln-bot --lines 14-15   # その行が出典に挙げるリーフ
+# 04 stm/studio/kiln-two/settings.md
+#   why: read
+#   04 stm/studio/kiln-two/settings.md lines 14-15
+#     - Glaze loads: cone 5 (1,196 °C) until the new elements have run ten firings. Juno, in the studio chat:
+#       "Let's drop glaze loads to cone 5 until the new elements settle, ten firings or so."
+#
+# trees: studio
+forest timeline query "2042-05-13" --as kiln-bot           # 1 日分: その日のリーフ、日次ページ、raw レーン
+forest navigate --as kiln-bot                              # 検索する語がないとき: ルートインデックスから始める
+forest read "02 ltm/kiln-bot_LTM.md" --as ledger-bot       # 別のエージェントのツリー
+# forest: out_of_scope: That path is outside this reader's trees and lane.
+#   path: 02 ltm/kiln-bot_LTM.md
+#   next: fix
+```
+
+1. 入口は 2 つ、答えはひとつです。`forest mcp --as <agent>` は `memory_search`、`memory_read`、
+   `memory_timeline`、`memory_navigate`、`memory_log` を、stdio またはループバックポートで
+   MCP クライアントに提供します。`forest search`、`read`、`timeline`、`navigate`、`log` は
+   コマンドとしての同じ入口で、スコープも答えも同じです。
+2. インデックスは導出されたものです。`forest index build` はページとレーンからインデックスを
+   書き出し（reset が新しいファイルを指すまでは `.forest/index.sqlite`）、ルーティンは 1 回の処理を
+   終えるたびにこのコマンドを実行します。`forest index reset` のあとにビルドしても、同じ
+   インデックスができます。検索はまず、ビルド以降に変わったレーンのファイルと日次ページを
+   取り込むので、まだ仕分けていない時間帯も見つけられます。ツリーのページの変更は、次のビルドで
+   取り込まれます。
+3. 名前が単語より先です。検索はまずレジストリの名前と別名を試します: 質問で名指された
+   サブジェクトについては、その置き場所と、`about:` でそれを名指すすべてのリーフが返ります。
+   単語の一致はそのあとで、ベクトルの一致は、設定が埋め込み（embeddings）プロバイダーを名指し、
+   そのプロバイダーを自分で登録してあるときだけです。パッケージ自体はひとつも登録せず、
+   外向きのネットワーク呼び出しも行いません。
+4. 結果は道案内です。結果はページごとにひとつで、一致した各セクションが書かれたままの形で、
+   一致した理由と読むべき行とともに返ります。エージェントはそのページを開き、日付と更新記録を
+   確かめ、自分のルールを適用します。メモリーが何かを認可することはありません。
+5. 読み手は接続で決まります。誰が読むかは `--as` が示し、ツールの引数でも質問の言い回しでも
+   それは変えられません。グループで共有する接続（`--as-group`）では、呼び出しごとに、その
+   メンバーである自分のエージェント名を名乗ります。オーケストレーターはフォレスト全体と
+   すべての raw レーンを読みます。その他のエージェントは、デフォルトでは共有ツリーと自分の
+   ツリー、ルートインデックス、日次ページ、自分の raw レーンを読み、その外にあるパスは
+   拒否されます。サインイン情報と、フォレストが認識するカード・口座・電話の番号は、
+   インデックスでもすべての答えでも伏せ字になります。
+
+詳しくは [ツール](docs/tools.md#forest-search-and-forest-read) を、エージェント自身向けには
+`forest guide use` を参照してください。
 
 ## 5 行でわかるエージェント
 

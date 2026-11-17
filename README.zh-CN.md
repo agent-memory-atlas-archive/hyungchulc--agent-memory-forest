@@ -161,31 +161,35 @@ flowchart TB
         istm --> daily
     end
 
-    hub -- "追加" --> istm
-    botA -- "追加" --> istm
-    botB -- "追加" --> istm
+    hub --> istm
+    botA --> istm
+    botB --> istm
 
-    daily -- "归类运行<br/>同一时间只有一个写入者" --> stm
+    daily --> filing(["归类运行<br/>同一时间只有一个写入者"])
+    filing -- "归入叶子" --> forest
 
     subgraph forest ["森林"]
         xltm["01 xltm<br/>身份 · 树 · Agent"]
+        subgraph own ["Agent 树"]
+            altm["02 ltm 树页面"] --> amtm["03 mtm 索引与看板"] --> astm["04 stm 叶子"]
+        end
         subgraph shared ["共享树"]
             ltm["02 ltm 树页面"] --> mtm["03 mtm 索引与看板"] --> stm["04 stm 叶子"]
-        end
-        subgraph own ["Agent 树，每个 Agent 一棵"]
-            altm["角色 · 指令 · 经验教训"] --> amtm["看板"] --> astm["运行 · 方法 · 交接"]
         end
         xltm --> ltm
         xltm --> altm
     end
 
     hub -. "读取全部" .-> forest
-    botA -. "读取共享树和自己的树" .-> shared
-    botB -. "读取共享树和自己的树" .-> shared
+    botA -. "读取共享树和自己的树" .-> forest
+    botB -. "读取共享树和自己的树" .-> forest
 ```
 
 资料从通道向上流入叶子，只有叶子已经确立的内容才会继续提升到看板（board）和树页面。
 确定位置则是反方向：根索引说明某类主题属于哪棵树，树说明属于哪个分支，分支容纳叶子。
+Agent 树和其他树一样分为三层。不同之处在于它出现的时机（在 Agent 的第一天，而不是等某个主题
+长大之后）、它存放的内容（默认是 Agent 自己的东西，即它的角色、指令、方法、经验教训和运行记录），
+以及由谁来读取它。
 [概念](docs/concepts.md)跟着一个主题走完它的一生，从某天被提到一次，到拥有自己的一棵树。
 
 | 文件夹 | 存放内容 |
@@ -197,6 +201,73 @@ flowchart TB
 | `05 daily/` | 每一天的可读记录（属于通道） |
 | `06 istm/` | 原始记录，只追加，每个 Agent 一条通道（属于通道） |
 | `.forest/` | 编译后的注册表、移动日志、归档、索引和锁 |
+
+## 查找五要点
+
+需要从森林中查找东西的 Agent，通过 MCP 服务器 `forest mcp` 提问，或通过以命令形式提供的同一组入口提问。
+调用哪个工具取决于问题里有什么；返回的是一个可供阅读的位置，而不是结论：一个页面、一个小节、
+其中的行，以及它为何匹配。
+
+```mermaid
+flowchart TB
+    agent(["Agent"]) -- "连接指明读取方" --> door["forest mcp<br/>或以命令形式提供的同一组入口"]
+    door -- "一个名字、一样东西、几个词" --> s["memory_search<br/>先查名字和别名，再查词语"]
+    door -- "一段时间" --> t["memory_timeline<br/>包括尚未归类的时段"]
+    door -- "不确定该去哪里找" --> n["memory_navigate<br/>从根索引往下走一层"]
+    s --> idx[("索引<br/>由页面建成，可重新构建")]
+    t --> idx
+    idx --> r["一条路线，限于读取方的范围内<br/>页面 · 小节 · 行 · 原因"]
+    n --> r
+    r --> rd["memory_read<br/>页面本身，原样呈现"]
+```
+
+在虚构的[合成森林](examples/synthetic-forest/README.md)的一个副本中，从它的文件夹内运行：
+
+```sh
+forest search "the big kiln" --as kiln-bot --limit 1       # 一个别名，而不是主题的名字
+# 03 mtm/studio/kiln-two.md
+#   why: alias: "the big kiln" names kiln-two
+#   ...
+#   03 mtm/studio/kiln-two.md#rules lines 18-21
+#     ## Rules
+#
+#     - Glaze loads fire to cone 5 until the new elements have run ten firings; Juno's decision of 2042-05-14 (as of 2042-05-14; source `04 stm/studio/kiln-two/settings.md`)
+#   ...
+# trees: studio
+forest read "04 stm/studio/kiln-two/settings.md" --as kiln-bot --lines 14-15   # 那一行引用的叶子
+# 04 stm/studio/kiln-two/settings.md
+#   why: read
+#   04 stm/studio/kiln-two/settings.md lines 14-15
+#     - Glaze loads: cone 5 (1,196 °C) until the new elements have run ten firings. Juno, in the studio chat:
+#       "Let's drop glaze loads to cone 5 until the new elements settle, ten firings or so."
+#
+# trees: studio
+forest timeline query "2042-05-13" --as kiln-bot           # 某一天：它的叶子、它的每日页面、原始通道
+forest navigate --as kiln-bot                              # 没有可搜索的东西：从根索引开始
+forest read "02 ltm/kiln-bot_LTM.md" --as ledger-bot       # 另一个 Agent 的树
+# forest: out_of_scope: That path is outside this reader's trees and lane.
+#   path: 02 ltm/kiln-bot_LTM.md
+#   next: fix
+```
+
+1. 两个入口，同一个答案。`forest mcp --as <agent>` 通过 stdio 或回环端口，向 MCP 客户端提供 `memory_search`、
+   `memory_read`、`memory_timeline`、`memory_navigate` 和 `memory_log`；`forest search`、`read`、`timeline`、
+   `navigate` 和 `log` 是以命令形式提供的同一组入口，范围相同，答案也相同。
+2. 索引是派生出来的。`forest index build` 根据页面和通道写出索引（在 reset 指向新文件之前，是
+   `.forest/index.sqlite`），例行流程在每一轮之后运行这条命令，先执行 `forest index reset` 再构建，
+   得到的也是同一个索引。搜索会先纳入自上次构建以来发生变化的通道文件和每日页面，因此尚未归类的时段
+   也能被找到；树中发生变化的页面，则在下一次构建时纳入。
+3. 名字先于词语。搜索先尝试注册表中的名字和别名：问题中提到的主题会带出它的归属位置，以及每一片在
+   `about:` 中提到它的叶子。之后才是词语匹配；只有当设置中指定了嵌入（embeddings）提供方，并且你已经
+   注册了它时，才会有向量匹配。本包不注册任何提供方，也不发起任何对外的网络调用。
+4. 结果是一条路线。每个页面只有一条结果，带有每个匹配的小节（原样呈现）、匹配的原因以及要读的行。
+   Agent 打开页面，检查它的日期和更新记录，并执行自己的规则：记忆从不授权任何事。
+5. 连接就是读取方。`--as` 说明由谁读取，工具参数和问题的措辞都无法改变它；在一个分组共用的连接
+   （`--as-group`）上，每次调用都要报出自己的 Agent，它须是该分组的成员。编排者读取整个森林和所有
+   原始通道。其他 Agent 默认读取共享树和自己的树、根索引、每日页面以及自己的原始通道，超出这个范围的
+   路径会被拒绝。登录信息，以及森林能识别的卡号、账号和电话号码，在索引和每一个答案中都会被遮蔽。
+
+详情：[工具](docs/tools.md#forest-search-and-forest-read)，以及供 Agent 自己阅读的 `forest guide use`。
 
 ## Agent 五要点
 
