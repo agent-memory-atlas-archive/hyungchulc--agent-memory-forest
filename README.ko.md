@@ -163,8 +163,8 @@ flowchart TB
     hub <--> botB["Bot B"]
 
     subgraph lanes ["Lane (forest 아님)"]
-        istm["06 istm<br/>agent마다 하나, 덧붙이기만 하는 원본 기록"]
-        daily["05 daily<br/>하루 한 페이지, 읽을 수 있는 기록"]
+        istm["06 istm<br/>agent마다 하나,<br/>덧붙이기만 하는<br/>원본 기록"]
+        daily["05 daily<br/>하루 한 페이지,<br/>읽을 수 있는 기록"]
         istm --> daily
     end
 
@@ -172,16 +172,16 @@ flowchart TB
     botA --> istm
     botB --> istm
 
-    daily --> filing(["정리 실행<br/>한 번에 writer 하나"])
+    daily --> filing(["정리 실행<br/>한 번에<br/>writer 하나"])
     filing -- leaf로 --> forest
 
     subgraph forest ["Forest"]
-        xltm["01 xltm<br/>정체성 · tree 목록 · agent 목록"]
+        xltm["01 xltm<br/>정체성<br/>tree 목록<br/>agent 목록"]
         subgraph own ["agent tree"]
-            altm["02 ltm tree 페이지"] --> amtm["03 mtm index와 board"] --> astm["04 stm leaf"]
+            altm["02 ltm<br/>tree 페이지"] --> amtm["03 mtm<br/>index와 board"] --> astm["04 stm<br/>leaf"]
         end
         subgraph shared ["공유 tree"]
-            ltm["02 ltm tree 페이지"] --> mtm["03 mtm index와 board"] --> stm["04 stm leaf"]
+            ltm["02 ltm<br/>tree 페이지"] --> mtm["03 mtm<br/>index와 board"] --> stm["04 stm<br/>leaf"]
         end
         xltm --> ltm
         xltm --> altm
@@ -217,15 +217,15 @@ forest에서 무언가가 필요한 agent는 MCP server인 `forest mcp`로 묻�
 
 ```mermaid
 flowchart TB
-    agent(["Agent"]) -- "누가 읽는지는 연결이 정함" --> door["forest mcp<br/>또는 같은 입구인 명령"]
-    door -- "이름, 물건, 단어 몇 개" --> s["memory_search<br/>이름과 별칭을 먼저, 그다음 단어"]
-    door -- "어떤 기간" --> t["memory_timeline<br/>아직 정리되지 않은 시간까지"]
-    door -- "어디를 봐야 할지 모를 때" --> n["memory_navigate<br/>root index에서 한 단계씩 아래로"]
-    s --> idx[("index<br/>페이지에서 만들고, 다시 만들 수 있음")]
+    agent(["Agent"]) -- "누가 읽는지는 연결이 정함" --> door["forest mcp<br/>또는 같은 입구인<br/>명령"]
+    door -- "이름, 물건, 단어 몇 개" --> s["memory_search<br/>이름과 별칭 먼저<br/>그다음 단어"]
+    door -- "어떤 기간" --> t["memory_timeline<br/>아직 정리되지 않은<br/>시간까지"]
+    door -- "어디를 봐야 할지 모를 때" --> n["memory_navigate<br/>root index에서<br/>한 단계씩 아래로"]
+    s --> idx[("index<br/>페이지에서 만들고<br/>다시 만들 수 있음")]
     t --> idx
-    idx --> r["읽는 쪽의 범위 안에서 가리키는 자리<br/>페이지 · 섹션 · 줄 · 걸린 이유"]
+    idx --> r["읽는 쪽 범위 안의<br/>읽을 자리<br/>페이지 · 섹션 · 줄<br/>걸린 이유"]
     n --> r
-    r --> rd["memory_read<br/>적힌 그대로의 페이지"]
+    r --> rd["memory_read<br/>적힌 그대로의<br/>페이지"]
 ```
 
 가상의 [synthetic forest](examples/synthetic-forest/README.md)를 복사해 두고, 그 폴더 안에서 실행한 예입니다.

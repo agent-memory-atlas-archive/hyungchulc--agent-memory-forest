@@ -178,13 +178,13 @@ forest doctor --as "Kiln Bot" --root studio-forest              # result: passed
 
 ```mermaid
 flowchart TB
-    owner(["オーナー"]) <--> hub["オーケストレーターエージェント"]
+    owner(["オーナー"]) <--> hub["Orchestrator<br/>エージェント"]
     hub <--> botA["Bot A"]
     hub <--> botB["Bot B"]
 
     subgraph lanes ["レーン・フォレストの外"]
-        istm["06 istm<br/>エージェントごとに 1 本の raw レーン、追記のみ"]
-        daily["05 daily<br/>1 日 1 ページの読める記録"]
+        istm["06 istm<br/>各エージェントに<br/>raw レーン 1 本<br/>追記のみ"]
+        daily["05 daily<br/>1 日 1 ページの<br/>読める記録"]
         istm --> daily
     end
 
@@ -192,24 +192,24 @@ flowchart TB
     botA --> istm
     botB --> istm
 
-    daily --> filing(["仕分け実行<br/>ライターは一度にひとつ"])
+    daily --> filing(["仕分け実行<br/>ライターは<br/>一度にひとつ"])
     filing -- "リーフへ" --> forest
 
     subgraph forest ["フォレスト"]
-        xltm["01 xltm<br/>アイデンティティ · ツリー · エージェント"]
+        xltm["01 xltm<br/>アイデンティティ<br/>ツリー<br/>エージェント"]
         subgraph own ["エージェントツリー"]
-            altm["02 ltm ツリーページ"] --> amtm["03 mtm インデックスとボード"] --> astm["04 stm リーフ"]
+            altm["02 ltm<br/>ツリーページ"] --> amtm["03 mtm<br/>インデックスと<br/>ボード"] --> astm["04 stm<br/>リーフ"]
         end
         subgraph shared ["共有ツリー"]
-            ltm["02 ltm ツリーページ"] --> mtm["03 mtm インデックスとボード"] --> stm["04 stm リーフ"]
+            ltm["02 ltm<br/>ツリーページ"] --> mtm["03 mtm<br/>インデックスと<br/>ボード"] --> stm["04 stm<br/>リーフ"]
         end
         xltm --> ltm
         xltm --> altm
     end
 
     hub -. "すべてを読む" .-> forest
-    botA -. "共有ツリーと自分のツリーを読む" .-> forest
-    botB -. "共有ツリーと自分のツリーを読む" .-> forest
+    botA -. "共有ツリーと<br/>自分のツリーを読む" .-> forest
+    botB -. "共有ツリーと<br/>自分のツリーを読む" .-> forest
 ```
 
 資料はレーンからリーフへと上がり、リーフで確立したものだけがボードとツリーページへ
@@ -240,15 +240,15 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    agent(["エージェント"]) -- "接続が読み手を決める" --> door["forest mcp<br/>またはコマンドとしての同じ入口"]
-    door -- "名前、もの、いくつかの語" --> s["memory_search<br/>名前と別名、次に単語"]
-    door -- "ある期間" --> t["memory_timeline<br/>まだ仕分けていない時間帯も含む"]
-    door -- "どこを見ればよいかわからない" --> n["memory_navigate<br/>ルートインデックスから 1 レベル下へ"]
-    s --> idx[("インデックス<br/>ページから構築、再構築可能")]
+    agent(["エージェント"]) -- "接続が読み手を決める" --> door["forest mcp<br/>またはコマンド<br/>としての同じ入口"]
+    door -- "名前、もの、いくつかの語" --> s["memory_search<br/>名前と別名、<br/>次に単語"]
+    door -- "ある期間" --> t["memory_timeline<br/>まだ仕分けていない<br/>時間帯も含む"]
+    door -- "どこを見ればよいかわからない" --> n["memory_navigate<br/>ルートインデックス<br/>から 1 レベル下へ"]
+    s --> idx[("インデックス<br/>ページから構築、<br/>再構築可能")]
     t --> idx
-    idx --> r["読み手のスコープ内の道案内<br/>ページ · セクション · 行 · 理由"]
+    idx --> r["読み手のスコープ<br/>内の道案内<br/>ページ<br/>セクション · 行<br/>理由"]
     n --> r
-    r --> rd["memory_read<br/>書かれたままのページそのもの"]
+    r --> rd["memory_read<br/>書かれたままの<br/>ページそのもの"]
 ```
 
 架空の [合成フォレスト](examples/synthetic-forest/README.md) のコピーで、そのフォルダーの中から

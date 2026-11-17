@@ -156,7 +156,7 @@ flowchart TB
     hub <--> botB["Bot B"]
 
     subgraph lanes ["通道，不属于森林"]
-        istm["06 istm<br/>每个 Agent 一条原始通道，只追加"]
+        istm["06 istm<br/>每个 Agent 一条<br/>原始通道，只追加"]
         daily["05 daily<br/>每天一个可读页面"]
         istm --> daily
     end
@@ -165,16 +165,16 @@ flowchart TB
     botA --> istm
     botB --> istm
 
-    daily --> filing(["归类运行<br/>同一时间只有一个写入者"])
+    daily --> filing(["归类运行<br/>同一时间<br/>只有一个写入者"])
     filing -- "归入叶子" --> forest
 
     subgraph forest ["森林"]
         xltm["01 xltm<br/>身份 · 树 · Agent"]
         subgraph own ["Agent 树"]
-            altm["02 ltm 树页面"] --> amtm["03 mtm 索引与看板"] --> astm["04 stm 叶子"]
+            altm["02 ltm<br/>树页面"] --> amtm["03 mtm<br/>索引与看板"] --> astm["04 stm<br/>叶子"]
         end
         subgraph shared ["共享树"]
-            ltm["02 ltm 树页面"] --> mtm["03 mtm 索引与看板"] --> stm["04 stm 叶子"]
+            ltm["02 ltm<br/>树页面"] --> mtm["03 mtm<br/>索引与看板"] --> stm["04 stm<br/>叶子"]
         end
         xltm --> ltm
         xltm --> altm
@@ -210,15 +210,15 @@ Agent 树和其他树一样分为三层。不同之处在于它出现的时机�
 
 ```mermaid
 flowchart TB
-    agent(["Agent"]) -- "连接指明读取方" --> door["forest mcp<br/>或以命令形式提供的同一组入口"]
-    door -- "一个名字、一样东西、几个词" --> s["memory_search<br/>先查名字和别名，再查词语"]
-    door -- "一段时间" --> t["memory_timeline<br/>包括尚未归类的时段"]
-    door -- "不确定该去哪里找" --> n["memory_navigate<br/>从根索引往下走一层"]
-    s --> idx[("索引<br/>由页面建成，可重新构建")]
+    agent(["Agent"]) -- "连接指明读取方" --> door["forest mcp<br/>或以命令形式<br/>提供的同一组入口"]
+    door -- "一个名字、一样东西、几个词" --> s["memory_search<br/>先查名字和别名，<br/>再查词语"]
+    door -- "一段时间" --> t["memory_timeline<br/>包括尚未<br/>归类的时段"]
+    door -- "不确定该去哪里找" --> n["memory_navigate<br/>从根索引<br/>往下走一层"]
+    s --> idx[("索引<br/>由页面建成，<br/>可重新构建")]
     t --> idx
-    idx --> r["一条路线，限于读取方的范围内<br/>页面 · 小节 · 行 · 原因"]
+    idx --> r["一条路线，<br/>限于读取方范围内<br/>页面 · 小节 · 行<br/>原因"]
     n --> r
-    r --> rd["memory_read<br/>页面本身，原样呈现"]
+    r --> rd["memory_read<br/>页面本身，<br/>原样呈现"]
 ```
 
 在虚构的[合成森林](examples/synthetic-forest/README.md)的一个副本中，从它的文件夹内运行：
