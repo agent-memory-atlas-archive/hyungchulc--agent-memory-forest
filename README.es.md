@@ -29,14 +29,16 @@ propias.
 
 Necesitas Python 3.11 o posterior y un sistema de archivos POSIX; no hay dependencias en tiempo de ejecución
 fuera de la biblioteca estándar. En Windows, usa WSL2 y mantén el bosque en el sistema de archivos de Linux;
-lee primero la [guía de WSL2](docs/wsl2.md). El paquete no está en ningún índice de paquetes. Instálalo desde
-la dirección del repositorio:
+lee primero la [guía de WSL2](docs/wsl2.md). El paquete está en PyPI. Esta versión es una beta, así que
+instálalo con una versión fijada, o con `--pre`:
 
 ```sh
-python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+python -m pip install "agent-memory-forest==1.0.0b1"
+# o, sin fijar la versión:
+python -m pip install --pre agent-memory-forest
 ```
 
-o desde un clon, con `python -m pip install .` en su carpeta. `forest --version` comprueba la instalación; si
+Para instalarlo desde un clon, ejecuta `python -m pip install .` en su carpeta. `forest --version` comprueba la instalación; si
 el comando `forest` no está en el PATH, `python -m memory_forest.forest` es el mismo comando. Después, dile una
 sola frase a tu agente:
 

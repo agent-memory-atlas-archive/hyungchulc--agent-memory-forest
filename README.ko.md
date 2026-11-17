@@ -27,13 +27,15 @@ model이 아니라 코드가 판단합니다.
 
 Python 3.11 이상과 POSIX filesystem이 필요하며, 표준 라이브러리 밖의 runtime dependency는 없습니다.
 Windows에서는 WSL2를 쓰고 forest를 Linux filesystem 안에 두세요. 먼저 [WSL2 guide](docs/wsl2.md)를 읽어
-주세요. 이 패키지는 어떤 package index에도 올라가 있지 않습니다. 저장소 주소로 설치합니다.
+주세요. 패키지는 PyPI에 있습니다. 이번 배포는 beta이므로, 버전을 지정하거나 `--pre`를 붙여 설치합니다.
 
 ```sh
-python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+python -m pip install "agent-memory-forest==1.0.0b1"
+# 버전을 지정하지 않을 때:
+python -m pip install --pre agent-memory-forest
 ```
 
-clone을 받았다면 그 폴더에서 `python -m pip install .`을 실행해도 됩니다. 설치는 `forest --version`으로
+clone을 받아 설치하려면 그 폴더에서 `python -m pip install .`을 실행합니다. 설치는 `forest --version`으로
 확인합니다. `forest` 명령이 path에 없으면 `python -m memory_forest.forest`가 같은 명령입니다. 그다음 내
 agent에게 한 문장만 말하면 됩니다.
 

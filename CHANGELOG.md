@@ -4,6 +4,8 @@ All notable changes to Agent Memory Forest (Memory Forest before version 1) are 
 
 ## Unreleased
 
+- The front page's install steps use the package on PyPI. This release is a beta, so they pin
+  `1.0.0b1` or pass `--pre`; a clone remains a way to install from source.
 - A `Publish` workflow, run by hand, builds the distributions from a version tag and uploads them to PyPI
   through a trusted publisher, so nothing secret is stored anywhere; with its `upload` switch off it only
   builds and checks. `scripts/pypi_readme.py` writes the front page for the index: a relative link becomes

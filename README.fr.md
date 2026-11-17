@@ -29,14 +29,16 @@ pour avoir ses propres pages.
 
 Il vous faut Python 3.11 ou plus récent et un système de fichiers POSIX ; le paquet n'a aucune dépendance
 d'exécution en dehors de la bibliothèque standard. Sous Windows, utilisez WSL2 et placez la forêt sur le système
-de fichiers Linux ; lisez d'abord le [guide WSL2](docs/wsl2.md). Le paquet n'est publié sur aucun index de
-paquets. Installez-le depuis l'adresse du dépôt :
+de fichiers Linux ; lisez d'abord le [guide WSL2](docs/wsl2.md). Le paquet est sur PyPI. Cette version est une
+bêta, installez-la donc avec une version figée, ou avec `--pre` :
 
 ```sh
-python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+python -m pip install "agent-memory-forest==1.0.0b1"
+# ou, sans figer la version :
+python -m pip install --pre agent-memory-forest
 ```
 
-ou depuis un clone, avec `python -m pip install .` dans son dossier. `forest --version` vérifie l'installation ;
+Pour l'installer depuis un clone, exécutez `python -m pip install .` dans son dossier. `forest --version` vérifie l'installation ;
 si la commande `forest` n'est pas dans le PATH, `python -m memory_forest.forest` est la même commande. Dites
 ensuite une seule phrase à votre agent :
 

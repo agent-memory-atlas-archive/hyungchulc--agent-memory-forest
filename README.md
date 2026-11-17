@@ -27,14 +27,16 @@ command stays installed beside it ([archive](docs/archive-0.3/cli.md)).
 
 You need Python 3.11 or newer and a POSIX filesystem; there are no runtime dependencies outside the
 standard library. On Windows, use WSL2 and keep the forest on the Linux filesystem; read the
-[WSL2 guide](docs/wsl2.md) first. The package is on no package index. Install it from the repository's
-address:
+[WSL2 guide](docs/wsl2.md) first. The package is on PyPI. This release is a beta, so install it with a
+version pin, or with `--pre`:
 
 ```sh
-python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+python -m pip install "agent-memory-forest==1.0.0b1"
+# or, without a pin:
+python -m pip install --pre agent-memory-forest
 ```
 
-or from a clone, with `python -m pip install .` in its folder. `forest --version` checks the install;
+To install from a clone, run `python -m pip install .` in its folder. `forest --version` checks the install;
 where the `forest` command is not on the path, `python -m memory_forest.forest` is the same command. Then
 say one sentence to your agent:
 

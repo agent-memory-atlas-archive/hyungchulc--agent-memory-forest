@@ -26,13 +26,15 @@ Markdown 页面，放在你自己磁盘上几个带编号的文件夹里。每�
 
 你需要 Python 3.11 或更高版本，以及 POSIX 文件系统；除标准库外没有任何运行时依赖。
 在 Windows 上请使用 WSL2，并把森林（forest）放在 Linux 文件系统中；请先阅读
-[WSL2 指南](docs/wsl2.md)。本包没有发布到任何包索引上，请通过仓库地址安装：
+[WSL2 指南](docs/wsl2.md)。本包已发布到 PyPI。当前版本是 beta，因此需要指定版本号，或加上 `--pre` 才能安装：
 
 ```sh
-python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+python -m pip install "agent-memory-forest==1.0.0b1"
+# 不指定版本时：
+python -m pip install --pre agent-memory-forest
 ```
 
-也可以在克隆下来的仓库文件夹里运行 `python -m pip install .`。用 `forest --version` 检查安装；
+从克隆下来的仓库安装时，在该文件夹里运行 `python -m pip install .`。用 `forest --version` 检查安装；
 如果 `forest` 命令不在 PATH 中，`python -m memory_forest.forest` 就是同一个命令。然后，
 对你的 Agent 说一句话：
 

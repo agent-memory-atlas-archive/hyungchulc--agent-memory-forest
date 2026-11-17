@@ -30,11 +30,13 @@ Agent Memory Forest は、エージェントが学んだことを、手元のデ
 
 Python 3.11 以降と POSIX ファイルシステムが必要です。標準ライブラリ以外のランタイム依存は
 ありません。Windows では WSL2 を使い、フォレストは Linux 側のファイルシステムに置いてください。
-先に [WSL2 ガイド](docs/wsl2.md) を読んでください。このパッケージはどのパッケージインデックスにも
-公開されていません。リポジトリのアドレスからインストールします。
+先に [WSL2 ガイド](docs/wsl2.md) を読んでください。このパッケージは PyPI にあります。
+このリリースはベータ版なので、バージョンを指定するか、`--pre` を付けてインストールします。
 
 ```sh
-python -m pip install "git+https://github.com/hyungchulc/agent-memory-forest"
+python -m pip install "agent-memory-forest==1.0.0b1"
+# バージョンを指定しない場合：
+python -m pip install --pre agent-memory-forest
 ```
 
 クローンからインストールする場合は、そのフォルダーで `python -m pip install .` を実行します。
