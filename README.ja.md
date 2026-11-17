@@ -8,6 +8,11 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
+[![GitHub stars](https://img.shields.io/github/stars/hyungchulc/agent-memory-forest?style=social)](https://github.com/hyungchulc/agent-memory-forest/stargazers)
+
+⭐ Agent Memory Forest が役に立ったら、GitHub でスターを付けてください。ほかの人が見つけやすくなります。
+
+https://github.com/user-attachments/assets/a45d205e-bedd-4887-903d-bd44253ddd80
 
 Agent Memory Forest は、エージェントが学んだことを、手元のディスクにある番号付きの
 いくつかのフォルダーへ、プレーンな Markdown ページとして残す Python パッケージと

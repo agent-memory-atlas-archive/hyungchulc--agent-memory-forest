@@ -8,6 +8,11 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
+[![GitHub stars](https://img.shields.io/github/stars/hyungchulc/agent-memory-forest?style=social)](https://github.com/hyungchulc/agent-memory-forest/stargazers)
+
+⭐ 如果 Agent Memory Forest 对你有用，请在 GitHub 上给它点个 star，这能帮助更多人发现它。
+
+https://github.com/user-attachments/assets/a45d205e-bedd-4887-903d-bd44253ddd80
 
 Agent Memory Forest 是一个 Python 包，也是一个 `forest` 命令。它把 Agent 学到的东西保存为普通的
 Markdown 页面，放在你自己磁盘上几个带编号的文件夹里。每条事实只有一个归属位置（home），

@@ -8,6 +8,11 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
+[![GitHub stars](https://img.shields.io/github/stars/hyungchulc/agent-memory-forest?style=social)](https://github.com/hyungchulc/agent-memory-forest/stargazers)
+
+⭐ Si Agent Memory Forest te resulta útil, dale una estrella en GitHub. Ayuda a que otras personas lo encuentren.
+
+https://github.com/user-attachments/assets/a45d205e-bedd-4887-903d-bd44253ddd80
 
 Agent Memory Forest es un paquete de Python y un comando `forest` que guardan lo que aprenden los agentes como
 páginas Markdown simples, en unas pocas carpetas numeradas de tu propio disco. Cada dato tiene un único lugar,

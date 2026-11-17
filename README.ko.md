@@ -8,6 +8,11 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
+[![GitHub stars](https://img.shields.io/github/stars/hyungchulc/agent-memory-forest?style=social)](https://github.com/hyungchulc/agent-memory-forest/stargazers)
+
+⭐ Agent Memory Forest가 쓸모 있었다면 GitHub에서 star를 눌러 주세요. 다른 사람들이 찾는 데 도움이 됩니다.
+
+https://github.com/user-attachments/assets/a45d205e-bedd-4887-903d-bd44253ddd80
 
 Agent Memory Forest는 agent가 알게 된 것을 내 디스크의 번호 붙은 몇 개 폴더 안에 평범한 Markdown 페이지로
 남기는 Python 패키지이자 `forest` 명령입니다. 사실마다 집이 하나 있고, 그 집은 사실을 가져온 대화나 agent가
