@@ -8,6 +8,9 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2EA44F.svg)](LICENSE)
 [![Local-first](https://img.shields.io/badge/runtime-local--first%20%7C%20no%20network-555555.svg)](docs/privacy-and-trust.md)
+[![GitHub stars](https://img.shields.io/github/stars/hyungchulc/agent-memory-forest?style=social)](https://github.com/hyungchulc/agent-memory-forest/stargazers)
+
+⭐ If Agent Memory Forest is useful to you, please give it a star on GitHub. It helps other people find it.
 
 Agent Memory Forest is a Python package and a `forest` command that keep what agents learn as plain
 Markdown pages in a few numbered folders on your own disk. Every fact has one home, decided by rules rather
