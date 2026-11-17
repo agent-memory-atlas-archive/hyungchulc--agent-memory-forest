@@ -12,6 +12,8 @@
 
 ⭐ If Agent Memory Forest is useful to you, please give it a star on GitHub. It helps other people find it.
 
+https://github.com/user-attachments/assets/a45d205e-bedd-4887-903d-bd44253ddd80
+
 Agent Memory Forest is a Python package and a `forest` command that keep what agents learn as plain
 Markdown pages in a few numbered folders on your own disk. Every fact has one home, decided by rules rather
 than by the chat or the agent that brought it in, and code, not a model, decides where a page belongs and
