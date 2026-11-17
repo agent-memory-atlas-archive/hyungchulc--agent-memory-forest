@@ -40,7 +40,7 @@ def patterns() -> list[tuple[str, re.Pattern[str]]]:
         ("absolute_linux_home", re.compile(re.escape(home_root) + r"[^/\s]+/")),
         ("email_address", re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)),
         ("e164_phone", re.compile(r"(?<!\w)\+[1-9]\d{9,14}(?!\w)")),
-        ("uuid", re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b", re.I)),
+        ("uuid", re.compile(r"(?<!github\.com/user-attachments/assets/)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b", re.I)),
         ("private_key", re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY")),
         ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
         ("github_token", re.compile(r"\bgh[opusr]_[A-Za-z0-9]{20,}\b")),

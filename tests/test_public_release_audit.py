@@ -47,6 +47,23 @@ class PublicReleaseAuditTests(unittest.TestCase):
                 {"absolute_macos_home", "openai_key"},
             )
 
+    def test_github_attachment_url_passes_but_bare_uuid_fails(self):
+        uuid = "-".join(["a45d205e", "bedd", "4887", "903d", "bd44253ddd80"])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "README.md").write_text(
+                "https://github.com/user-attachments/assets/" + uuid + "\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(MODULE.audit(root)["ok"])
+            (root / "notes.txt").write_text("session " + uuid + "\n", encoding="utf-8")
+            result = MODULE.audit(root)
+            self.assertFalse(result["ok"])
+            self.assertEqual(
+                result["findings"],
+                [{"rule": "uuid", "path": "notes.txt", "line": 1}],
+            )
+
     def test_symlink_fails_without_reading_target(self):
         with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as outside:
             root = Path(raw)
